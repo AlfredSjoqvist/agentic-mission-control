@@ -5,6 +5,9 @@ import Timeline, { sliderToTimeSlot } from './components/Timeline.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import { colors, typography, radii, panelStyle } from './styles/designTokens.js';
+import useMarbleWorld from './hooks/useMarbleWorld.js';
+
+const MARBLE_API_KEY = import.meta.env.VITE_MARBLE_API_KEY || '';
 
 // Design target — layout is authored at this size and proportionally scaled
 const TW = 1440;
@@ -25,6 +28,9 @@ export default function App() {
   const [swarmActive,  setSwarmActive]  = useState(false);
   const [evacActive,   setEvacActive]   = useState(false);
   const [deployActive, setDeployActive] = useState(false);
+
+  const { status: marbleStatus, progress: marbleProgress, world: marbleWorld } =
+    useMarbleWorld(MARBLE_API_KEY);
 
   const toggleLayer = useCallback((key) => {
     setActiveLayers(prev => ({ ...prev, [key]: !prev[key] }));
@@ -164,6 +170,9 @@ export default function App() {
             swarmActive={swarmActive}
             evacActive={evacActive}
             deployActive={deployActive}
+            marbleWorld={marbleWorld}
+            marbleStatus={marbleStatus}
+            marbleProgress={marbleProgress}
           />
           <TimeframePill timeSlot={timeSlot} simulationMode={simulationMode} />
           {simulationMode && (

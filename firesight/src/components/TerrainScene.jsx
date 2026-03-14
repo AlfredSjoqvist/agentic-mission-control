@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { Viewer as SplatViewer } from '@mkkellogg/gaussian-splats-3d';
 
 // ─── Constants ────────────────────────────────────────────────────────────
 const TERRAIN_SIZE = 80;
@@ -26,6 +28,42 @@ function getHeight(x, z) {
   h += Math.sin(x * 1.12) * Math.cos(z * 1.10 + 0.3) * 0.7;
   h += Math.sin(x * 2.24 + 3.1) * Math.cos(z * 2.21 + 1.5) * 0.35;
   return Math.max(0.1, h + 4.5);
+}
+
+// ─── Height grid from loaded GLB mesh (for fire overlay accuracy) ─────────
+function buildHeightGridFromMesh(mesh, gridSize = 64) {
+  const raycaster = new THREE.Raycaster();
+  const down = new THREE.Vector3(0, -1, 0);
+  const half = TERRAIN_SIZE / 2;
+  const grid = new Float32Array(gridSize * gridSize);
+
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      const x = (i / (gridSize - 1)) * TERRAIN_SIZE - half;
+      const z = (j / (gridSize - 1)) * TERRAIN_SIZE - half;
+      raycaster.set(new THREE.Vector3(x, 200, z), down);
+      const hits = raycaster.intersectObject(mesh, true);
+      grid[i * gridSize + j] = hits.length > 0 ? hits[0].point.y : getHeight(x, z);
+    }
+  }
+  return { grid, gridSize };
+}
+
+function sampleHeight(x, z, heightData) {
+  if (!heightData) return getHeight(x, z);
+  const { grid, gridSize } = heightData;
+  const half = TERRAIN_SIZE / 2;
+  const ix = Math.max(0, Math.min(gridSize - 1, ((x + half) / TERRAIN_SIZE) * (gridSize - 1)));
+  const iz = Math.max(0, Math.min(gridSize - 1, ((z + half) / TERRAIN_SIZE) * (gridSize - 1)));
+  const x0 = Math.floor(ix), x1 = Math.min(x0 + 1, gridSize - 1);
+  const z0 = Math.floor(iz), z1 = Math.min(z0 + 1, gridSize - 1);
+  const fx = ix - x0, fz = iz - z0;
+  return (
+    grid[x0 * gridSize + z0] * (1 - fx) * (1 - fz) +
+    grid[x1 * gridSize + z0] * fx * (1 - fz) +
+    grid[x0 * gridSize + z1] * (1 - fx) * fz +
+    grid[x1 * gridSize + z1] * fx * fz
+  );
 }
 
 // ─── Terrain vertex color — brighter, more readable ──────────────────────
@@ -364,7 +402,7 @@ function buildGridOverlay() {
 }
 
 // ─── Main component ─────────────────────────────────────────────────────
-export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive }) {
+export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive, marbleWorld, marbleStatus, marbleProgress }) {
   const mountRef = useRef(null);
   const sceneRef = useRef({});
 
@@ -402,12 +440,12 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     // ── Renderer ────────────────────────────────────────────────────
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
-      alpha: false,
+      alpha: true,           // allow transparent background for splat compositing
       powerPreference: 'high-performance',
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
-    renderer.setClearColor(0x060a10, 1);
+    renderer.setClearColor(0x060a10, 1); // stays opaque until splat loads
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -611,6 +649,11 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         }
       });
 
+      // Tick Gaussian splat viewer (no-op until splat is loaded)
+      if (s.splatViewer) {
+        try { s.splatViewer.update(); } catch (_) {}
+      }
+
       s.renderer.render(s.scene, s.camera);
     }
     animate();
@@ -627,6 +670,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       particleSystems.forEach((ps) => { ps.geometry.dispose(); ps.material.dispose(); });
       perimeterRings.forEach((r) => { r.geometry.dispose(); r.material.dispose(); });
       windArrows.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
+      if (sceneRef.current.splatViewer) { try { sceneRef.current.splatViewer.dispose(); } catch (_) {} }
       swarmGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
       evacRoutes.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
       deployGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
@@ -690,6 +734,54 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     deployGroup.visible = !!deployActive;
   }, [deployActive]);
 
+  // ── Marble world: load Gaussian splat (SPZ) ──────────────────────────
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s.scene || !marbleWorld?.splatUrl) return;
+
+    // Dispose any previous splat viewer
+    if (s.splatViewer) {
+      try { s.splatViewer.dispose(); } catch (_) {}
+      s.splatViewer = null;
+    }
+
+    // Create viewer integrated with our existing renderer/camera/scene
+    const viewer = new SplatViewer({
+      threeScene:          s.scene,
+      camera:              s.camera,
+      renderer:            s.renderer,
+      selfDrivenMode:      false,        // we call update() in our loop
+      useBuiltInControls:  false,        // we control the camera
+      renderMode:          0,            // 0 = always render (needed for selfDriven:false)
+      logLevel:            1,            // 1 = errors only
+    });
+
+    viewer.addSplatScene(marbleWorld.splatUrl, {
+      progressiveLoad: true,
+      showLoadingUI:   false,
+    }).then(() => {
+      const s2 = sceneRef.current;
+      if (!s2.scene) return;
+
+      s2.splatViewer = viewer;
+
+      // Hide procedural terrain — the splat IS the world
+      if (s2.terrain) s2.terrain.visible = false;
+
+      // Transparent background so the splat fills the canvas
+      s2.renderer.setClearColor(0x000000, 0);
+      if (s2.scene.fog)        s2.scene.fog.density  = 0;
+      if (s2.scene.background) s2.scene.background   = null;
+
+    }).catch((err) => {
+      console.warn('[Marble] SPZ load error:', err);
+    });
+
+  }, [marbleWorld]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isGenerating = marbleStatus === 'generating';
+  const isReady      = marbleStatus === 'ready';
+
   return (
     <div
       ref={mountRef}
@@ -705,6 +797,45 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       }}
     >
       <SceneOverlay />
+
+      {/* Marble loading overlay */}
+      {isGenerating && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(6, 10, 16, 0.72)',
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+          pointerEvents: 'none',
+          zIndex: 10,
+          gap: 10,
+        }}>
+          <MarbleSpinner />
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 11,
+            color: '#6EA8D7',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+          }}>
+            ◈ MARBLE WORLD MODEL GENERATING
+          </span>
+          {marbleProgress && (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 9,
+              color: 'rgba(180,195,215,0.45)',
+              letterSpacing: '0.04em',
+            }}>
+              {marbleProgress}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Ready flash badge */}
+      {isReady && <MarbleReadyBadge />}
     </div>
   );
 }
@@ -769,6 +900,62 @@ function Compass() {
         <text x="18" y="3" textAnchor="middle" fontSize="4.5" fill="rgba(212,80,50,0.6)"
           fontFamily="Inter, sans-serif" fontWeight="600">N</text>
       </svg>
+    </div>
+  );
+}
+
+// ─── Marble loading spinner (CSS animation via inline keyframes) ──────────
+function MarbleSpinner() {
+  return (
+    <div style={{ position: 'relative', width: 32, height: 32 }}>
+      <svg viewBox="0 0 32 32" fill="none" style={{ width: 32, height: 32 }}>
+        <circle cx="16" cy="16" r="13" stroke="rgba(110,168,215,0.12)" strokeWidth="2" />
+        <circle cx="16" cy="16" r="13"
+          stroke="#6EA8D7"
+          strokeWidth="2"
+          strokeDasharray="20 62"
+          strokeLinecap="round"
+          style={{ transformOrigin: '16px 16px', animation: 'marbleSpin 1.1s linear infinite' }}
+        />
+        <circle cx="16" cy="16" r="4" fill="rgba(110,168,215,0.18)" />
+        <circle cx="16" cy="16" r="2" fill="#6EA8D7" opacity="0.7" />
+      </svg>
+      <style>{`@keyframes marbleSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── Brief "loaded" badge (fades out after 3s) ────────────────────────────
+function MarbleReadyBadge() {
+  const [visible, setVisible] = React.useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(false), 3000);
+    return () => clearTimeout(t);
+  }, []);
+  if (!visible) return null;
+  return (
+    <div style={{
+      position: 'absolute', bottom: 40, left: '50%',
+      transform: 'translateX(-50%)',
+      pointerEvents: 'none',
+      display: 'flex', alignItems: 'center', gap: 6,
+      padding: '5px 12px',
+      background: 'rgba(16, 185, 129, 0.10)',
+      border: '1px solid rgba(16, 185, 129, 0.25)',
+      borderRadius: 20,
+      animation: 'marbeFadeOut 3s ease forwards',
+    }}>
+      <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#10B981' }} />
+      <span style={{
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 9,
+        color: '#10B981',
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+      }}>
+        ◈ MARBLE TERRAIN LOADED
+      </span>
+      <style>{`@keyframes marbeFadeOut { 0%,60%{opacity:1} 100%{opacity:0} }`}</style>
     </div>
   );
 }
