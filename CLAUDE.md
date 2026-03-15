@@ -91,6 +91,42 @@ Win the hackathon. Build **FireSight** — a spatial VR command center for wildf
 - Narrative: tell a story about WHY this matters, not just WHAT it does
 - Technical depth that holds up to judge Q&A
 
+## UI Design Principles (judge-aligned)
+
+### Spatial Layout: World Model is the Interface
+- **Center = 3D terrain (god-view war table), periphery = agent panels.** The world model is not a background — it's the primary surface all agents annotate. Fire overlays, drone positions, evacuation routes, and resource icons all render ON the terrain, not in separate windows.
+- **One floating panel per agent, max.** Pyro, Swarm, Evac, Deploy — four panels orbiting at arm's reach. Each shows: agent name, status (one line), last action. No dashboards-within-dashboards.
+- Agent panels are **peripheral** — status boards at the edges of vision. The world model stays center. This mirrors how incident commanders think: situational awareness first, details on demand.
+
+### Interaction: Voice-First, Gesture-Second
+- **Voice is the hero interaction.** "Pyro, project 25 mph northwest wind" is the demo's centerpiece. Voice is reliable and impressive on stage. Greg Madison (30+ yrs XR) will judge interaction novelty here.
+- **Gaze/point for context.** Point at terrain → context menu (send drone / check route / deploy crew). Keep it simple — complex hand-tracking UIs break in live demos.
+- **No controllers with laser pointers.** That's not novel XR. Gaze + voice signals "AI-native spatial computing" to Yiqi Zhao (Meta) and Fasai (Google).
+
+### Visual Language: Color = Time, No Labels Needed
+- **Fire spread**: red (now) → orange (30 min) → yellow (1 hr) — animated on terrain
+- **Evacuation routes**: green (clear) → red (blocked) — glowing lines on terrain
+- **Resource status**: green / yellow / red
+- The color system must be instantly readable without text. Greg Madison will notice this polish.
+
+### The "Wow Moment": Timeline Scrubber
+- Sliding from "now" to "+3 hours" and watching fire consume a neighborhood is the single most viscerally compelling interaction. **Build this before any other polish.**
+- This proves the world model is dynamic (not a static screenshot) — critical for Ian Curtis (World Labs) and Hugo Hernandez (Alakazam).
+
+### The Interaction Loop (every judge wants to see this)
+- User speaks → agent responds → world model updates visually → user reacts
+- Every interaction must complete this loop in **under 3 seconds**. If Marble API is slow, cache terrain and make overlays instant.
+
+### The 30-Second Rule
+- If someone puts on the headset and within 30 seconds sees 3D terrain with fire spreading and hears "Pyro, show me the spread" — half the judges are already sold. Everything else is depth for Q&A.
+
+### What NOT to Build (UI scope)
+- No settings, menus, or configuration screens
+- No onboarding or tutorials
+- No multi-user — single commander POV is enough
+- No text-heavy UI in VR — investor judges (Marco DeMiroz, Felix Hartmann) will zone out
+- Don't over-animate — one smooth fire-spread animation beats five janky ones
+
 ## Code Standards (for hackathon speed)
 - Prioritize working code over clean code. Refactor nothing unless it blocks progress.
 - Comment only what's non-obvious. No boilerplate docs.

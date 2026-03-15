@@ -3,8 +3,13 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  envDir: '..',  // .env lives in the project root (parent of firesight/)
   server: {
     host: true,
     port: 5173,
+    proxy: {
+      '/api': 'http://localhost:3001',
+      '/assets': 'http://localhost:3001',
+    },
   },
 });

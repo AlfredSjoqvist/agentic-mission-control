@@ -1,10 +1,11 @@
-import React, { useState, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useRef, useMemo } from 'react';
 import TerrainScene from './components/TerrainScene.jsx';
 import AgentPanel, { LargeAgentPanel } from './components/AgentPanel.jsx';
 import Timeline, { sliderToTimeSlot } from './components/Timeline.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import { colors, typography, radii, panelStyle } from './styles/designTokens.js';
+import { createPalisadesScenario } from './fireSpreadEngine.js';
 
 // Design target — layout is authored at this size and proportionally scaled
 const TW = 1440;
@@ -26,11 +27,33 @@ export default function App() {
   const [evacActive,   setEvacActive]   = useState(false);
   const [deployActive, setDeployActive] = useState(false);
 
+  // Fire spread engine + projections
+  const engineRef = useRef(null);
+  const [projections, setProjections] = useState(null); // { now, oneHour, threeHour }
+  const [fireStats, setFireStats] = useState(null);
+
+  const handleSimulate = useCallback(() => {
+    const engine = createPalisadesScenario();
+    engineRef.current = engine;
+    const proj = engine.generateProjections();
+    setProjections(proj);
+    setFireStats(engine.getStats());
+    setSimulationMode(true);
+  }, []);
+
   const toggleLayer = useCallback((key) => {
     setActiveLayers(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
   const timeSlot = sliderToTimeSlot(sliderValue);
+
+  // Pick the right snapshot based on the timeline slider
+  const currentFireData = useMemo(() => {
+    if (!projections) return null;
+    if (timeSlot === 0) return projections.now;
+    if (timeSlot === 1) return projections.oneHour;
+    return projections.threeHour;
+  }, [projections, timeSlot]);
 
   useLayoutEffect(() => {
     function update() {
@@ -129,7 +152,7 @@ export default function App() {
             color: colors.textSecondary,
             flexShrink: 0,
           }}>
-            Pine Ridge Complex — El Dorado County, CA
+            Palisades Fire — Los Angeles County, CA
           </span>
 
           <div style={{ flex: 1 }} />
@@ -142,7 +165,8 @@ export default function App() {
           <LargeAgentPanel
             panelId="pyro"
             simulationMode={simulationMode}
-            onSimulate={() => setSimulationMode(true)}
+            onSimulate={handleSimulate}
+            fireStats={fireStats}
           />
         </aside>
 
@@ -164,6 +188,7 @@ export default function App() {
             swarmActive={swarmActive}
             evacActive={evacActive}
             deployActive={deployActive}
+            fireData={currentFireData}
           />
           <TimeframePill timeSlot={timeSlot} simulationMode={simulationMode} />
           {simulationMode && (

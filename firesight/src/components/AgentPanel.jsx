@@ -198,7 +198,7 @@ const PANELS = {
 };
 
 // ─── Large panel variant (for Pyro — primary panel) ────────────────────────
-export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
+export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats }) {
   const panel = PANELS[panelId];
   const [actionState, setActionState] = useState('idle');
 
@@ -467,9 +467,9 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
           </div>
           {/* Rows */}
           {[
-            { label: '+1 Hour',    value: '210 acres', color: sem.warning  },
-            { label: '+3 Hours',   value: '480 acres', color: sem.warning  },
-            { label: 'Confidence', value: '87%',       color: sem.neutral  },
+            { label: '+1 Hour',    value: fireStats ? `${Math.round(fireStats.totalAcres * 3.5)} acres` : '210 acres', color: sem.warning  },
+            { label: '+3 Hours',   value: fireStats ? `${Math.round(fireStats.totalAcres * 8)} acres` : '480 acres', color: sem.warning  },
+            { label: 'ROS',        value: fireStats ? `${fireStats.rosChainPerHour} ch/hr` : '2.4 ch/hr', color: sem.neutral  },
           ].map(row => (
             <div key={row.label} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
