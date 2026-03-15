@@ -548,9 +548,48 @@ const ACTIVE_INFO = {
 };
 
 // ─── Compact panel variant (for Swarm, Evac, Deploy) ───────────────────────
-export default function AgentPanel({ panelId, onActivate, isActive }) {
+export default function AgentPanel({ panelId, onActivate, isActive, liveData }) {
   const panel = PANELS[panelId];
   const [actionState, setActionState] = useState('idle');
+
+  // Override hardcoded metrics with live simulation data
+  const liveMetrics = (() => {
+    if (!liveData) return panel.metrics;
+    if (panelId === 'swarm' && liveData.swarm) {
+      return [
+        { label: 'Drones', value: `${liveData.swarm.launched} / ${liveData.swarm.total}`, icon: DroneIcon, iconColor: colors.textTertiary },
+        { label: 'Coverage', value: `${liveData.swarm.coverage}%`, icon: CoverageIcon, iconColor: colors.textTertiary },
+      ];
+    }
+    if (panelId === 'evac' && liveData.evac) {
+      return [
+        { label: 'Civilians', value: liveData.evac.totalPop.toLocaleString(), icon: PersonIcon, iconColor: colors.textTertiary },
+        { label: 'Evacuated', value: liveData.evac.evacuated.toLocaleString(), icon: EvacPersonIcon, iconColor: colors.textTertiary },
+      ];
+    }
+    if (panelId === 'deploy' && liveData.deploy) {
+      return [
+        { label: 'Crews', value: `${liveData.deploy.crews} active`, icon: CrewIcon, iconColor: colors.textTertiary },
+        { label: 'Aircraft', value: `${liveData.deploy.aircraft} airborne`, icon: PlaneIcon, iconColor: colors.textTertiary },
+      ];
+    }
+    return panel.metrics;
+  })();
+
+  const liveStatus = (() => {
+    if (!liveData) return { label: panel.statusLabel, color: panel.statusColor };
+    if (panelId === 'swarm' && liveData.swarm) {
+      return { label: liveData.swarm.launched > 6 ? 'Deployed' : 'Patrol', color: liveData.swarm.launched > 6 ? colors.warning : colors.safe };
+    }
+    if (panelId === 'evac' && liveData.evac) {
+      const blocked = liveData.evac.blocked || 0;
+      return { label: blocked > 0 ? `${3-blocked} Open` : '3 Open', color: blocked > 0 ? colors.danger : colors.safe };
+    }
+    if (panelId === 'deploy' && liveData.deploy) {
+      return { label: liveData.deploy.crews > 0 ? 'Active' : 'Standby', color: liveData.deploy.crews > 0 ? colors.safe : colors.warning };
+    }
+    return { label: panel.statusLabel, color: panel.statusColor };
+  })();
 
   const handleAction = () => {
     if (actionState !== 'idle') return;
@@ -590,14 +629,14 @@ export default function AgentPanel({ panelId, onActivate, isActive }) {
           {panel.title}
         </span>
         <StatusDot
-          label={isActive && activeInfo ? activeInfo.label.split(' ')[0] : panel.statusLabel}
-          color={isActive && activeInfo ? activeInfo.color : panel.statusColor}
+          label={isActive && activeInfo ? activeInfo.label.split(' ')[0] : liveStatus.label}
+          color={isActive && activeInfo ? activeInfo.color : liveStatus.color}
         />
       </div>
 
       {/* Inline metrics */}
       <div style={{ display: 'flex', gap: '16px' }}>
-        {panel.metrics.map((m) => {
+        {liveMetrics.map((m) => {
           const Icon = m.icon;
           return (
             <div key={m.label}>
@@ -675,6 +714,25 @@ export default function AgentPanel({ panelId, onActivate, isActive }) {
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Agent reasoning feed */}
+      {liveData?.reasoning && liveData.reasoning[panelId] && (
+        <div style={{
+          borderTop: `1px solid ${colors.borderSubtle}`,
+          paddingTop: '4px',
+          maxHeight: 36,
+          overflow: 'hidden',
+        }}>
+          <span style={{
+            fontFamily: typography.monoFamily,
+            fontSize: '7px',
+            color: '#F472B6',
+            letterSpacing: '0.06em',
+          }}>
+            {liveData.reasoning[panelId]}
+          </span>
         </div>
       )}
 

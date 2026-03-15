@@ -22,10 +22,10 @@ export const FUEL_TYPES = {
 export class FireSpreadEngine {
   constructor(options = {}) {
     const {
-      minLat = 34.010,
-      maxLat = 34.080,
-      minLng = -118.570,
-      maxLng = -118.480,
+      minLat = 33.990,
+      maxLat = 34.110,
+      minLng = -118.600,
+      maxLng = -118.440,
       cellSize = 80,          // meters per cell
       windSpeed = 30,         // km/h — Santa Ana winds
       windDirection = 315,    // degrees — NW (blowing from NW toward SE)
@@ -54,8 +54,8 @@ export class FireSpreadEngine {
     };
 
     this.tickCount = 0;
-    this.baseSpreadRate = 0.13;
-    this.spotProbability = 0.015; // ember spotting
+    this.baseSpreadRate = 0.05;
+    this.spotProbability = 0.002; // ember spotting (rare)
 
     // Build grid
     this.grid = new Array(this.rows);
@@ -90,7 +90,19 @@ export class FireSpreadEngine {
     this.fuelCanvas.height = this.rows;
     this._renderFuelMap();
 
-    console.log(`Fire grid: ${this.rows}x${this.cols} = ${this.rows * this.cols} cells @ ${cellSize}m`);
+    // Debug: log grid info and fuel distribution
+    const fuelCounts = {};
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const ft = this.grid[r][c].fuelType;
+        fuelCounts[ft] = (fuelCounts[ft] || 0) + 1;
+      }
+    }
+    console.log(`%c[FireEngine] Grid: ${this.rows}x${this.cols} = ${this.rows * this.cols} cells @ ${cellSize}m`, 'color: #ff8800; font-weight: bold');
+    console.log(`%c[FireEngine] Bounds: lat [${minLat}, ${maxLat}] lng [${minLng}, ${maxLng}]`, 'color: #ff8800');
+    console.log(`%c[FireEngine] Fuel distribution:`, 'color: #ff8800', fuelCounts);
+    console.log(`%c[FireEngine] Wind: ${windSpeed} km/h from ${windDirection}°`, 'color: #ff8800');
+    console.log(`%c[FireEngine] Canvas: ${this.canvas.width}x${this.canvas.height}`, 'color: #ff8800');
   }
 
   // ---- Procedural elevation for Palisades area ----
@@ -129,9 +141,12 @@ export class FireSpreadEngine {
     const latNorm = (lat - this.bounds.minLat) / (this.bounds.maxLat - this.bounds.minLat);
     const lngNorm = (lng - this.bounds.minLng) / (this.bounds.maxLng - this.bounds.minLng);
 
-    // Ocean — south edge, low elevation
+    // Ocean — any cell at or below sea level is water
+    if (elevation <= 2) return 'WATER';
+    // Coastal strip — south edge
     if (latNorm < 0.04) return 'WATER';
-    if (elevation < 3 && latNorm < 0.08) return 'WATER';
+    // Santa Monica Bay — below the coastal bluff line
+    if (elevation < 15 && latNorm < 0.42) return 'WATER';
 
     // Roads — PCH, Sunset Blvd, Topanga Canyon Rd
     if (latNorm > 0.07 && latNorm < 0.10 && lngNorm < 0.55) return 'ROAD';
@@ -165,10 +180,28 @@ export class FireSpreadEngine {
 
   // ---- Ignite at a point with radius ----
   ignite(lat, lng, radiusCells = 2) {
+    console.log(`%c[FireEngine] ignite() called: lat=${lat.toFixed(5)}, lng=${lng.toFixed(5)}, radius=${radiusCells}`, 'color: #ff4400; font-weight: bold');
+
     const center = this.latLngToCell(lat, lng);
-    if (!center) return false;
+    if (!center) {
+      console.error(`[FireEngine] ignite FAILED: lat/lng outside grid bounds!`, {
+        lat, lng,
+        bounds: this.bounds,
+        inLatRange: lat >= this.bounds.minLat && lat <= this.bounds.maxLat,
+        inLngRange: lng >= this.bounds.minLng && lng <= this.bounds.maxLng,
+      });
+      return false;
+    }
+
+    console.log(`%c[FireEngine] Grid cell: row=${center.r}, col=${center.c}`, 'color: #ff4400');
+    const centerCell = this.grid[center.r][center.c];
+    console.log(`%c[FireEngine] Center cell fuel: ${centerCell.fuelType}, rate: ${FUEL_TYPES[centerCell.fuelType].rate}, state: ${centerCell.state}`, 'color: #ff4400');
 
     let ignited = false;
+    let ignitedCount = 0;
+    let skippedWater = 0;
+    let skippedAlreadyBurning = 0;
+
     for (let dr = -radiusCells; dr <= radiusCells; dr++) {
       for (let dc = -radiusCells; dc <= radiusCells; dc++) {
         if (dr * dr + dc * dc > radiusCells * radiusCells) continue;
@@ -176,21 +209,34 @@ export class FireSpreadEngine {
         const c = center.c + dc;
         if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) continue;
         const cell = this.grid[r][c];
-        if (cell.state === CELL_STATES.UNBURNED && FUEL_TYPES[cell.fuelType].rate > 0) {
-          cell.state = CELL_STATES.BURNING;
-          cell.burnTick = this.tickCount;
-          cell.intensity = 0.3 + Math.random() * 0.3;
-          ignited = true;
-        }
+        if (cell.state !== CELL_STATES.UNBURNED) { skippedAlreadyBurning++; continue; }
+        if (cell.fuelType === 'WATER') { skippedWater++; continue; }
+        cell.state = CELL_STATES.BURNING;
+        cell.burnTick = this.tickCount;
+        cell.intensity = 0.3 + Math.random() * 0.3;
+        ignited = true;
+        ignitedCount++;
       }
     }
+
     this._renderCanvas();
+    console.log(`%c[FireEngine] Ignition result: ${ignitedCount} cells ignited, ${skippedWater} skipped (water/road), ${skippedAlreadyBurning} already burning`, 'color: #ff4400; font-weight: bold');
+
+    // Debug: check canvas has non-transparent pixels
+    const imgData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    let nonTransparent = 0;
+    for (let i = 3; i < imgData.data.length; i += 4) {
+      if (imgData.data[i] > 0) nonTransparent++;
+    }
+    console.log(`%c[FireEngine] Canvas pixels with alpha > 0: ${nonTransparent} / ${this.canvas.width * this.canvas.height}`, 'color: #ff4400');
+
     return ignited;
   }
 
   // ---- Main simulation tick ----
   tick() {
     this.tickCount++;
+    const tickStart = performance.now();
     const newIgnitions = [];
 
     for (let r = 0; r < this.rows; r++) {
@@ -259,6 +305,21 @@ export class FireSpreadEngine {
     }
 
     this._renderCanvas();
+
+    // Debug every 5 ticks
+    if (this.tickCount % 5 === 0 || this.tickCount <= 3) {
+      const stats = this.getStats();
+      const elapsed = (performance.now() - tickStart).toFixed(1);
+      console.log(
+        `%c[FireEngine] Tick ${this.tickCount} (${elapsed}ms): ` +
+        `burning=${stats.burning} cells (${stats.burningAreaKm2} km²), ` +
+        `burned=${stats.burned}, ` +
+        `new ignitions this tick=${newIgnitions.length}, ` +
+        `sim time=${stats.simMinutes} min`,
+        'color: #ff8800'
+      );
+    }
+
     return this.tickCount;
   }
 
@@ -387,8 +448,28 @@ export class FireSpreadEngine {
       containmentPct: burning + burned > 0
         ? ((burned / (burning + burned)) * 100).toFixed(0)
         : '0',
-      simMinutes: this.tickCount * 5, // each tick = 5 sim minutes
+      simMinutes: this.tickCount, // each tick = 1 sim minute
     };
+  }
+
+  // ---- Get all burning/burned cells with positions ----
+  getBurningCells() {
+    const cells = [];
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const cell = this.grid[r][c];
+        if (cell.state === CELL_STATES.BURNING || cell.state === CELL_STATES.BURNED) {
+          cells.push({
+            lat: this.bounds.minLat + (r + 0.5) * this.latStep,
+            lng: this.bounds.minLng + (c + 0.5) * this.lngStep,
+            elevation: cell.elevation,
+            state: cell.state,
+            intensity: cell.intensity,
+          });
+        }
+      }
+    }
+    return cells;
   }
 
   // ---- Wind control ----

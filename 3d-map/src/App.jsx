@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { FireSpreadEngine, FUEL_TYPES } from './fireSpreadEngine';
+import { FireSpreadEngine, FUEL_TYPES, CELL_STATES } from './fireSpreadEngine';
+import { FireVisualSystem } from './fireVisuals';
 import './App.css';
 
 // ============================================================
@@ -150,8 +151,24 @@ export default function App() {
     });
     viewerRef.current = viewer;
     viewer.imageryLayers.removeAll();
+    console.log('%c[App] Cesium viewer initialized', 'color: #00e5ff; font-weight: bold');
 
-    // Load Google 3D Tiles
+    // Enable depth picking so pickPosition works on 3D tiles
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+    if (viewer.scene.pickTranslucentDepth !== undefined) {
+      viewer.scene.pickTranslucentDepth = true;
+    }
+    console.log('%c[App] Depth testing enabled for 3D tiles picking', 'color: #00e5ff');
+
+    // ---- Initialize Fire Spread Engine ----
+    const engine = new FireSpreadEngine({
+      minLat: 33.990, maxLat: 34.110,
+      minLng: -118.600, maxLng: -118.440,
+      cellSize: 80, windSpeed: 30, windDirection: 315,
+    });
+    fireEngineRef.current = engine;
+
+    // Load Google 3D Tiles, then attach fire shader
     (async () => {
       try {
         const tileset = await Cesium.Cesium3DTileset.fromUrl(
@@ -160,6 +177,18 @@ export default function App() {
         );
         if (viewer.isDestroyed()) return;
         viewer.scene.primitives.add(tileset);
+        console.log('%c[App] Google 3D Tiles loaded successfully', 'color: #0f0; font-weight: bold');
+
+        // Fire visual system — CustomShader on tileset + particles
+        const fireVisuals = new FireVisualSystem(viewer, tileset, engine);
+        fireOverlayRef.current = fireVisuals;
+
+        engine._updateOverlay = () => {
+          const cells = engine.getBurningCells();
+          fireVisuals.update(cells);
+        };
+
+        console.log('%c[App] Fire visuals: Shader + particles system', 'color: #00e5ff');
         setLoaded(true);
       } catch (err) {
         console.error('3D Tiles fallback:', err);
@@ -179,43 +208,18 @@ export default function App() {
       duration: 2,
     });
 
-    // ---- Initialize Fire Spread Engine ----
-    const engine = new FireSpreadEngine({
-      minLat: 34.010, maxLat: 34.080,
-      minLng: -118.570, maxLng: -118.480,
-      cellSize: 80, windSpeed: 30, windDirection: 315,
-    });
-    fireEngineRef.current = engine;
-
-    // Fire overlay — Rectangle entity with canvas texture
-    const fireOverlay = viewer.entities.add({
-      name: 'Fire Simulation',
-      show: true,
-      rectangle: {
-        coordinates: Cesium.Rectangle.fromDegrees(-118.570, 34.010, -118.480, 34.080),
-        material: new Cesium.ImageMaterialProperty({
-          image: new Cesium.CallbackProperty(() => {
-            // Return canvas — Cesium re-reads each frame
-            return engine.canvas;
-          }, false),
-          transparent: true,
-        }),
-        height: 2, // slightly above ground
-      },
-    });
-    fireOverlayRef.current = fireOverlay;
-
     // Fuel map overlay (hidden by default)
     const fuelOverlay = viewer.entities.add({
       name: 'Fuel Map',
       show: false,
       rectangle: {
-        coordinates: Cesium.Rectangle.fromDegrees(-118.570, 34.010, -118.480, 34.080),
+        coordinates: Cesium.Rectangle.fromDegrees(-118.600, 33.990, -118.440, 34.110),
         material: new Cesium.ImageMaterialProperty({
-          image: engine.fuelCanvas,
+          image: engine.fuelCanvas.toDataURL(),
           transparent: false,
         }),
-        height: 1,
+        height: 600,
+        extrudedHeight: 601,
       },
     });
     fuelOverlayRef.current = fuelOverlay;
@@ -313,17 +317,17 @@ export default function App() {
     // ---- Click handler ----
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((click) => {
-      // Ignite mode: click to start fire
+      console.log(`%c[App] Click at screen pos: (${click.position.x}, ${click.position.y}), igniteMode=${igniteModeRef.current}`, 'color: #aaa');
+
+      // Ignite mode: click to start fire at clicked location
       if (igniteModeRef.current) {
-        const cartesian = viewer.scene.pickPosition(click.position);
-        if (!cartesian) {
-          const ray = viewer.camera.getPickRay(click.position);
-          const globePick = viewer.scene.globe.pick(ray, viewer.scene);
-          if (!globePick) return;
-          handleIgnite(globePick);
-          return;
+        console.log('%c[App] IGNITE MODE CLICK — picking world position...', 'color: #ff4400; font-weight: bold');
+        const position = pickWorldPosition(viewer, click.position);
+        if (position) {
+          handleIgnite(position);
+        } else {
+          console.error('[App] FAILED to pick any world position! No terrain/tiles under cursor.');
         }
-        handleIgnite(cartesian);
         return;
       }
 
@@ -336,23 +340,96 @@ export default function App() {
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+    // Try multiple pick strategies (3D tiles, globe, ellipsoid)
+    function pickWorldPosition(viewer, screenPos) {
+      // 1. pickPosition — works on 3D tiles and terrain
+      let cartesian = viewer.scene.pickPosition(screenPos);
+      if (cartesian && Cesium.defined(cartesian)) {
+        const c = Cesium.Cartographic.fromCartesian(cartesian);
+        console.log(`%c[Pick] Method 1 (pickPosition) SUCCESS: lat=${Cesium.Math.toDegrees(c.latitude).toFixed(5)}, lng=${Cesium.Math.toDegrees(c.longitude).toFixed(5)}, alt=${c.height.toFixed(1)}`, 'color: #0f0');
+        return cartesian;
+      }
+      console.log('%c[Pick] Method 1 (pickPosition) failed', 'color: #ff0');
+
+      // 2. Globe pick via ray
+      const ray = viewer.camera.getPickRay(screenPos);
+      if (ray) {
+        cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+        if (cartesian && Cesium.defined(cartesian)) {
+          const c = Cesium.Cartographic.fromCartesian(cartesian);
+          console.log(`%c[Pick] Method 2 (globe.pick) SUCCESS: lat=${Cesium.Math.toDegrees(c.latitude).toFixed(5)}, lng=${Cesium.Math.toDegrees(c.longitude).toFixed(5)}`, 'color: #0f0');
+          return cartesian;
+        }
+        console.log('%c[Pick] Method 2 (globe.pick) failed', 'color: #ff0');
+      }
+
+      // 3. Fallback: ray-ellipsoid intersection (always works, gives surface point)
+      if (ray) {
+        cartesian = viewer.camera.pickEllipsoid(screenPos, viewer.scene.globe.ellipsoid);
+        if (cartesian && Cesium.defined(cartesian)) {
+          const c = Cesium.Cartographic.fromCartesian(cartesian);
+          console.log(`%c[Pick] Method 3 (pickEllipsoid) SUCCESS: lat=${Cesium.Math.toDegrees(c.latitude).toFixed(5)}, lng=${Cesium.Math.toDegrees(c.longitude).toFixed(5)}`, 'color: #0f0');
+          return cartesian;
+        }
+        console.log('%c[Pick] Method 3 (pickEllipsoid) failed', 'color: #f00');
+      }
+
+      console.error('[Pick] ALL 3 methods failed!');
+      return null;
+    }
+
     function handleIgnite(cartesian) {
       const carto = Cesium.Cartographic.fromCartesian(cartesian);
       const lat = Cesium.Math.toDegrees(carto.latitude);
       const lng = Cesium.Math.toDegrees(carto.longitude);
-      engine.ignite(lat, lng, 3);
-      setFireStats(engine.getStats());
-      // Auto-start simulation on first ignite
-      setFireRunning(true);
-      // Exit ignite mode
-      igniteModeRef.current = false;
-      setIgniteMode(false);
+
+      console.log(`%c[App] handleIgnite: lat=${lat.toFixed(5)}, lng=${lng.toFixed(5)}`, 'color: #ff4400; font-weight: bold');
+      console.log(`%c[App] Grid bounds check: lat in [${engine.bounds.minLat}, ${engine.bounds.maxLat}]=${lat >= engine.bounds.minLat && lat <= engine.bounds.maxLat}, lng in [${engine.bounds.minLng}, ${engine.bounds.maxLng}]=${lng >= engine.bounds.minLng && lng <= engine.bounds.maxLng}`, 'color: #ff4400');
+
+      const didIgnite = engine.ignite(lat, lng, 3);
+      console.log(`%c[App] engine.ignite() returned: ${didIgnite}`, didIgnite ? 'color: #0f0; font-weight: bold' : 'color: #f00; font-weight: bold');
+
+      if (didIgnite) {
+        // Immediately update the fire overlay so ignition is visible
+        console.log('%c[App] Updating fire overlay...', 'color: #ff8800');
+        if (engine._updateOverlay) {
+          engine._updateOverlay();
+          console.log('%c[App] Fire overlay updated (new dataURL pushed to Cesium)', 'color: #0f0');
+        } else {
+          console.error('[App] engine._updateOverlay is not defined!');
+        }
+        setFireStats(engine.getStats());
+        setFireRunning(true);
+
+        // Add ignition marker
+        viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(lng, lat, 100),
+          point: { pixelSize: 10, color: Cesium.Color.RED, outlineColor: Cesium.Color.YELLOW, outlineWidth: 2 },
+          label: {
+            text: 'IGNITION',
+            font: '10px monospace',
+            fillColor: Cesium.Color.YELLOW,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -14),
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 12000),
+          },
+        });
+      }
+
+      // Stay in ignite mode so user can click multiple ignition points
+      // Click IGNITE button again or CANCEL to exit
     }
 
     return () => {
       cancelAnimationFrame(animFrame);
       if (fireIntervalRef.current) clearInterval(fireIntervalRef.current);
       handler.destroy();
+      if (fireOverlayRef.current && fireOverlayRef.current.destroy) {
+        fireOverlayRef.current.destroy();
+      }
       if (viewerRef.current && !viewerRef.current.isDestroyed()) {
         viewerRef.current.destroy();
         viewerRef.current = null;
@@ -368,12 +445,17 @@ export default function App() {
     }
 
     if (fireRunning && fireEngineRef.current) {
-      const tickMs = Math.max(100, 500 / fireSpeed);
+      const tickMs = Math.max(200, 1000 / fireSpeed);
+      console.log(`%c[App] Starting fire simulation interval: ${tickMs}ms per tick (speed=${fireSpeed}x)`, 'color: #ff8800; font-weight: bold');
       fireIntervalRef.current = setInterval(() => {
         const engine = fireEngineRef.current;
+        if (!engine || (viewerRef.current && viewerRef.current.isDestroyed())) return;
         engine.tick();
+        if (engine._updateOverlay) engine._updateOverlay();
         setFireStats(engine.getStats());
       }, tickMs);
+    } else {
+      console.log(`%c[App] Fire sim interval cleared (running=${fireRunning}, engine=${!!fireEngineRef.current})`, 'color: #888');
     }
 
     return () => {
@@ -393,6 +475,7 @@ export default function App() {
     if (fuelOverlayRef.current) {
       fuelOverlayRef.current.show = showFuelMap;
     }
+    // firePoints is a PointPrimitiveCollection — toggle via show property
     if (fireOverlayRef.current) {
       fireOverlayRef.current.show = !showFuelMap;
     }
@@ -451,8 +534,8 @@ export default function App() {
       {/* ---- Ignite Mode Banner ---- */}
       {igniteMode && (
         <div className="ignite-banner">
-          IGNITE MODE — Click anywhere on the terrain to start a fire
-          <button onClick={() => { setIgniteMode(false); igniteModeRef.current = false; }}>CANCEL</button>
+          IGNITE MODE — Click on the 3D terrain to start fires (multiple clicks allowed)
+          <button onClick={() => { setIgniteMode(false); igniteModeRef.current = false; }}>DONE</button>
         </div>
       )}
 
@@ -466,6 +549,7 @@ export default function App() {
             className={`ignite-btn ${igniteMode ? 'active' : ''}`}
             onClick={() => {
               const next = !igniteMode;
+              console.log(`%c[App] IGNITE button clicked, mode: ${next ? 'ON' : 'OFF'}`, 'color: #ff4400; font-weight: bold');
               setIgniteMode(next);
               igniteModeRef.current = next;
             }}
@@ -477,6 +561,7 @@ export default function App() {
             onClick={() => {
               if (fireEngineRef.current) {
                 fireEngineRef.current.reset();
+                if (fireEngineRef.current._updateOverlay) fireEngineRef.current._updateOverlay();
                 setFireStats(null);
                 setFireRunning(false);
               }

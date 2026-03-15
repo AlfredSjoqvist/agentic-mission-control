@@ -15,13 +15,13 @@
 export const GRID_ROWS = 256;
 export const GRID_COLS = 256;
 
-// Map extent (degrees) — expanded to cover full screen area
-const LAT_MIN = 33.990;
-const LAT_MAX = 34.100;
-const LNG_MIN = -118.620;
-const LNG_MAX = -118.430;
+// Map extent (degrees) — expanded to cover the full visible Google Maps viewport
+const LAT_MIN = 33.950;
+const LAT_MAX = 34.130;
+const LNG_MIN = -118.680;
+const LNG_MAX = -118.370;
 
-const CELL_SIZE_M = 50; // ~50m per cell (realistic for CA chaparral)
+const CELL_SIZE_M = 95; // ~95m per cell (expanded grid covers ~24km × 28km)
 
 // ─── Cell States ─────────────────────────────────────────────────────────────
 export const UNBURNED = 0;
@@ -35,13 +35,14 @@ export const RETARDANT = 3; // retardant-treated, greatly reduced spread probabi
 // fuelLoad = tons/acre, SAV = surface-area-to-volume ratio (1/ft)
 const FUEL_MODELS = {
   // NFFL 4: Chaparral (6ft) — dominant Palisades hillside fuel
+  // Base rates tuned for ~95m cells — aggressive but containable with full response
   chaparral:    { baseRate: 0.12, intensity: 1.0,  moistureSensitivity: 1.2, extinctionMoisture: 20, fuelLoad: 13.0, SAV: 2000 },
   // NFFL 1: Short grass — coastal bluffs, cleared areas
-  grass:        { baseRate: 0.18, intensity: 0.6,  moistureSensitivity: 1.5, extinctionMoisture: 12, fuelLoad: 0.74, SAV: 3500 },
+  grass:        { baseRate: 0.16, intensity: 0.6,  moistureSensitivity: 1.5, extinctionMoisture: 12, fuelLoad: 0.74, SAV: 3500 },
   // NFFL 10: Timber litter (heavy) — canyon riparian, oak woodland
-  timber:       { baseRate: 0.06, intensity: 0.8,  moistureSensitivity: 0.8, extinctionMoisture: 25, fuelLoad: 12.0, SAV: 2000 },
+  timber:       { baseRate: 0.07, intensity: 0.8,  moistureSensitivity: 0.8, extinctionMoisture: 25, fuelLoad: 12.0, SAV: 2000 },
   // SB NB-U: Urban/developed — structure-to-structure via embers & radiant heat
-  urban:        { baseRate: 0.03, intensity: 0.4,  moistureSensitivity: 0.5, extinctionMoisture: 40, fuelLoad: 2.0,  SAV: 1500 },
+  urban:        { baseRate: 0.04, intensity: 0.4,  moistureSensitivity: 0.5, extinctionMoisture: 40, fuelLoad: 2.0,  SAV: 1500 },
   // NB1: Non-burnable — ocean, rock, roads, water
   rock_bare:    { baseRate: 0.0,  intensity: 0.0,  moistureSensitivity: 0.0, extinctionMoisture: 0,  fuelLoad: 0.0,  SAV: 0 },
 };
@@ -123,14 +124,14 @@ export class FireSpreadEngine {
         const noise = fbmNoise(nx * 6, ny * 6, 42.0) * 200;
         this.elevation[idx] = baseElev + ridge + noise;
 
-        // Ocean detection — real Palisades coastline geometry
-        // Coastline reference points (lat → grid ny):
-        //   LNG -118.620 (nx=0, Malibu):        LAT ~34.040 → ny ~0.545
-        //   LNG -118.520 (nx=0.53, Getty Villa): LAT ~34.025 → ny ~0.682
-        //   LNG -118.430 (nx=1, Santa Monica):   LAT ~33.998 → ny ~0.927
-        // Quadratic fit: coastY ≈ 0.54 + 0.30·nx + 0.09·nx²
-        const coastY = 0.54 + nx * 0.30 + nx * nx * 0.09
-                      + Math.sin(nx * 8) * 0.012;  // small cove/headland detail
+        // Ocean detection — Palisades coastline
+        // Grid covers 33.950–34.130°N × 118.680–118.370°W (0.18° lat, 0.31° lng)
+        // Real coastline: ~34.01°N at Malibu (west) to ~33.99°N at Santa Monica (east)
+        // ny = 1 - (lat - LAT_MIN)/(LAT_MAX - LAT_MIN)
+        // At 34.01°N: ny = 1 - (34.01-33.95)/0.18 = 1 - 0.333 = 0.667
+        // At 33.99°N: ny = 1 - (33.99-33.95)/0.18 = 1 - 0.222 = 0.778
+        // Coast goes from ny≈0.67 (west) to ny≈0.78 (east)
+        const coastY = 0.67 + nx * 0.11;
         if (ny > coastY) {
           this.fuelType[idx] = 4; // rock_bare (ocean — non-combustible)
           this.elevation[idx] = 0;
@@ -213,6 +214,51 @@ export class FireSpreadEngine {
           }
         }
       }
+    }
+  }
+
+  // ─── Suppress burning cells (water/foam from engines, heli) ────────────
+  // Returns number of cells actually suppressed
+  suppressCell(row, col, radius = 1) {
+    let count = 0;
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (dr * dr + dc * dc > radius * radius) continue;
+        const r = row + dr, c = col + dc;
+        if (r >= 0 && r < this.rows && c >= 0 && c < this.cols) {
+          const idx = r * this.cols + c;
+          if (this.cells[idx] === BURNING) {
+            this.cells[idx] = BURNED;
+            count++;
+          }
+        }
+      }
+    }
+    return count;
+  }
+
+  // ─── Build fireline (hand crew, dozer, hotshot) ───────────────────────
+  // Bresenham line of RETARDANT cells between two points
+  buildFireline(r1, c1, r2, c2, width = 1, durationMinutes = 60) {
+    const dr = Math.abs(r2 - r1), dc = Math.abs(c2 - c1);
+    const sr = r1 < r2 ? 1 : -1, sc = c1 < c2 ? 1 : -1;
+    let err = dr - dc, cr = r1, cc = c1;
+    const maxSteps = dr + dc + 2;
+    for (let step = 0; step <= maxSteps; step++) {
+      for (let w = -width; w <= width; w++) {
+        const wr = cr + (dc > dr ? 0 : w), wc = cc + (dc > dr ? w : 0);
+        if (wr >= 0 && wr < this.rows && wc >= 0 && wc < this.cols) {
+          const idx = wr * this.cols + wc;
+          if (this.cells[idx] === UNBURNED) {
+            this.cells[idx] = RETARDANT;
+            this.retardantTimer[idx] = durationMinutes;
+          }
+        }
+      }
+      if (cr === r2 && cc === c2) break;
+      const e2 = 2 * err;
+      if (e2 > -dc) { err -= dc; cr += sr; }
+      if (e2 < dr) { err += dr; cc += sc; }
     }
   }
 
@@ -390,7 +436,7 @@ export class FireSpreadEngine {
 
         // Probability of ember generation per burning cell per timestep
         // Higher wind = more embers. Higher intensity = more embers.
-        const emberProb = 0.001 * fuel.intensity * (this.windSpeed / 20);
+        const emberProb = 0.0004 * fuel.intensity * (this.windSpeed / 20); // reduced for 95m cells
 
         if (Math.random() < emberProb) {
           // Ember transport: travel downwind, distance proportional to wind speed
@@ -440,9 +486,9 @@ export class FireSpreadEngine {
         const idx = r * cols + c;
         if (this.cells[idx] !== BURNING) continue;
 
-        // Burn duration: cells burn for 3-8 timesteps depending on fuel
+        // Burn duration: cells burn for 8-20 timesteps depending on fuel
         const fuelName = this.fuelModels[this.fuelType[idx]];
-        const burnDuration = fuelName === 'grass' ? 3 : fuelName === 'chaparral' ? 6 : 8;
+        const burnDuration = fuelName === 'grass' ? 8 : fuelName === 'chaparral' ? 15 : 20;
         if (this.timestep - this.burnTime[idx] > burnDuration) {
           toBurnOut.push(idx);
           continue;

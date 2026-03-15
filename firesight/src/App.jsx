@@ -1,11 +1,13 @@
-import React, { useState, useCallback, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useRef, useMemo, useEffect } from 'react';
 import TerrainScene from './components/TerrainScene.jsx';
+// ICSGraph embedded via iframe for exact fidelity with the standalone app
 import AgentPanel, { LargeAgentPanel } from './components/AgentPanel.jsx';
 import Timeline, { sliderToTimeSlot } from './components/Timeline.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import { colors, typography, radii, panelStyle } from './styles/designTokens.js';
 import { createPalisadesScenario } from './fireSpreadEngine.js';
+import { ICSEngine, NODES as ICS_NODES } from './icsEngine.js';
 
 // Design target — layout is authored at this size and proportionally scaled
 const TW = 1440;
@@ -17,6 +19,37 @@ export default function App() {
   const [scale, setScale] = useState(1);
   const scaleRef = useRef(1);
   const [simulationMode, setSimulationMode] = useState(false);
+  // Both views always visible side by side
+
+  // Shared ICS Engine — single instance used by both views
+  const icsEngineRef = useRef(null);
+  if (!icsEngineRef.current) {
+    icsEngineRef.current = new ICSEngine();
+  }
+
+  // Decision queue — poll ICS engine for pending AI decisions
+  const [decisions, setDecisions] = useState([]);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const eng = icsEngineRef.current;
+      if (!eng) return;
+      const pending = eng.getPendingDecisions();
+      const resolved = eng.getResolvedDecisions();
+      setDecisions([...pending, ...resolved]);
+    }, 500);
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleApprove = useCallback((id) => {
+    icsEngineRef.current?.approveDecision(id);
+  }, []);
+  const handleOverride = useCallback((id) => {
+    icsEngineRef.current?.overrideDecision(id);
+  }, []);
+
+  // Live data from simulation for agent panels
+  const [liveData, setLiveData] = useState(null);
+
   const [activeLayers, setActiveLayers] = useState({
     fireSpread: true,
     wind: false,
@@ -85,98 +118,16 @@ export default function App() {
         height: TH,
         transformOrigin: 'top left',
         transform: `scale(${scale})`,
-        display: 'grid',
-        gridTemplateRows: '44px 1fr 56px',
-        gridTemplateColumns: '240px 1fr 210px',
-        gridTemplateAreas: `
-          "header  header  header"
-          "left    terrain right"
-          "timeline timeline timeline"
-        `,
-        gap: '8px',
-        padding: '8px',
+        display: 'flex',
+        gap: 0,
         boxSizing: 'border-box',
         background: colors.bg,
       }}>
 
-        {/* ── HEADER BAR ──────────────────────────────────────── */}
-        <header style={{
-          gridArea: 'header',
-          ...panelStyle,
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 20px',
-          gap: '16px',
+        {/* ── Map View ──────────── */}
+        <div style={{
+          flex: 3,
           overflow: 'hidden',
-        }}>
-          {/* Brand */}
-          <span style={{
-            fontFamily: typography.sansFamily,
-            fontSize: '15px',
-            fontWeight: typography.weights.semibold,
-            color: colors.text,
-            letterSpacing: '0.06em',
-            flexShrink: 0,
-          }}>
-            FireSight
-          </span>
-
-          <Separator />
-
-          {/* Incident — only warm highlight in the bar */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '7px',
-            flexShrink: 0,
-          }}>
-            <div style={{
-              width: 6, height: 6,
-              borderRadius: '50%',
-              background: colors.danger,
-              animation: 'pulse 2s ease-in-out infinite',
-            }} />
-            <span style={{
-              fontFamily: typography.sansFamily,
-              fontSize: '12px',
-              color: colors.danger,
-              fontWeight: typography.weights.medium,
-            }}>
-              Active Incident
-            </span>
-          </div>
-
-          <span style={{
-            fontFamily: typography.sansFamily,
-            fontSize: '12px',
-            color: colors.textSecondary,
-            flexShrink: 0,
-          }}>
-            Palisades Fire — Los Angeles County, CA
-          </span>
-
-          <div style={{ flex: 1 }} />
-
-          <StatusBar />
-        </header>
-
-        {/* ── LEFT: Pyro (large primary panel) ────────────────── */}
-        <aside style={{ gridArea: 'left', minHeight: 0 }}>
-          <LargeAgentPanel
-            panelId="pyro"
-            simulationMode={simulationMode}
-            onSimulate={handleSimulate}
-            fireStats={fireStats}
-          />
-        </aside>
-
-        {/* ── CENTER: Hero terrain scene ──────────────────────── */}
-        <main style={{
-          gridArea: 'terrain',
-          borderRadius: radii.lg,
-          overflow: 'hidden',
-          border: `1px solid ${colors.border}`,
-          boxShadow: '0 0 80px rgba(0,0,0,0.6)',
           position: 'relative',
           minHeight: 0,
         }}>
@@ -189,36 +140,23 @@ export default function App() {
             evacActive={evacActive}
             deployActive={deployActive}
             fireData={currentFireData}
+            icsEngine={icsEngineRef.current}
+            onLiveData={setLiveData}
           />
-          <TimeframePill timeSlot={timeSlot} simulationMode={simulationMode} />
-          {simulationMode && (
-            <LayerControl activeLayers={activeLayers} onToggle={toggleLayer} />
-          )}
-        </main>
-
-        {/* ── RIGHT: 3 compact stacked panels ────────────────── */}
-        <aside style={{
-          gridArea: 'right',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
-          minHeight: 0,
+        </div>
+        {/* ── ICS Command Chain ──────────── */}
+        <div style={{
+          flex: 2,
           overflow: 'hidden',
+          borderLeft: `1px solid ${colors.border}`,
+          minHeight: 0,
         }}>
-          <AgentPanel panelId="swarm"  onActivate={() => setSwarmActive(true)}  isActive={swarmActive}  />
-          <AgentPanel panelId="evac"   onActivate={() => setEvacActive(true)}   isActive={evacActive}   />
-          <AgentPanel panelId="deploy" onActivate={() => setDeployActive(true)} isActive={deployActive} />
-        </aside>
-
-        {/* ── TIMELINE ────────────────────────────────────────── */}
-        <footer style={{ gridArea: 'timeline', minHeight: 0 }}>
-          <Timeline
-            value={sliderValue}
-            onChange={setSliderValue}
-            timeSlot={timeSlot}
-            simulationMode={simulationMode}
+          <iframe
+            src="/ics-graph.html"
+            style={{ width: '100%', height: '100%', border: 'none' }}
+            title="ICS Command Chain"
           />
-        </footer>
+        </div>
 
         {/* ── CONTEXT MENU ────────────────────────────────────── */}
         {contextMenu && (
@@ -297,6 +235,90 @@ const LAYER_DEFS = [
   { key: 'slope',      label: 'Slope',        color: colors.fireThreeHour },
   { key: 'embers',     label: 'Embers',       color: colors.fireOneHour   },
 ];
+
+// ─── Decision Queue — AI agents propose, commander approves/overrides ────────
+const URGENCY_COLORS = { critical:'#EF4444', high:'#F59E0B', medium:'#3B82F6', low:'#6B7280' };
+const AGENT_LABELS = { ai_deploy:'DEPLOY', ai_evac:'EVAC', ai_overwatch:'OVERWATCH', ai_swarm:'SWARM', ai_predict:'PREDICT' };
+
+function DecisionQueue({ decisions, onApprove, onOverride }) {
+  const pending = decisions.filter(d => d.status === 'pending');
+  const recent = decisions.filter(d => d.status !== 'pending').slice(-3);
+  return (
+    <div style={{
+      position: 'absolute',
+      bottom: 10, left: 10,
+      maxWidth: 340, maxHeight: 280,
+      overflowY: 'auto',
+      zIndex: 20,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 4,
+    }}>
+      {pending.map(d => {
+        const uc = URGENCY_COLORS[d.urgency] || '#3B82F6';
+        const agLabel = AGENT_LABELS[d.agentId] || d.agentId;
+        return (
+          <div key={d.id} style={{
+            background: 'rgba(10,14,22,0.92)',
+            border: `1px solid ${uc}50`,
+            borderLeft: `3px solid ${uc}`,
+            borderRadius: 6,
+            padding: '6px 10px',
+            backdropFilter: 'blur(10px)',
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+              <span style={{ fontSize:8, fontWeight:700, color:uc, fontFamily:typography.monoFamily, letterSpacing:'0.06em' }}>
+                {agLabel}
+              </span>
+              <span style={{ fontSize:7, fontWeight:600, color:uc, background:uc+'20', padding:'1px 4px', borderRadius:3, fontFamily:typography.sansFamily, textTransform:'uppercase' }}>
+                {d.urgency}
+              </span>
+              <span style={{ flex:1 }} />
+              <span style={{ fontSize:7, color:'#64748B', fontFamily:typography.monoFamily }}>
+                auto {Math.max(0, Math.round(d.timeout - (Date.now()/1000 - d.createdAt)))}s
+              </span>
+            </div>
+            <div style={{ fontSize:9, color:'#CBD5E1', fontFamily:typography.sansFamily, lineHeight:'13px', marginBottom:5 }}>
+              {d.reasoning}
+            </div>
+            <div style={{ display:'flex', gap:4 }}>
+              <button onClick={() => onApprove(d.id)} style={{
+                flex:1, padding:'3px 0', fontSize:8, fontWeight:700, fontFamily:typography.sansFamily,
+                background:uc+'25', border:`1px solid ${uc}60`, borderRadius:3, color:uc,
+                cursor:'pointer', letterSpacing:'0.06em',
+              }}>APPROVE</button>
+              <button onClick={() => onOverride(d.id)} style={{
+                padding:'3px 8px', fontSize:8, fontWeight:700, fontFamily:typography.sansFamily,
+                background:'transparent', border:'1px solid #475569', borderRadius:3, color:'#64748B',
+                cursor:'pointer', letterSpacing:'0.06em',
+              }}>DENY</button>
+            </div>
+          </div>
+        );
+      })}
+      {recent.map(d => {
+        const isApproved = d.status === 'approved' || d.status === 'auto';
+        return (
+          <div key={d.id} style={{
+            background: 'rgba(10,14,22,0.7)',
+            border: `1px solid ${isApproved ? '#22C55E30' : '#EF444430'}`,
+            borderLeft: `3px solid ${isApproved ? '#22C55E' : '#EF4444'}`,
+            borderRadius: 6,
+            padding: '4px 10px',
+            opacity: 0.6,
+          }}>
+            <span style={{ fontSize:8, color:isApproved?'#22C55E':'#EF4444', fontFamily:typography.monoFamily, fontWeight:700 }}>
+              {d.status === 'auto' ? 'AUTO-APPROVED' : d.status === 'approved' ? 'APPROVED' : 'DENIED'}
+            </span>
+            <span style={{ fontSize:8, color:'#64748B', fontFamily:typography.sansFamily, marginLeft:6 }}>
+              {(AGENT_LABELS[d.agentId]||d.agentId)}: {d.actionKey}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function LayerControl({ activeLayers, onToggle }) {
   return (

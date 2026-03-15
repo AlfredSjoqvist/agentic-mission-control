@@ -365,6 +365,20 @@ app.get('/api/proxy-asset', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Client-side log relay (browser → server terminal) ────────────────
+app.post('/api/log', (req, res) => {
+  const entries = req.body;
+  if (Array.isArray(entries)) {
+    for (const e of entries) {
+      const lvl = (e.level || 'log').toUpperCase().padEnd(5);
+      console.log(`[CLIENT ${lvl}] ${e.msg}`);
+    }
+  } else if (entries && entries.msg) {
+    console.log(`[CLIENT] ${entries.msg}`);
+  }
+  res.json({ ok: true });
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`FireSight server running on http://localhost:${PORT}`);

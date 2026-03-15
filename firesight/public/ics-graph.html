@@ -7,6 +7,7 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0A0E17;color:#E2E8F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;height:100vh;width:100vw}
+#ui,#legend,#stats,#msg-log,#event-banner,#timeline-bar{display:none!important}
 canvas{display:block}
 #ui{position:absolute;top:0;left:0;right:0;pointer-events:none}
 #title-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:rgba(10,14,23,.85);border-bottom:1px solid #1E2636;pointer-events:auto}
@@ -57,7 +58,8 @@ canvas{display:block}
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="ui">
+<!-- UI panels hidden — graph + tooltip only -->
+<div id="ui" style="display:none">
   <div id="title-bar">
     <div style="display:flex;align-items:baseline">
       <h1>ICS WILDFIRE COMMAND CHAIN</h1>
@@ -65,7 +67,7 @@ canvas{display:block}
     </div>
     <div id="sim-controls">
       <button id="play-btn" onclick="togglePlay()">PLAY</button>
-      <button style="background:#111827;border:1px solid #1E2636;color:#64748B;padding:5px 10px;border-radius:4px;font-size:10px;cursor:pointer" onclick="resetSim()">RESET</button>
+      <button onclick="resetSim()">RESET</button>
       <div id="speed-wrap">
         <span>SPEED:</span>
         <input type="range" id="speed-slider" min="0.1" max="10" step="0.1" value="1" oninput="setSpeed(this.value)">
@@ -75,40 +77,25 @@ canvas{display:block}
   </div>
 </div>
 <div id="tooltip"></div>
-<div id="legend">
-  <h3>NODE TYPES</h3>
-  <div class="leg-row"><div class="leg-dot" style="background:#EF4444"></div> Command (IC / Unified Command)</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#A78BFA"></div> General Staff (Section Chiefs)</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#FBBF24"></div> Branch / Division / Group</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#22D3EE"></div> Tactical Resources</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#34D399"></div> External Systems (Sensors, Dispatch)</div>
-  <div class="leg-row"><div class="leg-dot" style="background:#F472B6"></div> AI Agents (FireSight)</div>
-  <h3 style="margin-top:10px">EDGE TYPES</h3>
-  <div class="leg-row"><div class="leg-line" style="background:#FBBF24"></div> Command / Orders</div>
-  <div class="leg-row"><div class="leg-line" style="background:#22D3EE"></div> Intelligence / Reports</div>
-  <div class="leg-row"><div class="leg-line" style="background:#34D399"></div> Coordination</div>
-  <div class="leg-row"><div class="leg-line" style="background:#F472B6"></div> AI Augmentation</div>
-  <div class="leg-row"><div class="leg-line" style="background:#EF4444;opacity:.5"></div> Safety / Life Safety</div>
+<div id="legend" style="display:none"></div>
+<div id="stats" style="display:none">
+  <span class="stat-val" id="s-time">T+0:00</span>
+  <span class="stat-val" id="s-acres">0</span>
+  <span class="stat-val" id="s-ros">0</span>
+  <span class="stat-val" id="s-contain">0%</span>
+  <span class="stat-val" id="s-nodes">0</span>
+  <span class="stat-val" id="s-edges">0</span>
+  <span class="stat-val" id="s-scenario">Standby</span>
+  <span class="stat-val" id="s-type">--</span>
+  <span class="stat-val" id="s-wind">SW 18mph</span>
+  <span class="stat-val" id="s-struct">0</span>
 </div>
-<div id="stats">
-  <h3>INCIDENT STATUS</h3>
-  <div class="stat-row"><span>Sim Time</span><span class="stat-val" id="s-time">T+0:00</span></div>
-  <div class="stat-row"><span>Fire Acres</span><span class="stat-val" id="s-acres">0</span></div>
-  <div class="stat-row"><span>ROS (ch/hr)</span><span class="stat-val" id="s-ros">0</span></div>
-  <div class="stat-row"><span>Containment</span><span class="stat-val" id="s-contain">0%</span></div>
-  <div class="stat-row"><span>Active Agents</span><span class="stat-val" id="s-nodes">0</span></div>
-  <div class="stat-row"><span>Info Flows</span><span class="stat-val" id="s-edges">0</span></div>
-  <div class="stat-row"><span>ICS Phase</span><span class="stat-val" id="s-scenario">Standby</span></div>
-  <div class="stat-row"><span>Incident Type</span><span class="stat-val" id="s-type">--</span></div>
-  <div class="stat-row"><span>Wind</span><span class="stat-val" id="s-wind">SW 18mph</span></div>
-  <div class="stat-row"><span>Structures at Risk</span><span class="stat-val" id="s-struct">0</span></div>
-</div>
-<div id="msg-log">
+<div id="msg-log" style="display:none">
   <h3>MESSAGE FLOW</h3>
   <div id="messages"></div>
 </div>
-<div id="event-banner"><div class="ev-time"></div><div class="ev-text"></div><div class="ev-detail"></div></div>
-<div id="timeline-bar"><div id="timeline-progress"></div></div>
+<div id="event-banner" style="display:none"><div class="ev-time"></div><div class="ev-text"></div><div class="ev-detail"></div></div>
+<div id="timeline-bar" style="display:none"><div id="timeline-progress"></div></div>
 
 <script>
 const canvas=document.getElementById('c');
@@ -249,8 +236,50 @@ const NODES={
     role:'Structure protection: triage, sprinklers, gel, foam.'},
   atgs:{label:'Air Tactical (OV-10A)',short:'ATGS',tier:'tactical',color:'#22D3EE',size:14,
     role:'Flies at 2000ft. Directs all air ops. Override authority on drones.'},
-  drones:{label:'UAS Fleet (×12)',short:'UAS',tier:'tactical',color:'#22D3EE',size:14,
-    role:'ISR, ember spotters, comms relay, safety overwatch, dragon eggs.'},
+  drones:{label:'UAS Fleet Control',short:'UAS',tier:'tactical',color:'#22D3EE',size:14,
+    role:'Coordinates all drone operations. Deconflicts airspace with manned aircraft.'},
+  // Individual drone types — activated as deployed
+  drone_scout:{label:'DFR Scouts (Skydio/M30T)',short:'SCOUT',tier:'tactical',color:'#22D3EE',size:11,
+    role:'DJI M30T + Skydio X10. 40mph. Thermal+visual. First on-scene fire confirmation.'},
+  drone_mapper:{label:'Mapping Fixed-Wing (eBee)',short:'MAPPER',tier:'tactical',color:'#60A5FA',size:11,
+    role:'senseFly eBee X / JOUAV CW-25. Systematic grid mapping, perimeter tracking.'},
+  drone_reaper:{label:'MQ-9 Reaper (HALE ISR)',short:'MQ-9',tier:'tactical',color:'#E2E8F0',size:13,
+    role:'General Atomics MQ-9. 230mph at 25kft. 27hr endurance. Wide-area persistent surveillance.'},
+  drone_safety:{label:'Safety Overwatch (Mavic 3T)',short:'SAFE-D',tier:'tactical',color:'#34D399',size:10,
+    role:'DJI Mavic 3T. Monitors crew positions. Verifies escape routes. Flags hazards.'},
+  drone_relay:{label:'Comms Relay UAS',short:'RELAY',tier:'tactical',color:'#A78BFA',size:10,
+    role:'Airborne repeater. Bridges P25 radio in canyon dead zones.'},
+  drone_ignis:{label:'IGNIS Aerial Ignition (M600)',short:'IGNIS',tier:'tactical',color:'#F97316',size:11,
+    role:'DJI M600 + IGNIS II. Dragon eggs (KMnO4 spheres). Backfire ops. 10-120 per min.'},
+  drone_suppress:{label:'FireSwarm Thunder (Heavy-lift)',short:'F-SWM',tier:'tactical',color:'#F472B6',size:11,
+    role:'Heavy-lift. 350kg water/retardant payload. Autonomous pickup and drop.'},
+  // Individual ground units matching map
+  eng_69a:{label:'Engine 69A (LAFD)',short:'E-69A',tier:'tactical',color:'#22D3EE',size:9,
+    role:'LAFD Station 69, Pacific Palisades. Pierce Type 3, 3-person crew, 500gal.'},
+  eng_69b:{label:'Engine 69B (LAFD)',short:'E-69B',tier:'tactical',color:'#22D3EE',size:9,
+    role:'LAFD Station 69, Pacific Palisades. Pierce Type 3, 3-person crew, 500gal.'},
+  eng_23:{label:'Engine 23 (LAFD)',short:'E-23',tier:'tactical',color:'#22D3EE',size:9,
+    role:'LAFD Station 23, Brentwood. Pierce Type 3, 3-person crew, 500gal.'},
+  tender_71:{label:'Water Tender 71 (LACoFD)',short:'WT-71',tier:'tactical',color:'#22D3EE',size:9,
+    role:'LA County Station 71, Malibu. International HV507, 4000gal.'},
+  heli_1:{label:'Helitack H-1 (Chinook)',short:'H-1',tier:'tactical',color:'#22D3EE',size:11,
+    role:'CH-47D Chinook, SMO Heliport. 2,600gal Bambi Bucket. 4-person crew.'},
+  vlat_1:{label:'VLAT AT-1 (DC-10)',short:'AT-1',tier:'tactical',color:'#22D3EE',size:12,
+    role:'DC-10 VLAT, Van Nuys ATB. 11,600gal Phos-Chek. 35min turnaround.'},
+  seat_1:{label:'SEAT SE-1 (Air Tractor)',short:'SE-1',tier:'tactical',color:'#22D3EE',size:10,
+    role:'AT-802 Air Tractor, Van Nuys ATB. 800gal retardant.'},
+  lead_1:{label:'Lead Plane LP-1 (OV-10A)',short:'LP-1',tier:'tactical',color:'#22D3EE',size:10,
+    role:'OV-10A Bronco, Van Nuys ATB. Scouts drop zone, guides tanker approach.'},
+  ihc_8:{label:'Hotshot Crew IHC-8',short:'IHC-8',tier:'tactical',color:'#22D3EE',size:11,
+    role:'Camp 8 Malibu Canyon. 20-person elite. Hand line, burnout/backfire.'},
+  hc_2:{label:'Hand Crew HC-2',short:'HC-2',tier:'tactical',color:'#22D3EE',size:9,
+    role:'Camp 8 Malibu. Type 2, 20-person crew. Pulaski, McLeod tools.'},
+  hc_5:{label:'Hand Crew HC-5',short:'HC-5',tier:'tactical',color:'#22D3EE',size:9,
+    role:'Topanga Station. Type 2, 20-person crew.'},
+  dozer_1:{label:'Dozer DZ-1 (Cat D8)',short:'DZ-1',tier:'tactical',color:'#22D3EE',size:10,
+    role:'Caltrans Sepulveda. Cat D8T, 10-20ft firebreak blade.'},
+  struct_19:{label:'Structure Engine SP-19',short:'SP-19',tier:'tactical',color:'#22D3EE',size:10,
+    role:'LAFD Station 19, Brentwood. Pierce Arrow XT, foam/gel. 4-person crew.'},
   traffic:{label:'Traffic Control',short:'TRAF',tier:'tactical',color:'#22D3EE',size:10,
     role:'Law enforcement at intersections. Contraflow. Route management.'},
   // EXTERNAL SENSORS (always on — they detect autonomously)
@@ -437,8 +466,21 @@ const AGENT_TICK={
       agentSend('dispatch','ic',`INITIAL DISPATCH: Vegetation fire, est. ${Math.round(Math.max(0.25,FIRE.area))} acre, fast-moving. Dispatching: 3 Type 3 engines (ETA 8min), 1 helitack (ETA 12min), 1 water tender (ETA 6min). IC designation: Engine 51 Captain.`,'command');
       // Activate IA resources with ETAs (resources must travel to incident)
       agents.engines.active=true;litNodes.add('engines');agents.engines.state.eta=simTime+8*60;agents.engines.state.enRoute=true;
+      // Individual engines
+      ['eng_69a','eng_69b','eng_23'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      agentSend('dispatch','eng_69a','DISPATCH: Respond to vegetation fire, Pacific Palisades. Engine 69A first due.','command');
+      agentSend('dispatch','eng_69b','DISPATCH: Engine 69B, second due. Support E-69A right flank.','command');
+      agentSend('dispatch','eng_23','DISPATCH: Engine 23, third due from Brentwood. Structure standby.','command');
       agents.heli.active=true;litNodes.add('heli');agents.heli.state.eta=simTime+12*60;agents.heli.state.enRoute=true;
+      agents.heli_1.active=true;litNodes.add('heli_1');
+      agentSend('dispatch','heli_1','DISPATCH: Helitack H-1 Chinook, launch from SMO. Bucket drops on fire head.','command');
       agents.tender.active=true;litNodes.add('tender');agents.tender.state.eta=simTime+6*60;agents.tender.state.enRoute=true;
+      agents.tender_71.active=true;litNodes.add('tender_71');
+      agentSend('dispatch','tender_71','DISPATCH: Water Tender 71, stage at Sunset/PCH. Shuttle water to fireline.','command');
+      // Scouts and reaper are already airborne (pre-detection patrol)
+      ['drone_scout','drone_reaper','drone_relay'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      agentSend('drones','drone_scout','VECTOR: All scouts redirect to fire origin. Confirm perimeter.','command');
+      agentSend('drones','drone_reaper','MQ-9: Maintain overhead ISR at 25kft. Downlink thermal to SIT.','command');
       icsPhase='initial';
     }
     // Report resource dispatch status to ops chief if active
@@ -475,14 +517,27 @@ const AGENT_TICK={
       // Tactical resources ordered but have ETAs
       ['hotshots','dozer','seat','lead_plane','vlat','hand_crew'].forEach(id=>{
         agents[id].active=true;litNodes.add(id);
-        agents[id].state.eta=simTime+Math.round((10+Math.random()*20)*60); // 10-30 min ETA
+        agents[id].state.eta=simTime+Math.round((10+Math.random()*20)*60);
         agents[id].state.enRoute=true;
       });
+      // Individual units for EA resources
+      ['ihc_8','hc_2','hc_5','dozer_1','vlat_1','seat_1','lead_1'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      agentSend('ops_chief','ihc_8','DEPLOY: IHC-8, hike in from Malibu Canyon. Hand line construction on south flank.','command');
+      agentSend('ops_chief','hc_2','DEPLOY: HC-2, support IHC-8. Cold trailing and mop-up behind main line.','command');
+      agentSend('ops_chief','hc_5','DEPLOY: HC-5, from Topanga. Anchor point construction at ridge saddle.','command');
+      agentSend('ops_chief','dozer_1','DEPLOY: DZ-1 Cat D8, cut firebreak along ridge road. 10ft minimum width.','command');
+      agentSend('air_ops','vlat_1','LAUNCH: DC-10 VLAT AT-1. Retardant line ahead of fire head. Lead plane will mark.','command');
+      agentSend('air_ops','seat_1','LAUNCH: SEAT SE-1. Flank drops. Fast turnaround. Coordinate with ATGS.','command');
+      agentSend('air_ops','lead_1','LAUNCH: Lead Plane LP-1. Scout drop zone, mark approach for VLAT.','command');
+      // Additional drone types for EA
+      ['drone_mapper','drone_safety'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      agentSend('drones','drone_mapper','LAUNCH: eBee mappers for systematic perimeter mapping. Grid pattern.','command');
+      agentSend('drones','drone_safety','LAUNCH: Mavic 3T safety overwatch. Monitor crew positions via IR.','command');
       // AI agents come online
       ['ai_overwatch','ai_predict','ai_swarm','ai_deploy'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
       agentSend('ic','ops_chief',`YOU ARE NOW OPS SECTION CHIEF. Establish Fire Branch + Air Ops. Divisions needed. IC retains strategic authority.`,'command');
       agentSend('ic','plan_chief',`PLANNING: Extended Attack authorized. Situation assessment and fire behavior prediction needed immediately.`,'command');
-      // Activate drones for AI
+      // UAS fleet control active
       agents.drones.active=true;litNodes.add('drones');
       showBanner('FIRESIGHT AI AGENTS ONLINE','OVERWATCH, PREDICT, SWARM, DEPLOY agents initializing');
     }
@@ -493,6 +548,11 @@ const AGENT_TICK={
       icsPhase='crisis';
       showBanner('TYPE 1 ESCALATION','Structures threatened — evacuation ordered');
       ['pio','le_branch','struct_group','struct_eng','ai_evac','genasys','traffic','div_bravo'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      // Struct engine + IGNIS drones for crisis
+      ['struct_19','drone_ignis','drone_suppress'].forEach(id=>{agents[id].active=true;litNodes.add(id)});
+      agentSend('struct_group','struct_19','DEPLOY: SP-19, structure triage in threat zone. Foam/gel priority structures.','command');
+      agentSend('drones','drone_ignis','LAUNCH: IGNIS M600 drones. Backfire ops authorized. Dragon eggs on south containment.','command');
+      agentSend('drones','drone_suppress','LAUNCH: FireSwarm Thunder. Autonomous water drops on hot spots.','command');
       agentSend('ic','pio',`ISSUE EVACUATION WARNING: Zones OR-1, OR-2, OR-3. Press briefing in 30 min.`,'command');
       agentSend('ic','le_branch',`EVACUATION ORDER: Zones OR-1, OR-2 MANDATORY. Zone OR-3 WARNING. Door-to-door.`,'command');
       agentSend('ic','ops_chief',`STRUCTURE PROTECTION: Activate Struct Group. Triage all structures in threat zone.`,'command');
@@ -1021,10 +1081,10 @@ const AGENT_TICK={
 
   // ── AI AGENTS ──
   ai_overwatch(a,dt){
-    a.tickInterval=5;
+    a.tickInterval=3;
     if(!a.active)return;
     // Synthesize all agent inputs into decision points
-    if(simTime-a.state.lastDP>20){
+    if(simTime-a.state.lastDP>8){
       a.state.lastDP=simTime;
       const threats=[];
       if(FIRE.windShifted)threats.push('wind shift active');
@@ -1040,10 +1100,10 @@ const AGENT_TICK={
   },
 
   ai_predict(a,dt){
-    a.tickInterval=6;
+    a.tickInterval=3;
     if(!a.active)return;
     // Run continuous fire predictions
-    if(simTime-a.state.lastPred>12){
+    if(simTime-a.state.lastPred>6){
       a.state.lastPred=simTime;
       const ros=Math.round(FIRE.ros);
       const area15=Math.round(FIRE.area*1.3);
@@ -1058,10 +1118,10 @@ const AGENT_TICK={
   },
 
   ai_swarm(a,dt){
-    a.tickInterval=5;
+    a.tickInterval=3;
     if(!a.active)return;
     // Manage drone fleet
-    if(agents.drones.active&&simTime-a.state.lastCmd>10){
+    if(agents.drones.active&&simTime-a.state.lastCmd>5){
       a.state.lastCmd=simTime;
       // K-means style: assign drones to highest-priority areas
       const priorities=[];
@@ -1077,16 +1137,16 @@ const AGENT_TICK={
       agentSend('ai_swarm','ai_overwatch',`Coverage update: All fronts monitored. ${FIRE.spots.length} spot fires tracked.`,'ai');
     }
     // Deconfliction with manned aircraft
-    if(agents.air_ops.active&&simTime-a.state.lastDeconf>15){
+    if(agents.air_ops.active&&simTime-a.state.lastDeconf>8){
       a.state.lastDeconf=simTime;
       agentSend('ai_swarm','air_ops',`DECONFLICTION: All drones at 400ft AGL. Manned aircraft corridor clear. TFR ${agents.vlat.active?'may be needed for VLAT':'inactive'}.`,'ai');
     }
   },
 
   ai_evac(a,dt){
-    a.tickInterval=8;
+    a.tickInterval=4;
     if(!a.active)return;
-    if(simTime-a.state.lastAnalysis>15){
+    if(simTime-a.state.lastAnalysis>7){
       a.state.lastAnalysis=simTime;
       const eta=Math.round(FIRE.etaMins(FIRE.community.x,FIRE.community.y));
       agentSend('ai_evac','ai_overwatch',`ZONE ANALYSIS: OR-1 (450 residents, 2 exits), OR-2 (320 residents, 1 exit — BOTTLENECK). Vulnerable: 12 mobility-impaired, 1 assisted living. Fire ETA ${eta} min.`,'ai');
@@ -1100,20 +1160,17 @@ const AGENT_TICK={
   },
 
   ai_deploy(a,dt){
-    a.tickInterval=6;
+    a.tickInterval=3;
     if(!a.active)return;
-    if(simTime-a.state.lastRec>12){
+    if(simTime-a.state.lastRec>6){
       a.state.lastRec=simTime;
-      // 10 Standard Orders check
       const orders10=['Weather reviewed','Fire behavior known','Actions based on current behavior','Escape routes identified','Lookout posted'];
       const failed=FIRE.windShifted&&!hasSent('ai_deploy','orders_recheck')?['#3: Update for wind shift']:[];
       if(failed.length){
         markSent('ai_deploy','orders_recheck');
-        // Alert Safety Officer — don't block directly, Safety has stop authority
         agentSend('ai_deploy','safety',`10 ORDERS ALERT: ${failed.join(', ')}. Safety Officer review required.`,'safety');
         agentSend('ai_deploy','ops_chief',`10 ORDERS UPDATE NEEDED: ${failed.join(', ')}. Safety reviewing.`,'intel');
       }
-      // Resource recommendation (Ops Chief approves/denies)
       agentSend('ai_deploy','ops_chief',`RESOURCE RECOMMENDATION: Pre-stage on ${FIRE.windShifted?'east':'north'} flank. ${FIRE.area>50?'Mutual aid RECOMMENDED.':''}(Awaiting Ops Chief approval)`,'ai');
       agentSend('ai_deploy','ai_overwatch',`Resource status: ${Object.values(agents).filter(x=>x.active).length} active. Containment ${Math.round(FIRE.containment)}%. Safety: ${failed.length?'BLOCKED':'GREEN'}.`,'ai');
       if(agents.log_chief.active&&FIRE.area>40){
@@ -1121,6 +1178,29 @@ const AGENT_TICK={
       }
     }
   },
+
+  // ── INDIVIDUAL UNIT TICKS (report status to parent category/division) ──
+  eng_69a(a,dt){ a.tickInterval=6; if(!a.active)return; if(simTime-a.state.lr>6){a.state.lr=simTime;agentSend('eng_69a','engines',`E-69A: Direct attack, pump-and-roll on right flank. Water ${Math.max(10,Math.round(100-simTime*0.4))}%.`,'intel');agentSend('eng_69a','div_alpha',`E-69A SITREP: Suppressing. ${FIRE.intensity>6?'Extreme heat.':'Holding.'}`, 'intel');} },
+  eng_69b(a,dt){ a.tickInterval=7; if(!a.active)return; if(simTime-a.state.lr>7){a.state.lr=simTime;agentSend('eng_69b','engines',`E-69B: Supporting E-69A. Hose lay 200ft. ${FIRE.intensity>6?'Extreme heat — backing off.':'Holding position.'}`,FIRE.intensity>6?'safety':'intel');} },
+  eng_23(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('eng_23','engines',`E-23: Structure standby Oak Ridge. ${FIRE.threatenedStructures>10?'Structures threatened — deploying foam.':'Monitoring.'}`, 'intel');} },
+  tender_71(a,dt){ a.tickInterval=10; if(!a.active)return; if(simTime-a.state.lr>10){a.state.lr=simTime;agentSend('tender_71','engines',`WT-71: Shuttle run complete. ${Math.round(4000-simTime*10)}gal remaining. ${simTime*10>3500?'REFILL NEEDED.':''}`, 'intel');} },
+  heli_1(a,dt){ a.tickInterval=5; if(!a.active)return; if(simTime-a.state.lr>5){a.state.lr=simTime;agentSend('heli_1','air_ops',`H-1 Chinook: Bucket drop #${Math.floor(simTime/15)+1}. ${FIRE.windShifted?'Wind shift — adjusting dip site.':'Dip site: lake 2.1mi south.'}`, 'intel');agentSend('heli_1','atgs',`H-1: On approach for drop.`, 'coord');} },
+  vlat_1(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('vlat_1','air_ops',`AT-1 VLAT: ${simTime<(a.state.eta||0)?'Inbound.':'On station. Retardant line established ahead of fire head.'}`, 'intel');agentSend('vlat_1','atgs',`VLAT: Full load, ready for drop run.`, 'coord');} },
+  seat_1(a,dt){ a.tickInterval=7; if(!a.active)return; if(simTime-a.state.lr>7){a.state.lr=simTime;agentSend('seat_1','air_ops',`SE-1 SEAT: Flank drop complete. Turnaround ${Math.round(8+Math.random()*4)} min.`, 'intel');} },
+  lead_1(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('lead_1','air_ops',`LP-1: Drop zone scouted. Marking approach for ${agents.vlat_1.active?'VLAT':'SEAT'}.`, 'intel');agentSend('lead_1','atgs',`Lead: Smoke mark placed. Clear for run.`, 'coord');} },
+  ihc_8(a,dt){ a.tickInterval=6; if(!a.active)return; if(simTime-a.state.lr>6){a.state.lr=simTime;const wh=((simTime-(a.state.ws||simTime))/3600);agentSend('ihc_8','hotshots',`IHC-8: Hand line ${Math.min(100,Math.round(wh*12))}%. Work hours ${wh.toFixed(1)}h. LCES verified.`, 'intel');agentSend('ihc_8','div_alpha',`IHC-8: Burnout ops in progress.`, 'intel');} },
+  hc_2(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('hc_2','hand_crew',`HC-2: Mop-up, cold trailing. ${FIRE.windShifted?'Wind shift — requesting safety check.':'Terrain difficult.'}`, 'intel');} },
+  hc_5(a,dt){ a.tickInterval=9; if(!a.active)return; if(simTime-a.state.lr>9){a.state.lr=simTime;agentSend('hc_5','hand_crew',`HC-5: Anchor point construction at ridge saddle. Progress steady.`, 'intel');} },
+  dozer_1(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('dozer_1','dozer',`DZ-1: Firebreak ${Math.min(100,Math.round(simTime*0.8))}% complete. 12ft wide. Terrain rocky.`, 'intel');agentSend('dozer_1','div_bravo',`DZ-1: Cutting break on east flank.`, 'intel');} },
+  struct_19(a,dt){ a.tickInterval=7; if(!a.active)return; if(simTime-a.state.lr>7){a.state.lr=simTime;agentSend('struct_19','struct_group',`SP-19: Foam deployed on ${Math.min(6,Math.floor(simTime/20))} structures. Gel application next.`, 'intel');} },
+  // Drone type ticks
+  drone_scout(a,dt){ a.tickInterval=4; if(!a.active)return; if(simTime-a.state.lr>4){a.state.lr=simTime;agentSend('drone_scout','drones',`SCOUTS: ${Math.min(6,Math.floor(simTime/10))} active. Thermal scan sector ${Math.floor(simTime/30)%4+1}.`, 'intel');if(agents.ai_swarm.active)agentSend('drone_scout','ai_swarm',`IR data: Hot spots at fire head. ROS confirmation.`, 'intel');} },
+  drone_mapper(a,dt){ a.tickInterval=6; if(!a.active)return; if(simTime-a.state.lr>6){a.state.lr=simTime;agentSend('drone_mapper','drones',`MAPPER: Grid pass ${Math.floor(simTime/40)+1}. Perimeter ${Math.round(FIRE.area*0.3)} km mapped.`, 'intel');if(agents.sit_unit.active)agentSend('drone_mapper','sit_unit',`Ortho update: Fire perimeter GIS layer refreshed.`, 'intel');} },
+  drone_reaper(a,dt){ a.tickInterval=5; if(!a.active)return; if(simTime-a.state.lr>5){a.state.lr=simTime;agentSend('drone_reaper','drones',`MQ-9: 25kft. Wide-area thermal — ${FIRE.spots.length} spot fires. Feed to SIT.`, 'intel');if(agents.ai_predict.active)agentSend('drone_reaper','ai_predict',`HALE feed: Full scene thermal. Velocity vector available.`, 'intel');} },
+  drone_safety(a,dt){ a.tickInterval=5; if(!a.active)return; if(simTime-a.state.lr>5){a.state.lr=simTime;agentSend('drone_safety','safety',`SAFETY UAS: Crew positions verified via IR. Escape routes ${FIRE.windShifted?'RECHECKED — clear.':'clear.'}`, 'intel');} },
+  drone_relay(a,dt){ a.tickInterval=8; if(!a.active)return; if(simTime-a.state.lr>8){a.state.lr=simTime;agentSend('drone_relay','comms',`RELAY: P25 bridge active. Coverage ${Math.min(100,70+simTime*0.5)}%.`, 'intel');} },
+  drone_ignis(a,dt){ a.tickInterval=7; if(!a.active)return; if(simTime-a.state.lr>7){a.state.lr=simTime;agentSend('drone_ignis','fire_branch',`IGNIS: Dragon egg drop #${Math.floor(simTime/20)+1}. Backfire ${Math.min(100,Math.round(simTime*1.2))}%.`, 'intel');} },
+  drone_suppress(a,dt){ a.tickInterval=15; if(!a.active)return; if(simTime-a.state.lr>15){a.state.lr=simTime;agentSend('drone_suppress','air_ops',`FIRESWARM: Autonomous drop #${Math.floor(simTime/18)+1}. 350kg payload delivered. RTB for refill.`, 'intel');} },
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1218,17 +1298,26 @@ function setScenario(){}  // placeholder for button compat
 function layoutNode(id,n,allIds){
   if(positions[id])return;
   const cx=W/2,cy=H/2;
-  const tierY={command:cy-280,staff:cy-140,branch:cy+20,tactical:cy+160,external:cy+300,ai:cy-60};
+  const tierY={command:cy-350,staff:cy-200,branch:cy-30,tactical:cy+160,external:cy+380,ai:cy-120};
   const tierNodes=allIds.filter(i=>NODES[i].tier===n.tier);
   const idx=tierNodes.indexOf(id);
   const count=tierNodes.length;
   if(n.tier==='ai'){
-    const sp=60;
-    positions[id]={x:cx+380+(Math.random()-.5)*20,y:(tierY.ai)+idx*sp-((count-1)*sp/2)+(Math.random()-.5)*10};
+    const sp=55;
+    positions[id]={x:cx+420+(Math.random()-.5)*15,y:(tierY.ai)+idx*sp-((count-1)*sp/2)+(Math.random()-.5)*8};
+  } else if(n.tier==='tactical'){
+    // Two rows for many tactical nodes
+    const cols=Math.ceil(count/2);
+    const row=idx<cols?0:1;
+    const colIdx=idx<cols?idx:idx-cols;
+    const colCount=row===0?cols:count-cols;
+    const spacing=Math.min(100,W*.85/colCount);
+    const startX=cx-(colCount-1)*spacing/2;
+    positions[id]={x:startX+colIdx*spacing+(Math.random()-.5)*10,y:tierY.tactical+row*70+(Math.random()-.5)*10};
   } else {
-    const spacing=Math.min(140,W*.8/count);
+    const spacing=Math.min(130,W*.85/count);
     const startX=cx-(count-1)*spacing/2;
-    positions[id]={x:startX+idx*spacing+(Math.random()-.5)*15,y:tierY[n.tier]+(Math.random()-.5)*15};
+    positions[id]={x:startX+idx*spacing+(Math.random()-.5)*12,y:tierY[n.tier]+(Math.random()-.5)*12};
   }
   velocities[id]={x:0,y:0};
 }
@@ -1288,10 +1377,51 @@ function simulate(){
 const TYPE_COLORS={command:'#FBBF24',intel:'#22D3EE',coord:'#34D399',ai:'#F472B6',safety:'#EF4444'};
 function spawnMsgParticle(from,to,type){
   for(let i=0;i<3;i++){
-    particles.push({from,to,progress:-i*0.06,speed:0.012+Math.random()*0.004,
-      color:TYPE_COLORS[type]||'#94A3B8',size:3+Math.random()*2});
+    particles.push({from,to,progress:-i*0.03,speed:0.006+Math.random()*0.003,
+      color:TYPE_COLORS[type]||'#94A3B8',size:2+Math.random()*1.5});
   }
 }
+
+// ━━ STRUCTURAL ICS HIERARCHY EDGES (always drawn, dimmed when inactive) ━━
+const ICS_HIERARCHY=[
+  // Command → Staff
+  ['ic','ops_chief'],['ic','plan_chief'],['ic','log_chief'],['ic','fin_chief'],
+  ['ic','safety'],['ic','pio'],['ic','liaison'],
+  // Ops → Branches
+  ['ops_chief','fire_branch'],['ops_chief','air_ops'],
+  // Fire Branch → Divisions
+  ['fire_branch','div_alpha'],['fire_branch','div_bravo'],['fire_branch','struct_group'],
+  // Divisions → Tactical
+  ['div_alpha','engines'],['div_alpha','hotshots'],['div_alpha','hand_crew'],
+  ['div_bravo','hand_crew'],['div_bravo','dozer'],
+  ['struct_group','struct_eng'],
+  // Air Ops → Aircraft
+  ['air_ops','atgs'],['air_ops','drones'],
+  ['atgs','vlat'],['atgs','seat'],['atgs','lead_plane'],['atgs','heli'],
+  // Drones → types
+  ['drones','drone_scout'],['drones','drone_mapper'],['drones','drone_reaper'],
+  ['drones','drone_relay'],['drones','drone_safety'],['drones','drone_ignis'],['drones','drone_suppress'],
+  // Plan → units
+  ['plan_chief','sit_unit'],['plan_chief','fban'],['plan_chief','res_unit'],
+  // Log → units
+  ['log_chief','comms'],['log_chief','medical'],
+  // Individual units
+  ['engines','eng_69a'],['engines','eng_69b'],['engines','eng_23'],
+  ['tender','tender_71'],['heli','heli_1'],['vlat','vlat_1'],['seat','seat_1'],
+  ['lead_plane','lead_1'],['hotshots','ihc_8'],['hand_crew','hc_2'],['hand_crew','hc_5'],
+  ['dozer','dozer_1'],['struct_eng','struct_19'],
+  // External
+  ['dispatch','engines'],['dispatch','heli'],['dispatch','tender'],
+  ['raws','fban'],['raws','ai_predict'],['satellite','sit_unit'],['satellite','ai_predict'],
+  ['alert_cam','dispatch'],
+  // Law enforcement
+  ['le_branch','traffic'],['le_branch','genasys'],
+  // AI agents → their domains
+  ['ai_overwatch','ai_predict'],['ai_overwatch','ai_swarm'],['ai_overwatch','ai_evac'],['ai_overwatch','ai_deploy'],
+  ['ai_swarm','drones'],['ai_deploy','ops_chief'],['ai_evac','le_branch'],['ai_predict','fban'],
+  // IROC/NWS
+  ['iroc','log_chief'],['nws','fban'],['firis','sit_unit'],
+];
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // RENDER
@@ -1366,19 +1496,34 @@ function draw(){
     }
   }
 
-  // Draw edges
+  // Draw structural hierarchy edges (always visible, very faint when inactive)
+  for(const[from,to] of ICS_HIERARCHY){
+    const a=positions[from],b=positions[to];
+    if(!a||!b)continue;
+    const bothActive=litNodes.has(from)&&litNodes.has(to);
+    const isMessageEdge=activeEdgeSet.has(from+'→'+to)||activeEdgeSet.has(to+'→'+from);
+    if(isMessageEdge)continue; // drawn below with color
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=bothActive?'rgba(100,120,150,0.15)':'rgba(30,38,54,0.12)';
+    ctx.lineWidth=0.5;ctx.stroke();
+  }
+
+  // Draw active message edges (faint, glowy)
   for(const key of activeEdgeSet){
     const[from,to]=key.split('→');
     const a=positions[from],b=positions[to];
     if(!a||!b)continue;
-    // Find message type for color
     const lastMsg=agents[to]?.inbox.find(m=>m.from===from);
     const tc=TYPE_COLORS[lastMsg?.type]||'#1E2636';
+    ctx.save();
+    ctx.shadowColor=tc;
+    ctx.shadowBlur=8;
     ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
-    ctx.strokeStyle=tc+'25';ctx.lineWidth=0.8;ctx.stroke();
+    ctx.strokeStyle=tc+'30';ctx.lineWidth=0.8;ctx.stroke();
+    ctx.restore();
   }
 
-  // Draw particles
+  // Draw particles (small, glowy)
   for(let i=particles.length-1;i>=0;i--){
     const p=particles[i];
     p.progress+=p.speed;
@@ -1388,13 +1533,13 @@ function draw(){
     if(p.progress<0)continue;
     const x=a.x+(b.x-a.x)*p.progress,y=a.y+(b.y-a.y)*p.progress;
     const alpha=p.progress<0.1?p.progress*10:p.progress>0.9?(1-p.progress)*10:1;
+    ctx.save();
+    ctx.shadowColor=p.color;
+    ctx.shadowBlur=10;
     ctx.beginPath();ctx.arc(x,y,p.size,0,Math.PI*2);
-    ctx.fillStyle=p.color+Math.round(alpha*200).toString(16).padStart(2,'0');
+    ctx.fillStyle=p.color+Math.round(alpha*255).toString(16).padStart(2,'0');
     ctx.fill();
-    const tx=a.x+(b.x-a.x)*Math.max(0,p.progress-0.08),ty=a.y+(b.y-a.y)*Math.max(0,p.progress-0.08);
-    ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(x,y);
-    ctx.strokeStyle=p.color+Math.round(alpha*80).toString(16).padStart(2,'0');
-    ctx.lineWidth=p.size*.6;ctx.stroke();
+    ctx.restore();
   }
 
   // Draw nodes
@@ -1402,36 +1547,38 @@ function draw(){
     const n=NODES[id],pos=positions[id];
     if(!n||!pos)continue;
     const isHovered=hoveredNode===id;
-    const isLit=!simStarted||litNodes.has(id);
+    const isLit=litNodes.has(id);
     const r=n.size*(isHovered?1.3:1);
 
     if(isLit){
-      if(isHovered||n.tier==='command'){
-        ctx.beginPath();ctx.arc(pos.x,pos.y,r+8,0,Math.PI*2);
-        ctx.fillStyle=n.color+'15';ctx.fill();
-      }
+      // Active node: glow + color
+      ctx.save();
+      ctx.shadowColor=n.color;
+      ctx.shadowBlur=12;
       ctx.beginPath();ctx.arc(pos.x,pos.y,r,0,Math.PI*2);
-      ctx.fillStyle=n.color+(isHovered?'40':'20');ctx.fill();
-      ctx.strokeStyle=n.color+(isHovered?'FF':'80');
-      ctx.lineWidth=isHovered?2:1;ctx.stroke();
+      ctx.fillStyle=n.color+(isHovered?'35':'18');ctx.fill();
+      ctx.strokeStyle=n.color+(isHovered?'CC':'66');
+      ctx.lineWidth=isHovered?1.5:0.8;ctx.stroke();
+      ctx.restore();
       if(n.tier==='ai'){
-        ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(pos.x,pos.y,r+3,0,Math.PI*2);
-        ctx.strokeStyle=n.color+'40';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
+        ctx.setLineDash([2,2]);ctx.beginPath();ctx.arc(pos.x,pos.y,r+3,0,Math.PI*2);
+        ctx.strokeStyle=n.color+'30';ctx.lineWidth=0.5;ctx.stroke();ctx.setLineDash([]);
       }
       ctx.fillStyle=isHovered?'#FFFFFF':n.color;
-      ctx.font=`${isHovered?'bold ':''}${r<14?8:10}px -apple-system,sans-serif`;
+      ctx.font=`${isHovered?'bold ':''}${r<14?7:9}px -apple-system,sans-serif`;
       ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText(n.short,pos.x,pos.y);
-      if(isHovered||r>=18){
-        ctx.fillStyle='#64748B';ctx.font='7px -apple-system,sans-serif';
-        ctx.fillText(n.label.length>25?n.label.substring(0,22)+'...':n.label,pos.x,pos.y+r+10);
+      if(isHovered||r>=22){
+        ctx.fillStyle='#4A5568';ctx.font='6px -apple-system,sans-serif';
+        ctx.fillText(n.label.length>25?n.label.substring(0,22)+'...':n.label,pos.x,pos.y+r+8);
       }
     } else {
-      ctx.beginPath();ctx.arc(pos.x,pos.y,r*0.7,0,Math.PI*2);
-      ctx.fillStyle='#1E263640';ctx.fill();
-      ctx.strokeStyle='#1E263680';ctx.lineWidth=0.5;ctx.stroke();
-      ctx.fillStyle='#1E2636';
-      ctx.font=`${r<14?7:8}px -apple-system,sans-serif`;
+      // Inactive node: greyed out, dim
+      ctx.beginPath();ctx.arc(pos.x,pos.y,r*0.6,0,Math.PI*2);
+      ctx.fillStyle='rgba(20,26,40,0.3)';ctx.fill();
+      ctx.strokeStyle='rgba(40,50,70,0.25)';ctx.lineWidth=0.4;ctx.stroke();
+      ctx.fillStyle='rgba(55,65,85,0.5)';
+      ctx.font=`${r<14?6:7}px -apple-system,sans-serif`;
       ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText(n.short,pos.x,pos.y);
     }
@@ -1439,9 +1586,9 @@ function draw(){
 
   // Tier labels
   const cx=W/2;
-  ctx.fillStyle='#1E2636';ctx.font='bold 9px -apple-system,sans-serif';ctx.textAlign='left';
+  ctx.fillStyle='rgba(30,38,54,0.5)';ctx.font='bold 8px -apple-system,sans-serif';ctx.textAlign='left';
   const tierLabels={command:'COMMAND',staff:'GENERAL STAFF',branch:'BRANCHES / DIVISIONS',tactical:'TACTICAL RESOURCES',external:'EXTERNAL SYSTEMS',ai:'AI AGENTS'};
-  const tierY2={command:H/2-280,staff:H/2-140,branch:H/2+20,tactical:H/2+160,external:H/2+300,ai:H/2-100};
+  const tierY2={command:H/2-350,staff:H/2-200,branch:H/2-30,tactical:H/2+160,external:H/2+380,ai:H/2-120};
   for(const[t,label]of Object.entries(tierLabels)){
     const y=tierY2[t]-2;
     if(t==='ai'){
@@ -1534,6 +1681,17 @@ window.addEventListener('message',function(ev){
   if(!ev.data||ev.data.type!=='firesight_fire_state')return;
   const d=ev.data;
 
+  // Reset when fire cleared (parent sends fireDetected=false after post-fire)
+  if(externalMode&&!d.fireDetected){
+    externalMode=false;
+    litNodes=new Set();
+    for(const id of Object.keys(agents))initAgent(id);
+    icsPhase='standby';
+    FIRE.reset();
+    particles=[];
+    return;
+  }
+
   // First time receiving fire detected: auto-start the sim in external mode
   if(!externalMode&&d.fireDetected){
     externalMode=true;
@@ -1572,8 +1730,44 @@ window.addEventListener('message',function(ev){
         FIRE.perimeter.push({x:FIRE.origin.x+Math.cos(a)*0.005,y:FIRE.origin.y+Math.sin(a)*0.005});
       }
     }
+
+    // Sync ICS phase from map
+    if(d.icsPhase){
+      const phaseMap={standby:'standby',initial:'initial',extended:'extended',crisis:'crisis',full:'full'};
+      if(phaseMap[d.icsPhase])icsPhase=phaseMap[d.icsPhase];
+    }
+
+    // ━━ SYNC ACTIVE NODES from map view ━━
+    // Light up nodes that correspond to actually deployed units/drones on the map
+    const allSynced=[...(d.activeUnits||[]),...(d.activeDrones||[]),...(d.activeAI||[])];
+    for(const nodeId of allSynced){
+      if(NODES[nodeId]&&!agents[nodeId].active){
+        agents[nodeId].active=true;
+        litNodes.add(nodeId);
+      }
+    }
+    // Also activate structural ICS nodes based on phase
+    if(d.icsPhase==='initial'||d.icsPhase==='extended'||d.icsPhase==='crisis'||d.icsPhase==='full'){
+      ['ic','safety','dispatch'].forEach(id=>{if(NODES[id]&&!agents[id].active){agents[id].active=true;litNodes.add(id)}});
+    }
+    if(d.icsPhase==='extended'||d.icsPhase==='crisis'||d.icsPhase==='full'){
+      ['ops_chief','plan_chief','fire_branch','air_ops','div_alpha','fban','sit_unit','atgs'].forEach(id=>{if(NODES[id]&&!agents[id].active){agents[id].active=true;litNodes.add(id)}});
+    }
+    if(d.icsPhase==='crisis'||d.icsPhase==='full'){
+      ['pio','le_branch','struct_group','div_bravo','genasys','traffic'].forEach(id=>{if(NODES[id]&&!agents[id].active){agents[id].active=true;litNodes.add(id)}});
+    }
+    if(d.icsPhase==='full'){
+      ['log_chief','fin_chief','iroc','comms','medical','liaison','res_unit','nws'].forEach(id=>{if(NODES[id]&&!agents[id].active){agents[id].active=true;litNodes.add(id)}});
+    }
   }
 });
+
+// Auto-play after 1 second if in standalone mode
+setTimeout(() => {
+  if (!playing && !externalMode) {
+    togglePlay();
+  }
+}, 1000);
 
 // ━━ INIT ━━
 initLayout();
