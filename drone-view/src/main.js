@@ -3,6 +3,7 @@ import { TilesRenderer, GlobeControls, Ellipsoid } from '3d-tiles-renderer';
 import { GoogleCloudAuthPlugin } from '3d-tiles-renderer/plugins';
 import { FireEngine, GRID_ROWS, GRID_COLS, LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX } from './fireEngine.js';
 import { FireOverlay } from './fireOverlay.js';
+import { FireDrone } from './drone.js';
 
 // ============================================================
 // CONFIG
@@ -87,6 +88,10 @@ camera.lookAt(lookTarget);
 const fireEngine = new FireEngine();
 const fireOverlay = new FireOverlay(ellipsoid, fireEngine, tiles);
 fireOverlay.addToScene(scene);
+
+// Drone
+const drone = new FireDrone(ellipsoid, tiles);
+drone.addToScene(scene);
 
 // Fire simulation speed: run N engine ticks per real second
 const TICKS_PER_SECOND = 12;
@@ -321,6 +326,9 @@ renderer.setAnimationLoop((time) => {
 
   // Always update fire overlay (for animation even when paused)
   fireOverlay.update(fireEngine, camera, tiles);
+
+  // Update drone
+  drone.update(fireEngine, camera);
 
   renderer.render(scene, camera);
 });
