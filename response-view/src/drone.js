@@ -12,7 +12,7 @@ import {
   LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX,
 } from './fireEngine.js';
 
-const DRONE_ALTITUDE = 180;  // meters above terrain — above smoke layer
+const DRONE_ALTITUDE = 80;   // meters above terrain
 const ORBIT_RADIUS = 400;    // meters from fire centroid
 const ORBIT_SPEED = 0.3;     // radians per second
 const MOVE_LERP = 0.02;      // how fast drone moves to new target
@@ -137,14 +137,13 @@ function buildDroneMesh(scale = 1.0) {
 }
 
 export class FireDrone {
-  constructor(ellipsoid, tiles, id = 'D-01 SCOUT', homeLat = 34.04, homeLng = -118.52) {
+  constructor(ellipsoid, tiles) {
     this.ellipsoid = ellipsoid;
     this.tiles = tiles;
-    this.id = id;
     this.time = 0;
     this.deployed = false;
 
-    this._homeLatLng = { lat: homeLat, lng: homeLng };
+    this._homeLatLng = { lat: 34.04, lng: -118.52 };
 
     this._targetPos = new THREE.Vector3();
     this._currentPos = new THREE.Vector3();
@@ -187,7 +186,7 @@ export class FireDrone {
     this.group.add(this._scanCircle);
 
     // Label
-    this._label = this._createLabel(id);
+    this._label = this._createLabel('D-01 SCOUT');
     this.group.add(this._label);
 
     this.group.position.copy(this._currentPos);

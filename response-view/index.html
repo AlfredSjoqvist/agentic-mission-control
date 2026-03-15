@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FireSight — Drone View (Digital Twin)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { display: block; }
+    #info {
+      position: absolute; top: 0; left: 0; width: 100%; padding: 12px 20px;
+      color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      pointer-events: none; z-index: 10;
+      display: flex; gap: 16px; align-items: center;
+    }
+    #info .tag {
+      background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px; padding: 4px 10px; letter-spacing: 1.5px; font-size: 10px;
+    }
+    #info .tag.fire { border-color: rgba(255,60,60,0.5); color: #ff4444; }
+    #info .tag.active { border-color: rgba(0,255,100,0.4); color: #0f0; }
+    #info .tag.drone { border-color: rgba(0,229,255,0.4); color: #00e5ff; }
+    #controls {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; z-index: 10;
+    }
+    #controls button {
+      background: rgba(0,0,0,0.75); border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 4px; color: #aaa; padding: 8px 16px; cursor: pointer;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1px;
+      transition: all 0.15s;
+    }
+    #controls button:hover { background: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.5); }
+    #controls button.active { border-color: rgba(0,229,255,0.5); color: #00e5ff; }
+    #vr-button {
+      position: absolute; bottom: 20px; right: 20px; z-index: 10;
+      background: rgba(0,229,255,0.15); border: 1px solid rgba(0,229,255,0.5);
+      border-radius: 4px; color: #00e5ff; padding: 10px 20px; cursor: pointer;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.5px;
+      transition: all 0.15s;
+    }
+    #vr-button:hover { background: rgba(0,229,255,0.25); }
+    #vr-button.hidden { display: none; }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 24px; height: 24px; pointer-events: none; z-index: 5;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ''; position: absolute; background: rgba(0,229,255,0.5);
+    }
+    #crosshair::before { width: 1px; height: 100%; left: 50%; top: 0; }
+    #crosshair::after { width: 100%; height: 1px; top: 50%; left: 0; }
+    #altitude-bar {
+      position: absolute; right: 60px; top: 50%; transform: translateY(-50%);
+      width: 4px; height: 200px; background: rgba(255,255,255,0.1); border-radius: 2px;
+      z-index: 5;
+    }
+    #altitude-indicator {
+      position: absolute; bottom: 50%; width: 14px; height: 2px; left: -5px;
+      background: #00e5ff; border-radius: 1px; transition: bottom 0.1s;
+    }
+    #altitude-label {
+      position: absolute; right: 80px; top: 50%; transform: translateY(-50%);
+      color: #00e5ff; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      letter-spacing: 1px; z-index: 5; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <span class="tag fire">FIRESIGHT</span>
+    <span class="tag drone">DRONE VIEW</span>
+    <span class="tag active" id="status">LOADING TILES...</span>
+    <span class="tag" id="coords"></span>
+    <span class="tag fire" id="fire-status" style="display:none"></span>
+  </div>
+  <div id="ignite-hint" style="position:absolute;bottom:60px;left:50%;transform:translateX(-50%);
+    color:rgba(255,100,60,0.8);font-family:'JetBrains Mono',monospace;font-size:11px;
+    letter-spacing:1px;pointer-events:none;z-index:10;text-shadow:0 0 8px rgba(255,60,0,0.5);">
+    DOUBLE-CLICK TO IGNITE FIRE
+  </div>
+  <div id="crosshair"></div>
+  <div id="altitude-bar"><div id="altitude-indicator"></div></div>
+  <div id="altitude-label"></div>
+  <div id="controls">
+    <button id="btn-palisades">PALISADES</button>
+    <button id="btn-overhead">OVERHEAD</button>
+    <button id="btn-street">STREET LEVEL</button>
+  </div>
+  <button id="vr-button" class="hidden">ENTER VR</button>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

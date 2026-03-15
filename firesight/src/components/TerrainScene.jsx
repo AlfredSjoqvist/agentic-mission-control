@@ -1,20 +1,17 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TerrainScene.jsx — FireSight: Interactive Wildfire Simulation
+//
+// Click to ignite. Recon drones patrol autonomously. Fire response begins
+// only when a drone's sensor detects the blaze.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { FireSpreadEngine, GRID_ROWS, GRID_COLS, BURNING, BURNED, RETARDANT, UNBURNED } from '../fireSpreadEngine.js';
+import { NODES as ICS_NODES, TYPE_COLORS as ICS_TYPE_COLORS } from '../icsEngine.js';
 
 // ── Remote Debug Logger — batches console logs to /api/log ───────────────────
-const _logQueue = [];
-let _logTimer = null;
 function debugLog(msg, level = 'log') {
   console[level](`[FS] ${msg}`);
-  _logQueue.push({ msg, level, t: Date.now() });
-  if (!_logTimer) {
-    _logTimer = setTimeout(() => {
-      _logTimer = null;
-      const batch = _logQueue.splice(0, 50);
-      if (batch.length) fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(batch) }).catch(() => {});
-    }, 500);
-  }
 }
 
 // ── Geographic Bounds (must match fire engine) ──────────────────────────────
@@ -67,17 +64,8 @@ const SPEED = {
 };
 const IS_GROUND = new Set(['engine','tender','dozer','hotshot','crew','structeng']);
 
-// ── Road Network (Palisades area, grid coords) ─────────────────────────────
-const ROAD_SEGMENTS = [
-  [[46,30],[46,49],[44,60],[44,76],[44,90],[44,110],[44,130]],           // Sunset Blvd E-W
-  [[165,15],[160,30],[155,50],[150,70],[145,90],[140,110],[135,130]],    // PCH coastal
-  [[30,50],[50,52],[80,54],[110,55],[140,56],[160,52]],                  // Topanga Canyon N-S
-  [[24,36],[32,28],[40,24],[56,22],[80,22],[120,24],[155,28]],           // Malibu Canyon
-  [[18,79],[30,80],[44,80],[60,85],[80,90],[100,95],[120,105]],          // I-405 / Sepulveda
-  [[24,36],[30,40],[38,45],[46,49]],                                     // Pepperdine → Sunset
-  [[41,70],[44,72],[44,76]],                                             // Brentwood connector
-  [[76,89],[90,85],[110,80],[130,75],[145,68]],                          // Santa Monica → PCH
-];
+// ── Road Network (OpenStreetMap data, converted to 256×256 grid coords) ──────
+const ROAD_SEGMENTS = [[[168,152],[166,150]],[[169,153],[168,152]],[[127,83],[126,84],[124,83],[122,83],[120,83],[120,84]],[[57,63],[56,64],[56,64]],[[71,70],[70,69],[69,68],[68,67],[66,67],[65,66]],[[116,155],[117,154],[118,153],[119,152],[120,151],[122,150],[123,149],[124,148],[126,147],[127,146],[128,145]],[[164,151],[163,152],[162,152]],[[45,6],[45,4],[44,1],[44,0]],[[47,167],[46,166],[44,166],[40,167],[37,167],[34,166],[33,165],[31,165]],[[28,163],[25,163],[23,163],[22,163]],[[17,163],[15,163]],[[9,166],[7,166]],[[156,143],[157,144],[159,146]],[[142,134],[141,133],[139,133],[137,133],[135,132],[134,133],[132,133],[130,134],[128,134],[127,134]],[[212,211],[211,208],[210,206],[209,204]],[[150,208],[149,207]],[[55,231],[53,232],[50,232],[48,232],[46,232],[44,232],[42,233],[40,233],[37,233],[36,234],[35,235],[33,236],[32,238],[30,238],[29,237],[28,236],[27,234],[26,233],[26,232]],[[71,203],[73,203],[75,204],[77,205],[79,205]],[[86,63],[87,62],[85,62]],[[143,139],[145,141],[148,143],[150,145]],[[81,176],[81,177]],[[75,240],[72,240],[70,240]],[[142,200],[141,201],[140,202],[138,202],[136,201]],[[123,47],[125,48],[124,49],[125,50],[127,51],[125,52],[126,53],[127,54],[128,55],[129,57],[131,57],[130,58],[129,59],[131,59],[132,59]],[[85,22],[84,21],[83,19],[82,18],[83,17],[84,16],[85,15],[87,15],[87,13],[85,12],[85,10],[86,9],[87,8],[88,7],[90,7],[91,6],[92,5],[92,3],[92,1],[91,0]],[[80,177],[80,176]],[[82,176],[81,175]],[[167,154],[168,153]],[[102,167],[105,168]],[[142,200],[141,201],[139,202],[137,202],[136,201]],[[142,205],[141,204],[140,203],[140,202]]];
 const ROAD_NODES = [];
 const ROAD_ADJ = new Map();
 (function buildRoadGraph() {
@@ -101,36 +89,8 @@ function findRoadPath(fr,fc,tr,tc) {
   return path;
 }
 
-// ─── Three.js terrain constants ───────────────────────────────────────────
-const TERRAIN_SIZE = 100;
-const TERRAIN_SEGS = 128;
-const CAM_HEIGHT = 38;
-const CAM_RADIUS = 72;
-const CAM_SPEED = 0.04;
-
-// ─── Procedural terrain height function ───────────────────────────────────
-function getHeight(x, z) {
-  const nx = x / TERRAIN_SIZE;
-  const nz = z / TERRAIN_SIZE;
-  return (
-    Math.sin(nx * 3.1 + 0.4) * 4.5 +
-    Math.cos(nz * 2.7 + 0.9) * 3.2 +
-    Math.sin((nx + nz) * 5.3) * 2.1 +
-    Math.cos((nx - nz) * 4.1 + 1.2) * 1.8 +
-    Math.sin(nx * 8.7 + nz * 6.2) * 0.9 +
-    Math.max(0, Math.sin(nx * 1.5 - 0.3) * Math.cos(nz * 1.8 + 0.5) * 7.5) +
-    3.5
-  );
-}
-
-// ─── Fire zone definitions ────────────────────────────────────────────────
-const FIRE_ZONES = [
-  { slot: 0, cx: -4,  cz:  2,  radius: 5.5,  color: new THREE.Color(0.85, 0.20, 0.04), particles: 120 },
-  { slot: 1, cx: -8,  cz:  9,  radius: 9.0,  color: new THREE.Color(0.70, 0.28, 0.08), particles: 200 },
-  { slot: 2, cx:  4,  cz: -6,  radius: 14.0, color: new THREE.Color(0.55, 0.32, 0.12), particles: 340 },
-];
-
-// ─── Max visual movement per frame (canvas simulation) ───────────────────
+// Max visual movement per frame (cells) — prevents fast aircraft from teleporting
+// 0.15 c/f × 60fps = 9 cells/sec × 95m = 855m/s ≈ reasonable visual max
 const MAX_CPF = 0.15;
 
 function moveAtSpeed(obj, speedMph, simSpd) {
@@ -148,1417 +108,1324 @@ function moveAtSpeed(obj, speedMph, simSpd) {
   }
 }
 
-// ─── Terrain vertex color ────────────────────────────────────────────────
-function colorForHeight(h) {
-  if (h < 1.5) return [0.10, 0.22, 0.11];
-  if (h < 3.5) return [0.14, 0.30, 0.14];
-  if (h < 5.5) return [0.22, 0.28, 0.15];
-  if (h < 8.0) return [0.36, 0.27, 0.17];
-  if (h < 11.0) return [0.50, 0.45, 0.38];
-  return [0.72, 0.72, 0.74];
+function setUnitTarget(unit, tr, tc) {
+  if(Math.abs(unit.trow-tr)<3 && Math.abs(unit.tcol-tc)<3) return;
+  unit.trow=tr; unit.tcol=tc;
+  if(IS_GROUND.has(unit.type)){unit._path=findRoadPath(Math.round(unit.row),Math.round(unit.col),Math.round(tr),Math.round(tc));unit._pi=0;}
+  else{unit._path=null;}
 }
 
-// ─── Glow sprite ─────────────────────────────────────────────────────────
-function makeGlowTexture(size = 128) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const c = size / 2;
-  const g = ctx.createRadialGradient(c, c, 0, c, c, c);
-  g.addColorStop(0.0, 'rgba(255,255,255,1.0)');
-  g.addColorStop(0.25, 'rgba(255,255,255,0.85)');
-  g.addColorStop(0.55, 'rgba(255,255,255,0.3)');
-  g.addColorStop(1.0, 'rgba(255,255,255,0.0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
-}
-
-// ─── Fire overlay texture ────────────────────────────────────────────────
-function makeFireOverlayTexture(r, g, b, soft) {
-  const size = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const c = size / 2;
-  const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
-  if (soft) {
-    grad.addColorStop(0.0, `rgba(${r},${g},${b},0.35)`);
-    grad.addColorStop(0.4, `rgba(${r},${g},${b},0.15)`);
-    grad.addColorStop(0.75, `rgba(${r},${g},${b},0.04)`);
-    grad.addColorStop(1.0, `rgba(${r},${g},${b},0.00)`);
-  } else {
-    grad.addColorStop(0.0, `rgba(${r},${g},${b},0.90)`);
-    grad.addColorStop(0.25, `rgba(${r},${g},${b},0.65)`);
-    grad.addColorStop(0.55, `rgba(${r},${g},${b},0.30)`);
-    grad.addColorStop(1.0, `rgba(${r},${g},${b},0.00)`);
-  }
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
-}
-
-// ─── GLSL Volumetric Fire Shader ─────────────────────────────────────────
-const FIRE_VERT = `
-  varying vec2 vUv;
-  varying float vY;
-  varying float vNormY;
-  uniform float uTime;
-  uniform float uHeight;
-
-  // Simplex-style noise
-  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
-  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
-
-  float snoise(vec3 v) {
-    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
-    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
-    vec3 i = floor(v + dot(v, C.yyy));
-    vec3 x0 = v - i + dot(i, C.xxx);
-    vec3 g = step(x0.yzx, x0.xyz);
-    vec3 l = 1.0 - g;
-    vec3 i1 = min(g.xyz, l.zxy);
-    vec3 i2 = max(g.xyz, l.zxy);
-    vec3 x1 = x0 - i1 + C.xxx;
-    vec3 x2 = x0 - i2 + C.yyy;
-    vec3 x3 = x0 - D.yyy;
-    i = mod289(i);
-    vec4 p = permute(permute(permute(
-      i.z + vec4(0.0, i1.z, i2.z, 1.0))
-      + i.y + vec4(0.0, i1.y, i2.y, 1.0))
-      + i.x + vec4(0.0, i1.x, i2.x, 1.0));
-    float n_ = 0.142857142857;
-    vec3 ns = n_ * D.wyz - D.xzx;
-    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
-    vec4 x_ = floor(j * ns.z);
-    vec4 y_ = floor(j - 7.0 * x_);
-    vec4 x = x_ * ns.x + ns.yyyy;
-    vec4 y = y_ * ns.x + ns.yyyy;
-    vec4 h = 1.0 - abs(x) - abs(y);
-    vec4 b0 = vec4(x.xy, y.xy);
-    vec4 b1 = vec4(x.zw, y.zw);
-    vec4 s0 = floor(b0)*2.0 + 1.0;
-    vec4 s1 = floor(b1)*2.0 + 1.0;
-    vec4 sh = -step(h, vec4(0.0));
-    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
-    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
-    vec3 p0 = vec3(a0.xy, h.x);
-    vec3 p1 = vec3(a0.zw, h.y);
-    vec3 p2 = vec3(a1.xy, h.z);
-    vec3 p3 = vec3(a1.zw, h.w);
-    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
-    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
-    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
-    m = m * m;
-    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
-  }
-
-  void main() {
-    vUv = uv;
-    vY = position.y;
-    vNormY = clamp(position.y / max(uHeight, 1.0), 0.0, 1.0);
-
-    vec3 pos = position;
-    float hNorm = clamp(pos.y / max(uHeight, 1.0), 0.0, 1.0);
-
-    // Noise-based displacement — stronger at top, zero at base
-    float heightFactor = smoothstep(0.0, 0.6, hNorm);
-
-    // Multi-octave noise for wild, organic flame tongues
-    float n1 = snoise(vec3(pos.x * 0.4, pos.y * 0.25 - uTime * 2.2, pos.z * 0.4)) * 3.2;
-    float n2 = snoise(vec3(pos.x * 0.9, pos.y * 0.6 - uTime * 3.8, pos.z * 0.9 + 10.0)) * 1.8;
-    float n3 = snoise(vec3(pos.x * 2.0, pos.y * 1.2 - uTime * 5.5, pos.z * 2.0 + 20.0)) * 0.8;
-    // Extra turbulence for wispy tips
-    float n4 = snoise(vec3(pos.x * 3.5, pos.y * 2.0 - uTime * 7.0, pos.z * 3.5 + 35.0)) * 0.4;
-
-    float displaceX = (n1 + n2 + n3 + n4) * heightFactor;
-    float displaceZ = (n1 * 0.8 + n2 * 0.6 + n3 * 0.3) * heightFactor;
-
-    // Wind lean — fire leans in wind direction
-    displaceX += hNorm * 1.5;
-    displaceZ += hNorm * 0.8;
-
-    pos.x += displaceX;
-    pos.z += displaceZ;
-
-    // Pinch at top — tighter for flame tongue shape
-    float pinch = 1.0 - heightFactor * 0.75;
-    pos.x *= pinch;
-    pos.z *= pinch;
-
-    // Slight vertical stretch with noise for irregular tips
-    pos.y += n2 * heightFactor * 0.4;
-
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-  }
-`;
-
-const FIRE_FRAG = `
-  varying vec2 vUv;
-  varying float vY;
-  varying float vNormY;
-  uniform float uTime;
-  uniform float uIntensity;
-  uniform float uHeight;
-
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-  }
-
-  float noise2D(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-  }
-
-  float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    vec2 shift = vec2(100.0);
-    for (int i = 0; i < 5; i++) {
-      v += a * noise2D(p);
-      p = p * 2.0 + shift;
-      a *= 0.5;
-    }
-    return v;
-  }
-
-  void main() {
-    float h = vNormY;
-    float dist = length(vUv - 0.5) * 2.0;
-
-    // Multi-scale noise — upward flowing
-    vec2 nc1 = vec2(vUv.x * 3.0, vUv.y * 2.0 - uTime * 0.9);
-    vec2 nc2 = vec2(vUv.x * 5.5 + 3.0, vUv.y * 3.5 - uTime * 1.6);
-    vec2 nc3 = vec2(vUv.x * 9.0 + 7.0, vUv.y * 6.0 - uTime * 2.5);
-    float n1 = fbm(nc1 * 3.0);
-    float n2 = fbm(nc2 * 2.5);
-    float n3 = fbm(nc3 * 2.0);
-    float n = n1 * 0.45 + n2 * 0.35 + n3 * 0.2;
-
-    // Very soft edge — gradual falloff so wide cylinders merge into one mass
-    float edgeFade = 1.0 - smoothstep(0.0, 0.55, dist);
-    edgeFade = edgeFade * edgeFade; // quadratic falloff, softer
-    float topFade = 1.0 - smoothstep(0.25, 0.95, h);
-    float shape = edgeFade * topFade;
-
-    // Dark gap streaks — vertical dark channels through fire
-    float gapNoise1 = fbm(vec2(vUv.x * 8.0 + uTime * 0.2, vUv.y * 3.0 - uTime * 1.2) * 2.0);
-    float gapNoise2 = fbm(vec2(vUv.x * 12.0 - 5.0, vUv.y * 5.0 - uTime * 2.0) * 1.5);
-    float gaps = smoothstep(0.18, 0.52, gapNoise1) * smoothstep(0.22, 0.50, gapNoise2);
-    shape *= mix(0.0, 1.0, gaps);
-
-    // Organic warp
-    float warp = smoothstep(0.08, 0.55, n + 0.3 * (1.0 - h));
-    shape *= warp;
-
-    // Color ramp — deep orange/red, bright enough to be visible with fewer overlaps
-    vec3 col;
-    float t = h + n * 0.08;
-
-    if (t < 0.06) {
-      // Base: warm bright orange
-      col = mix(vec3(0.90, 0.50, 0.08), vec3(0.85, 0.35, 0.05), t / 0.06);
-    } else if (t < 0.20) {
-      // Lower: saturated deep orange
-      col = mix(vec3(0.85, 0.35, 0.05), vec3(0.70, 0.18, 0.02), (t - 0.06) / 0.14);
-    } else if (t < 0.45) {
-      // Mid body: dark orange-red (DOMINANT)
-      col = mix(vec3(0.70, 0.18, 0.02), vec3(0.50, 0.08, 0.01), (t - 0.20) / 0.25);
-    } else if (t < 0.68) {
-      // Upper: dark red
-      col = mix(vec3(0.50, 0.08, 0.01), vec3(0.22, 0.025, 0.005), (t - 0.45) / 0.23);
-    } else {
-      // Tips: smoky dark
-      col = mix(vec3(0.22, 0.025, 0.005), vec3(0.05, 0.006, 0.001), clamp((t - 0.68) / 0.32, 0.0, 1.0));
-    }
-
-    // Slight noise warmth
-    col += vec3(0.04, 0.015, 0.0) * n1 * (1.0 - h * 0.7);
-
-    float alpha = shape * uIntensity;
-    alpha = clamp(alpha, 0.0, 0.80);
-
-    if (alpha < 0.005) discard;
-
-    gl_FragColor = vec4(col, alpha);
-  }
-`;
-
-// ─── Build volumetric fire mesh (returns group with multiple flame columns) ──
-function buildFireVolume(zone) {
-  const group = new THREE.Group();
-
-  // Wide overlapping blobs — continuous fire mass, not separate strips
-  const columns = zone.slot === 0 ? 8 : zone.slot === 1 ? 10 : 12;
-  for (let i = 0; i < columns; i++) {
-    const angle = i * 2.39996 + (zone.slot * 1.7);
-    const dist = (i === 0) ? 0 : (Math.sqrt(i / columns)) * zone.radius * 0.55;
-    const fx = zone.cx + Math.cos(angle) * dist;
-    const fz = zone.cz + Math.sin(angle) * dist;
-
-    // Each volume: wide base, tall flames
-    const centerFactor = 1.0 - (dist / (zone.radius * 0.55 + 0.01)) * 0.3;
-    const heightScale = (0.7 + Math.random() * 0.6) * centerFactor;
-    const height = zone.radius * 2.2 * heightScale;
-    // Wide radius — each blob covers big area, overlaps with neighbors
-    const radiusBottom = zone.radius * (i === 0 ? 0.80 : 0.55);
-    const radiusTop = radiusBottom * 0.10;
-    const geo = new THREE.CylinderGeometry(radiusTop, radiusBottom, height, 16, 22, true);
-
-    const uniforms = {
-      uTime: { value: i * 1.7 + zone.slot * 3.0 },
-      uIntensity: { value: zone.slot === 0 ? 0.85 : zone.slot === 1 ? 0.65 : 0.45 },
-      uHeight: { value: height },
-    };
-
-    const mat = new THREE.ShaderMaterial({
-      vertexShader: FIRE_VERT,
-      fragmentShader: FIRE_FRAG,
-      uniforms,
-      transparent: true,
-      blending: THREE.AdditiveBlending, // Additive so overlapping cylinders blend seamlessly
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-
-    const mesh = new THREE.Mesh(geo, mat);
-    const baseH = getHeight(fx, fz);
-    mesh.position.set(fx, baseH + height * 0.25, fz);
-    mesh.userData = { uniforms };
-    group.add(mesh);
-  }
-
-  group.visible = false;
-  group.userData = { zone };
-  return group;
-}
-
-// ─── Build terrain ───────────────────────────────────────────────────────
-function buildTerrain() {
-  const geo = new THREE.PlaneGeometry(
-    TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGS, TERRAIN_SEGS
-  );
-  geo.rotateX(-Math.PI / 2);
-
-  const pos = geo.attributes.position;
-  const colorArr = [];
-
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    const h = getHeight(x, z);
-    pos.setY(i, h);
-    const [cr, cg, cb] = colorForHeight(h);
-    colorArr.push(cr, cg, cb);
-  }
-
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colorArr, 3));
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-
-  return geo;
-}
-
-// ─── Fire overlay disc ──────────────────────────────────────────────────
-function buildFireOverlay(zone, soft = false) {
-  const [r, g, b] = [
-    Math.round(zone.color.r * 255),
-    Math.round(zone.color.g * 255),
-    Math.round(zone.color.b * 255),
-  ];
-  const scaleFactor = soft ? 2.8 : 1;
-  const tex = makeFireOverlayTexture(r, g, b, soft);
-  const geo = new THREE.PlaneGeometry(zone.radius * 2 * scaleFactor, zone.radius * 2 * scaleFactor);
-  const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    transparent: true,
-    opacity: soft ? 0.06 : 0.12,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    depthTest: false,
-    side: THREE.DoubleSide,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.x = -Math.PI / 2;
-  const avgH = getHeight(zone.cx, zone.cz);
-  mesh.position.set(zone.cx, avgH + (soft ? 3.5 : 2.0), zone.cz);
-  mesh.visible = false;
-  return mesh;
-}
-
-// ─── Fire particles ─────────────────────────────────────────────────────
-function buildFireParticles(zone, glowTex) {
-  const count = zone.particles;
-  const positions = new Float32Array(count * 3);
-  const opacities = new Float32Array(count);
-  const speeds = new Float32Array(count);
-  const offsets = new Float32Array(count * 2);
-
-  for (let i = 0; i < count; i++) {
-    const r = Math.sqrt(Math.random()) * zone.radius * 0.85;
-    const theta = Math.random() * Math.PI * 2;
-    const bx = zone.cx + Math.cos(theta) * r;
-    const bz = zone.cz + Math.sin(theta) * r;
-    const baseH = getHeight(bx, bz);
-
-    positions[i * 3 + 0] = bx;
-    positions[i * 3 + 1] = baseH + Math.random() * 5;
-    positions[i * 3 + 2] = bz;
-
-    opacities[i] = Math.random();
-    speeds[i] = 0.016 + Math.random() * 0.04;
-    offsets[i * 2 + 0] = bx;
-    offsets[i * 2 + 1] = bz;
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-  const mat = new THREE.PointsMaterial({
-    color: new THREE.Color(1.0, 0.6, 0.15),
-    size: zone.slot === 0 ? 0.35 : zone.slot === 1 ? 0.28 : 0.22,
-    map: glowTex,
-    transparent: true,
-    opacity: zone.slot === 0 ? 0.55 : zone.slot === 1 ? 0.40 : 0.30,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    sizeAttenuation: true,
-  });
-
-  const points = new THREE.Points(geo, mat);
-  points.userData = { opacities, speeds, offsets, zone, count };
-  points.visible = false;
-  return points;
-}
-
-// ─── Fire perimeter ring ────────────────────────────────────────────────
-function buildPerimeterRing(zone) {
-  const segments = 80;
-  const pts = [];
-  for (let i = 0; i <= segments; i++) {
-    const theta = (i / segments) * Math.PI * 2;
-    const x = zone.cx + Math.cos(theta) * zone.radius;
-    const z = zone.cz + Math.sin(theta) * zone.radius;
-    const y = getHeight(x, z) + 0.9;
-    pts.push(new THREE.Vector3(x, y, z));
-  }
-  const geo = new THREE.BufferGeometry().setFromPoints(pts);
-  const mat = new THREE.LineBasicMaterial({
-    color: zone.color,
-    transparent: true,
-    opacity: 0.75,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const line = new THREE.Line(geo, mat);
-  line.visible = false;
-  return line;
-}
-
-// ─── Wind arrow grid ────────────────────────────────────────────────────
-function buildWindArrows() {
-  const group = new THREE.Group();
-  const dir = new THREE.Vector3(-1, 0, -1).normalize();
-  const spacing = 18;
-  const count = 4;
-  const half = (count - 1) * spacing / 2;
-
-  for (let i = 0; i < count; i++) {
-    for (let j = 0; j < count; j++) {
-      const x = i * spacing - half;
-      const z = j * spacing - half;
-      const y = getHeight(x, z) + 1.2; // hug terrain closely
-      const arrow = new THREE.ArrowHelper(
-        dir, new THREE.Vector3(x, y, z),
-        5.0, 0x55bbee, 1.4, 0.7
-      );
-      arrow.line.material.transparent = true;
-      arrow.line.material.opacity = 0.7;
-      arrow.cone.material.transparent = true;
-      arrow.cone.material.opacity = 0.7;
-      group.add(arrow);
-    }
-  }
-  group.visible = false;
-  return group;
-}
-
-// ─── Build a quadcopter drone mesh from primitives ───────────────────────
-function buildDroneMesh(scale = 1.0) {
-  const drone = new THREE.Group();
-  const s = scale;
-
-  // ── Materials ──────────────────────────────────────────────────────────
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x1c2a36,   // dark anthracite body
-    roughness: 0.65,
-    metalness: 0.35,
-  });
-  const armMat = new THREE.MeshStandardMaterial({
-    color: 0x263545,
-    roughness: 0.6,
-    metalness: 0.4,
-  });
-  const motorMat = new THREE.MeshStandardMaterial({
-    color: 0x111518,
-    roughness: 0.35,
-    metalness: 0.75,
-  });
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: 0x2e5c7a,   // blue-grey sensor dome
-    roughness: 0.45,
-    metalness: 0.55,
-  });
-  const camLensMat = new THREE.MeshStandardMaterial({
-    color: 0x080c10,
-    roughness: 0.1,
-    metalness: 0.9,
-  });
-
-  // ── Central body — flat box ────────────────────────────────────────────
-  const bodyGeo = new THREE.BoxGeometry(0.60 * s, 0.16 * s, 0.42 * s);
-  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-  bodyMesh.castShadow = true;
-  bodyMesh.receiveShadow = true;
-  drone.add(bodyMesh);
-
-  // ── Top dome / obstacle sensor ─────────────────────────────────────────
-  const domeGeo = new THREE.SphereGeometry(0.14 * s, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-  const domeMesh = new THREE.Mesh(domeGeo, accentMat);
-  domeMesh.position.set(0, 0.10 * s, 0);
-  drone.add(domeMesh);
-
-  // ── Camera gimbal housing — cylinder below nose ────────────────────────
-  const gimbalHouseGeo = new THREE.CylinderGeometry(0.075 * s, 0.075 * s, 0.06 * s, 10);
-  const gimbalHouse = new THREE.Mesh(gimbalHouseGeo, motorMat);
-  gimbalHouse.position.set(0.23 * s, -0.09 * s, 0);
-  drone.add(gimbalHouse);
-
-  // ── Camera lens (dark glossy sphere) ──────────────────────────────────
-  const lensGeo = new THREE.SphereGeometry(0.065 * s, 8, 6);
-  const lens = new THREE.Mesh(lensGeo, camLensMat);
-  lens.position.set(0.27 * s, -0.10 * s, 0);
-  drone.add(lens);
-
-  // ── Status LED ─────────────────────────────────────────────────────────
-  const ledGeo = new THREE.SphereGeometry(0.018 * s, 5, 4);
-  const ledMat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
-  const led = new THREE.Mesh(ledGeo, ledMat);
-  led.position.set(-0.25 * s, 0.09 * s, 0);
-  drone.add(led);
-
-  // ── 4 arms + motor mounts + rotors at 45° diagonals ───────────────────
-  const armAngles = [45, 135, 225, 315];
-  armAngles.forEach((deg) => {
-    const rad = (deg * Math.PI) / 180;
-    const armReach = 0.52 * s;   // distance from center to motor tip
-
-    const tipX = Math.cos(rad) * armReach;
-    const tipZ = Math.sin(rad) * armReach;
-    const midX = tipX * 0.5;
-    const midZ = tipZ * 0.5;
-
-    // Arm — tapered box pointing from body to tip
-    const armGeo = new THREE.BoxGeometry(armReach, 0.055 * s, 0.075 * s);
-    const arm = new THREE.Mesh(armGeo, armMat);
-    arm.rotation.y = -rad;
-    arm.position.set(midX, 0, midZ);
-    arm.castShadow = true;
-    drone.add(arm);
-
-    // Motor cylinder at tip
-    const motorGeo = new THREE.CylinderGeometry(0.072 * s, 0.072 * s, 0.11 * s, 10);
-    const motor = new THREE.Mesh(motorGeo, motorMat);
-    motor.position.set(tipX, 0, tipZ);
-    drone.add(motor);
-
-    // ── Rotor: actual crossed blade pair + blur disc ──────────────────
-    const rotorPivot = new THREE.Group();
-    rotorPivot.position.set(tipX, 0.09 * s, tipZ);
-    rotorPivot.userData.isRotor = true;
-    drone.add(rotorPivot);
-
-    // Two rotor blades (crossed) — thin, dark
-    const bladeMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1a1a,
-      roughness: 0.3,
-      metalness: 0.5,
-    });
-    [0, Math.PI / 2].forEach((bladeRot) => {
-      const bladeGeo = new THREE.BoxGeometry(0.38 * s, 0.006 * s, 0.055 * s);
-      const blade = new THREE.Mesh(bladeGeo, bladeMat);
-      blade.rotation.y = bladeRot;
-      rotorPivot.add(blade);
-    });
-
-    // Blur disc — semi-transparent flat cylinder simulating motion blur
-    const discGeo = new THREE.CylinderGeometry(0.20 * s, 0.20 * s, 0.003 * s, 16);
-    const discMat = new THREE.MeshBasicMaterial({
-      color: 0x8aaabb,
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const disc = new THREE.Mesh(discGeo, discMat);
-    rotorPivot.add(disc);
-  });
-
-  return drone;
-}
-
-// ─── Swarm drone group ──────────────────────────────────────────────────
-const DRONE_POSITIONS = [
-  [-15, -12], [-5, -18], [8, -14], [18, -8],
-  [16,   4],  [ 6,  14], [-8,  16], [-18,  6],
+// ── Evacuation Routes (lat/lng points) ──────────────────────────────────────
+const ROUTES = [
+  { id:'R1', name:'Sunset', pts:[[34.045,-118.50],[34.042,-118.48],[34.040,-118.45],[34.038,-118.42]] },
+  { id:'R2', name:'PCH', pts:[[34.030,-118.52],[34.025,-118.50],[34.020,-118.47],[34.015,-118.44]] },
+  { id:'R3', name:'Topanga', pts:[[34.050,-118.55],[34.055,-118.57],[34.060,-118.59]] },
 ];
 
-function buildSwarmGroup() {
-  const group = new THREE.Group();
-
-  DRONE_POSITIONS.forEach(([x, z]) => {
-    const y = getHeight(x, z) + 4.5;
-
-    // Realistic quadcopter drone — scale 2.5 so it's visible from orbit camera
-    const drone = buildDroneMesh(2.5);
-    drone.position.set(x, y, z);
-    // Slight random yaw per drone
-    drone.rotation.y = Math.random() * Math.PI * 2;
-    drone.userData.isDrone = true;
-
-    // Invisible hit sphere — makes clicking the drone much easier
-    const hitGeo = new THREE.SphereGeometry(3.5, 8, 8);
-    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
-    const hitSphere = new THREE.Mesh(hitGeo, hitMat);
-    hitSphere.userData.isDrone = true;  // raycast will hit this first
-    drone.add(hitSphere);               // parented to drone, inherits position
-
-    group.add(drone);
-
-    // Coverage disc on ground — subtle dark scanning area
-    const discGeo = new THREE.CircleGeometry(7, 32);
-    discGeo.rotateX(-Math.PI / 2);
-    const discMat = new THREE.MeshBasicMaterial({
-      color: 0x3a6080,
-      transparent: true, opacity: 0.06,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const disc = new THREE.Mesh(discGeo, discMat);
-    disc.position.set(x, getHeight(x, z) + 0.2, z);
-    group.add(disc);
-  });
-
-  group.visible = false;
-  return group;
-}
-
-// ─── Evac routes ────────────────────────────────────────────────────────
-const EVAC_ROUTES = [
-  { points: [[-12, -5], [-25, -15], [-38, -28]], color: 0x00cc66, emissive: 0x00ff88 },
-  { points: [[0, -8], [10, -25], [25, -38]], color: 0x00cc66, emissive: 0x00ff88 },
-  { points: [[5, 10], [15, 22], [20, 35]], color: 0xcc2222, emissive: 0xff3333 },
+// ── Population Zones ────────────────────────────────────────────────────────
+const POP_ZONES = [
+  { id:'B3', name:'Pacific Palisades', pop:2847, row:133, col:110 },
+  { id:'B4', name:'Brentwood South', pop:1560, row:77, col:107 },
+  { id:'C1', name:'Topanga', pop:4200, row:140, col:56 },
 ];
 
-// Sample many points along route, snapping each to terrain height
-function sampleTerrainRoute(controlPoints, samples = 60) {
-  // First create a rough 2D spline from the control points
-  const pts2D = controlPoints.map(([x, z]) => new THREE.Vector2(x, z));
-  const result = [];
-  for (let i = 0; i < samples; i++) {
-    const t = i / (samples - 1);
-    // Interpolate along segments
-    const totalSegs = pts2D.length - 1;
-    const seg = Math.min(Math.floor(t * totalSegs), totalSegs - 1);
-    const localT = (t * totalSegs) - seg;
-    const x = pts2D[seg].x + (pts2D[seg + 1].x - pts2D[seg].x) * localT;
-    const z = pts2D[seg].y + (pts2D[seg + 1].y - pts2D[seg].y) * localT;
-    const y = getHeight(x, z) + 0.35; // hug terrain, just slightly above
-    result.push(new THREE.Vector3(x, y, z));
+// ── Drone sensor range (grid cells) — how close a drone must be to "see" fire ──
+const DRONE_SENSOR_RANGE = 18;  // ~900m at 50m/cell
+
+// ── COMMAND CENTER — Incident Command Post + drone operations ───────────────
+// Located at Pepperdine University staging area (34.074°N, 118.551°W)
+// Real ICP location used during the 2025 Palisades Fire
+const COMMAND_CENTER = { name:'FireSight ICP', row:24, col:36 };
+
+// Total drone stash at command center — this is the hard max
+const DRONE_STASH_TOTAL = 24;
+
+// How many patrol at start vs. held in reserve
+const INITIAL_PATROL = 6;
+
+// Drone fleet composition — realistic models per phase
+// Phase 1: Scouts (DFR drones, first on scene)
+// Phase 2: Mappers (fixed-wing, perimeter mapping)
+// Phase 3: Safety overwatch + comms relay
+// Phase 4: IGNIS aerial ignition drones (dragon eggs)
+// Phase 5: Suppression (heavy-lift, emerging)
+// Always: MQ-9 Reaper (persistent HALE ISR)
+const DRONE_STASH = [
+  // ── Initial patrol (first 6, always airborne) ──
+  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:80,  patrolCenterCol:128, patrolRadius:50, flightTime:40 },
+  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:110, patrolCenterCol:80,  patrolRadius:45, flightTime:41 },
+  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:60,  patrolCenterCol:160, patrolRadius:50, flightTime:40 },
+  { dtype:'mapper', model:'senseFly eBee X', patrolCenterRow:100, patrolCenterCol:110, patrolRadius:55, flightTime:90 },
+  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:50,  patrolCenterCol:128, patrolRadius:15, flightTime:120 },
+  { dtype:'reaper', model:'MQ-9 Reaper',     patrolCenterRow:128, patrolCenterCol:128, patrolRadius:80, flightTime:1620 },
+  // ── Reserve (launched as fire grows) ──
+  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:128, patrolCenterCol:128, patrolRadius:40, flightTime:41 },
+  { dtype:'mapper', model:'senseFly eBee X', patrolCenterRow:90,  patrolCenterCol:90,  patrolRadius:55, flightTime:90 },
+  { dtype:'mapper', model:'JOUAV CW-25',    patrolCenterRow:128, patrolCenterCol:128, patrolRadius:60, flightTime:240 },
+  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:130, patrolCenterCol:110, patrolRadius:20, flightTime:45 },
+  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:80,  patrolCenterCol:107, patrolRadius:20, flightTime:45 },
+  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:135, patrolCenterCol:60,  patrolRadius:20, flightTime:45 },
+  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:80,  patrolCenterCol:190, patrolRadius:15, flightTime:120 },
+  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:128, patrolCenterCol:60,  patrolRadius:45, flightTime:40 },
+  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:100, patrolCenterCol:170, patrolRadius:25, flightTime:45 },
+  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
+  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
+  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
+  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
+  { dtype:'suppression', model:'FireSwarm Thunder', patrolCenterRow:90, patrolCenterCol:50, patrolRadius:15, flightTime:35 },
+  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:50,  patrolCenterCol:100, patrolRadius:45, flightTime:41 },
+  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:100, patrolCenterCol:128, patrolRadius:15, flightTime:120 },
+  { dtype:'suppression', model:'FireSwarm Thunder', patrolCenterRow:120, patrolCenterCol:80, patrolRadius:15, flightTime:35 },
+  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:80,  patrolCenterCol:180, patrolRadius:50, flightTime:40 },
+];
+
+// ── Build initial drone fleet (first INITIAL_PATROL from stash, rest stay at base) ──
+function makeDrones() {
+  const drones = [];
+  for (let i = 0; i < DRONE_STASH_TOTAL; i++) {
+    const spec = DRONE_STASH[i];
+    const id = `D-${String(i + 1).padStart(2, '0')}`;
+    const deployed = i < INITIAL_PATROL;
+    drones.push({
+      id, dtype: spec.dtype, model: spec.model || spec.dtype,
+      flightTime: spec.flightTime || 40,
+      homeRow: COMMAND_CENTER.row, homeCol: COMMAND_CENTER.col,
+      patrolCenterRow: spec.patrolCenterRow, patrolCenterCol: spec.patrolCenterCol,
+      patrolRadius: spec.patrolRadius,
+      row: COMMAND_CENTER.row, col: COMMAND_CENTER.col,
+      trow: deployed ? spec.patrolCenterRow : COMMAND_CENTER.row,
+      tcol: deployed ? spec.patrolCenterCol : COMMAND_CENTER.col,
+      patrolAngle: Math.random() * Math.PI * 2,
+      launched: deployed,
+    });
   }
-  return result;
+  return drones;
 }
 
-function buildEvacRoutes() {
-  const group = new THREE.Group();
+// ── Unit staging at real LAFD/LA County stations ────────────────────────────
+// Ground units follow roads via waypoint pathfinding. Aircraft fly direct.
+function makeUnits() {
+  return [
+    // ── FIRE ENGINES (3-person crew, Type 3, 500gal) ──
+    // LAFD Station 69 — Pacific Palisades
+    { id:'E-69A', type:'engine',  homeRow:46,  homeCol:49, station:'LAFD Stn 69', crew:3, vehicle:'Pierce Type 3' },
+    { id:'E-69B', type:'engine',  homeRow:48,  homeCol:51, station:'LAFD Stn 69', crew:3, vehicle:'Pierce Type 3' },
+    // LAFD Station 23 — Brentwood
+    { id:'E-23',  type:'engine',  homeRow:44,  homeCol:76, station:'LAFD Stn 23', crew:3, vehicle:'Pierce Type 3' },
 
-  EVAC_ROUTES.forEach(({ points, color, emissive }) => {
-    // Dense terrain-hugging sample points
-    const terrainPts = sampleTerrainRoute(points, 80);
-    const curve = new THREE.CatmullRomCurve3(terrainPts);
-    const tubeGeo = new THREE.TubeGeometry(curve, 80, 0.18, 5, false);
-    const tubeMat = new THREE.MeshStandardMaterial({
-      color,
-      emissive,
-      emissiveIntensity: 0.6,
-      transparent: true, opacity: 0.85,
-      depthWrite: false,
-    });
-    const tube = new THREE.Mesh(tubeGeo, tubeMat);
-    group.add(tube);
-  });
+    // ── WATER TENDER (driver + operator, 4,000gal) ──
+    // LA County Station 71 — Malibu
+    { id:'WT-71', type:'tender',  homeRow:56,  homeCol:23, station:'LACoFD Stn 71', crew:2, vehicle:'International HV507' },
 
-  group.visible = false;
-  return group;
+    // ── AIRCRAFT ──
+    // Van Nuys Airport — Air Tanker Base
+    { id:'AT-1',  type:'air',     homeRow:2,   homeCol:195, station:'Van Nuys ATB', crew:2, vehicle:'DC-10 VLAT (11,600gal Phos-Chek)' },
+    { id:'SE-1',  type:'seat',    homeRow:4,   homeCol:198, station:'Van Nuys ATB', crew:1, vehicle:'AT-802 Air Tractor (800gal)' },
+    { id:'LP-1',  type:'lead',    homeRow:3,   homeCol:192, station:'Van Nuys ATB', crew:2, vehicle:'OV-10A Bronco (Lead Plane)' },
+    // Santa Monica Airport — Helitack
+    { id:'H-1',   type:'heli',    homeRow:76,  homeCol:89, station:'SMO Heliport', crew:4, vehicle:'CH-47D Chinook (2,600gal Bambi)' },
+
+    // ── HOTSHOT CREW (20-person elite, on foot in brush) ──
+    // LA County Camp 8 — Malibu Canyon
+    { id:'IHC-8', type:'hotshot', homeRow:32,  homeCol:16, station:'Camp 8 Malibu', crew:20, vehicle:'On foot (drip torches, hand tools)' },
+
+    // ── HAND CREW (20-person, manual fireline) ──
+    { id:'HC-2',  type:'crew',    homeRow:34,  homeCol:18, station:'Camp 8 Malibu', crew:20, vehicle:'On foot (Pulaski, McLeod)' },
+    // Second hand crew from Topanga
+    { id:'HC-5',  type:'crew',    homeRow:50,  homeCol:52, station:'Topanga Station', crew:20, vehicle:'On foot (Pulaski, McLeod)' },
+
+    // ── DOZER (operator, D8 Cat on lowboy trailer) ──
+    // Caltrans yard — Sepulveda Pass
+    { id:'DZ-1',  type:'dozer',   homeRow:18,  homeCol:79, station:'Caltrans Sepulveda', crew:1, vehicle:'Cat D8T (10-20ft blade)' },
+
+    // ── STRUCTURE ENGINE (4-person, Type 1) ──
+    // LAFD Station 19 — Brentwood
+    { id:'SP-19', type:'structeng',homeRow:41, homeCol:70, station:'LAFD Stn 19', crew:4, vehicle:'Pierce Arrow XT (foam/gel)' },
+  ].map(u => ({ ...u, row:u.homeRow, col:u.homeCol, trow:u.homeRow, tcol:u.homeCol, _path:null, _pi:0 }));
 }
 
-// ─── Build an air tanker (fixed-wing firefighting aircraft) ──────────────
-function buildTankerMesh(scale = 1.0) {
-  const tanker = new THREE.Group();
-  const s = scale;
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  // Materials — solid, realistic, dark military tones
-  const fuselageMat = new THREE.MeshStandardMaterial({
-    color: 0xc8c8c8,
-    roughness: 0.5,
-    metalness: 0.4,
-  });
-  const wingMat = new THREE.MeshStandardMaterial({
-    color: 0xb0b0b0,
-    roughness: 0.6,
-    metalness: 0.3,
-  });
-  const tailMat = new THREE.MeshStandardMaterial({
-    color: 0xcc3322,
-    roughness: 0.5,
-    metalness: 0.2,
-  });
-  const engineMat = new THREE.MeshStandardMaterial({
-    color: 0x222222,
-    roughness: 0.3,
-    metalness: 0.7,
-  });
-  const noseMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1a1a,
-    roughness: 0.3,
-    metalness: 0.6,
-  });
+// ICP personnel stationed at command center (stationary, always visible)
+const ICP_PERSONNEL = [
+  { id: 'ic', label: 'IC', name: 'Incident Commander', color: '#EF4444', offsetR: 0, offsetC: 0 },
+  { id: 'safety', label: 'SAF', name: 'Safety Officer', color: '#EF4444', offsetR: -3, offsetC: 2 },
+  { id: 'ops_chief', label: 'OPS', name: 'Operations Chief', color: '#A78BFA', offsetR: 2, offsetC: 3 },
+  { id: 'plan_chief', label: 'PLAN', name: 'Planning Chief', color: '#A78BFA', offsetR: 3, offsetC: -1 },
+  { id: 'log_chief', label: 'LOG', name: 'Logistics Chief', color: '#A78BFA', offsetR: -2, offsetC: -3 },
+  { id: 'pio', label: 'PIO', name: 'Public Info Officer', color: '#EF4444', offsetR: -4, offsetC: -1 },
+  { id: 'fin_chief', label: 'FIN', name: 'Finance/Admin Chief', color: '#A78BFA', offsetR: 4, offsetC: 2 },
+  { id: 'liaison', label: 'LIAS', name: 'Liaison Officer', color: '#EF4444', offsetR: -5, offsetC: 3 },
+  // Planning section at ICP
+  { id: 'sit_unit', label: 'SIT', name: 'Situation Unit', color: '#FBBF24', offsetR: 5, offsetC: -3 },
+  { id: 'fban', label: 'FBAN', name: 'Fire Behavior Analyst', color: '#FBBF24', offsetR: 6, offsetC: 0 },
+  { id: 'res_unit', label: 'RESU', name: 'Resources Unit', color: '#FBBF24', offsetR: 5, offsetC: 3 },
+  // Logistics at ICP
+  { id: 'comms', label: 'COMMS', name: 'Communications Unit', color: '#FBBF24', offsetR: -6, offsetC: -2 },
+  { id: 'medical', label: 'MED', name: 'Medical Unit', color: '#FBBF24', offsetR: -5, offsetC: -5 },
+  // External systems co-located at ICP
+  { id: 'dispatch', label: 'DISP', name: 'CAD / Dispatch', color: '#34D399', offsetR: 7, offsetC: -5 },
+  { id: 'iroc', label: 'IROC', name: 'IROC Ordering', color: '#34D399', offsetR: 7, offsetC: 5 },
+];
 
-  // Fuselage — elongated cylinder
-  const fuselageGeo = new THREE.CylinderGeometry(0.18 * s, 0.16 * s, 2.0 * s, 10);
-  fuselageGeo.rotateZ(Math.PI / 2);
-  const fuselage = new THREE.Mesh(fuselageGeo, fuselageMat);
-  fuselage.castShadow = true;
-  tanker.add(fuselage);
+// Field entities — positioned away from ICP, near their operational area
+const FIELD_ENTITIES = [
+  // Branch directors in the field
+  { id: 'fire_branch', label: 'FIRE BR', name: 'Fire Suppression Branch', color: '#FBBF24', row: 60, col: 70, category: 'branch' },
+  { id: 'air_ops', label: 'AIR OPS', name: 'Air Operations Branch', color: '#FBBF24', row: 18, col: 42, category: 'branch' },
+  { id: 'div_alpha', label: 'DIV-A', name: 'Division Alpha (Head)', color: '#FBBF24', row: 90, col: 80, category: 'branch' },
+  { id: 'div_bravo', label: 'DIV-B', name: 'Division Bravo (Flanks)', color: '#FBBF24', row: 100, col: 55, category: 'branch' },
+  { id: 'struct_group', label: 'STRUCT', name: 'Structure Protection Group', color: '#FBBF24', row: 77, col: 107, category: 'branch' },
+  { id: 'le_branch', label: 'LE BR', name: 'Law Enforcement Branch', color: '#FBBF24', row: 133, col: 100, category: 'branch' },
+  { id: 'traffic', label: 'TRAF', name: 'Traffic Control', color: '#22D3EE', row: 150, col: 56, category: 'branch' },
+  // ATGS airborne supervisor
+  { id: 'atgs', label: 'ATGS', name: 'Air Tactical (OV-10A)', color: '#22D3EE', row: 50, col: 100, category: 'airborne' },
+  // External sensors at fixed positions
+  { id: 'raws', label: 'RAWS', name: 'RAWS Weather Station', color: '#34D399', row: 40, col: 90, category: 'sensor' },
+  { id: 'satellite', label: 'SAT', name: 'GOES/VIIRS Satellite', color: '#34D399', row: 8, col: 128, category: 'sensor' },
+  { id: 'alert_cam', label: 'CAMS', name: 'ALERTCalifornia Camera', color: '#34D399', row: 55, col: 45, category: 'sensor' },
+  { id: 'firis', label: 'FIRIS', name: 'FIRIS Aerial IR', color: '#34D399', row: 70, col: 150, category: 'sensor' },
+  { id: 'nws', label: 'NWS', name: 'NWS Spot Forecast', color: '#34D399', row: 5, col: 50, category: 'sensor' },
+  { id: 'genasys', label: 'GNSY', name: 'Genasys Protect', color: '#34D399', row: 140, col: 90, category: 'sensor' },
+  // AI agents at ICP perimeter with special rendering
+  { id: 'ai_overwatch', label: 'OW-AI', name: 'OVERWATCH AI', color: '#F472B6', row: COMMAND_CENTER.row + 10, col: COMMAND_CENTER.col + 8, category: 'ai' },
+  { id: 'ai_predict', label: 'PR-AI', name: 'PREDICT AI', color: '#F472B6', row: COMMAND_CENTER.row + 12, col: COMMAND_CENTER.col + 3, category: 'ai' },
+  { id: 'ai_swarm', label: 'SW-AI', name: 'SWARM AI', color: '#F472B6', row: COMMAND_CENTER.row + 10, col: COMMAND_CENTER.col - 4, category: 'ai' },
+  { id: 'ai_evac', label: 'EV-AI', name: 'EVAC AI', color: '#F472B6', row: COMMAND_CENTER.row + 12, col: COMMAND_CENTER.col - 8, category: 'ai' },
+  { id: 'ai_deploy', label: 'DP-AI', name: 'DEPLOY AI', color: '#F472B6', row: COMMAND_CENTER.row + 14, col: COMMAND_CENTER.col, category: 'ai' },
+  // Unit group supervisors — tactical coordinators in the field
+  { id: 'engines', label: 'ENG×3', name: 'Engine Strike Team Leader', color: '#FBBF24', row: 70, col: 75, category: 'group' },
+  { id: 'hotshots', label: 'IHC', name: 'Hotshot Superintendent', color: '#F97316', row: 85, col: 65, category: 'group' },
+  { id: 'hand_crew', label: 'T2 HC', name: 'Hand Crew Supervisor', color: '#FB923C', row: 95, col: 60, category: 'group' },
+  { id: 'dozer', label: 'DZR', name: 'Dozer Boss', color: '#A3E635', row: 105, col: 50, category: 'group' },
+  { id: 'vlat', label: 'VLAT', name: 'VLAT Coordinator', color: '#F472B6', row: 10, col: 180, category: 'group' },
+  { id: 'seat', label: 'SEAT', name: 'SEAT Coordinator', color: '#E879F9', row: 12, col: 185, category: 'group' },
+  { id: 'lead_plane', label: 'LEAD', name: 'Lead Plane Coordinator', color: '#D946EF', row: 8, col: 175, category: 'group' },
+  { id: 'heli', label: 'HELI', name: 'Helitack Coordinator', color: '#EC4899', row: 72, col: 95, category: 'group' },
+  { id: 'tender', label: 'WTR', name: 'Water Tender Boss', color: '#F59E0B', row: 52, col: 28, category: 'group' },
+  { id: 'struct_eng', label: 'STRC', name: 'Structure Engine Leader', color: '#38BDF8', row: 45, col: 68, category: 'group' },
+  // Drone fleet control + type coordinators
+  { id: 'drones', label: 'UAS', name: 'UAS Fleet Control', color: '#22D3EE', row: COMMAND_CENTER.row - 6, col: COMMAND_CENTER.col + 6, category: 'drone_ctrl' },
+  { id: 'drone_scout', label: 'SCOUT', name: 'Scout UAS Coordinator', color: '#22D3EE', row: COMMAND_CENTER.row - 8, col: COMMAND_CENTER.col + 10, category: 'drone_ctrl' },
+  { id: 'drone_mapper', label: 'MAPPER', name: 'Mapper UAS Coordinator', color: '#60A5FA', row: COMMAND_CENTER.row - 10, col: COMMAND_CENTER.col + 7, category: 'drone_ctrl' },
+  { id: 'drone_reaper', label: 'MQ-9', name: 'MQ-9 Reaper Controller', color: '#E2E8F0', row: COMMAND_CENTER.row - 10, col: COMMAND_CENTER.col + 3, category: 'drone_ctrl' },
+  { id: 'drone_relay', label: 'RELAY', name: 'Relay UAS Coordinator', color: '#A78BFA', row: COMMAND_CENTER.row - 8, col: COMMAND_CENTER.col - 2, category: 'drone_ctrl' },
+  { id: 'drone_safety', label: 'SAFE-D', name: 'Safety UAS Coordinator', color: '#34D399', row: COMMAND_CENTER.row - 10, col: COMMAND_CENTER.col - 5, category: 'drone_ctrl' },
+  { id: 'drone_ignis', label: 'IGNIS', name: 'IGNIS UAS Coordinator', color: '#F97316', row: COMMAND_CENTER.row - 8, col: COMMAND_CENTER.col - 8, category: 'drone_ctrl' },
+  { id: 'drone_suppress', label: 'F-SWM', name: 'Suppression UAS Coordinator', color: '#F472B6', row: COMMAND_CENTER.row - 10, col: COMMAND_CENTER.col - 10, category: 'drone_ctrl' },
+];
 
-  // Nose cone
-  const noseGeo = new THREE.ConeGeometry(0.18 * s, 0.5 * s, 10);
-  noseGeo.rotateZ(-Math.PI / 2);
-  const nose = new THREE.Mesh(noseGeo, noseMat);
-  nose.position.set(1.25 * s, 0, 0);
-  tanker.add(nose);
+// Map ICS graph node IDs to map entity IDs for cross-highlighting
+const ICS_TO_MAP = {
+  // Individual named units
+  eng_69a: 'E-69A', eng_69b: 'E-69B', eng_23: 'E-23',
+  tender_71: 'WT-71', heli_1: 'H-1', vlat_1: 'AT-1', seat_1: 'SE-1',
+  lead_1: 'LP-1', ihc_8: 'IHC-8', hc_2: 'HC-2', hc_5: 'HC-5',
+  dozer_1: 'DZ-1', struct_19: 'SP-19',
+  // Unit group supervisors (same ID both sides — they're FIELD_ENTITIES)
+  engines: 'engines', hotshots: 'hotshots', hand_crew: 'hand_crew', dozer: 'dozer',
+  vlat: 'vlat', seat: 'seat', lead_plane: 'lead_plane', heli: 'heli',
+  tender: 'tender', struct_eng: 'struct_eng',
+  // Individual drones (d_XX → D-XX)
+  d_01: 'D-01', d_02: 'D-02', d_03: 'D-03', d_04: 'D-04', d_05: 'D-05', d_06: 'D-06',
+  d_07: 'D-07', d_08: 'D-08', d_09: 'D-09', d_10: 'D-10', d_11: 'D-11', d_12: 'D-12',
+  d_13: 'D-13', d_14: 'D-14', d_15: 'D-15', d_16: 'D-16', d_17: 'D-17', d_18: 'D-18',
+  d_19: 'D-19', d_20: 'D-20', d_21: 'D-21', d_22: 'D-22', d_23: 'D-23', d_24: 'D-24',
+  // Drone fleet control + type coordinators (same ID both sides — FIELD_ENTITIES)
+  drones: 'drones', drone_scout: 'drone_scout', drone_mapper: 'drone_mapper',
+  drone_reaper: 'drone_reaper', drone_relay: 'drone_relay', drone_safety: 'drone_safety',
+  drone_ignis: 'drone_ignis', drone_suppress: 'drone_suppress',
+  // ICP personnel (same ID both sides)
+  ic: 'ic', safety: 'safety', ops_chief: 'ops_chief',
+  plan_chief: 'plan_chief', log_chief: 'log_chief', pio: 'pio',
+  fin_chief: 'fin_chief', liaison: 'liaison',
+  sit_unit: 'sit_unit', fban: 'fban', res_unit: 'res_unit',
+  comms: 'comms', medical: 'medical', dispatch: 'dispatch', iroc: 'iroc',
+  // Field entities (same ID both sides)
+  fire_branch: 'fire_branch', air_ops: 'air_ops',
+  div_alpha: 'div_alpha', div_bravo: 'div_bravo',
+  struct_group: 'struct_group', le_branch: 'le_branch', traffic: 'traffic',
+  atgs: 'atgs',
+  // External sensors (same ID both sides)
+  raws: 'raws', satellite: 'satellite', alert_cam: 'alert_cam',
+  firis: 'firis', nws: 'nws', genasys: 'genasys',
+  // AI agents (same ID both sides)
+  ai_overwatch: 'ai_overwatch', ai_predict: 'ai_predict',
+  ai_swarm: 'ai_swarm', ai_evac: 'ai_evac', ai_deploy: 'ai_deploy',
+};
+const MAP_TO_ICS = {};
+for (const [ics, map] of Object.entries(ICS_TO_MAP)) MAP_TO_ICS[map] = ics;
 
-  // Tail cone (tapers to rear)
-  const tailConeGeo = new THREE.ConeGeometry(0.16 * s, 0.6 * s, 8);
-  tailConeGeo.rotateZ(Math.PI / 2);
-  const tailCone = new THREE.Mesh(tailConeGeo, fuselageMat);
-  tailCone.position.set(-1.3 * s, 0, 0);
-  tanker.add(tailCone);
-
-  // Main wings — flat boxes angled back slightly
-  const wingGeo = new THREE.BoxGeometry(0.8 * s, 0.03 * s, 1.8 * s);
-  const leftWing = new THREE.Mesh(wingGeo, wingMat);
-  leftWing.position.set(0.1 * s, -0.02 * s, 0);
-  leftWing.castShadow = true;
-  tanker.add(leftWing);
-
-  // Horizontal tail stabilizer
-  const hStabGeo = new THREE.BoxGeometry(0.35 * s, 0.02 * s, 0.9 * s);
-  const hStab = new THREE.Mesh(hStabGeo, tailMat);
-  hStab.position.set(-1.4 * s, 0.05 * s, 0);
-  tanker.add(hStab);
-
-  // Vertical tail fin
-  const vFinGeo = new THREE.BoxGeometry(0.4 * s, 0.5 * s, 0.03 * s);
-  const vFin = new THREE.Mesh(vFinGeo, tailMat);
-  vFin.position.set(-1.35 * s, 0.28 * s, 0);
-  tanker.add(vFin);
-
-  // Engine nacelles (2, under wings)
-  [-0.55, 0.55].forEach((zOff) => {
-    const engGeo = new THREE.CylinderGeometry(0.07 * s, 0.08 * s, 0.4 * s, 8);
-    engGeo.rotateZ(Math.PI / 2);
-    const eng = new THREE.Mesh(engGeo, engineMat);
-    eng.position.set(0.15 * s, -0.12 * s, zOff * s);
-    tanker.add(eng);
-
-    // Engine intake
-    const intakeGeo = new THREE.CylinderGeometry(0.08 * s, 0.07 * s, 0.05 * s, 8);
-    intakeGeo.rotateZ(Math.PI / 2);
-    const intake = new THREE.Mesh(intakeGeo, noseMat);
-    intake.position.set(0.36 * s, -0.12 * s, zOff * s);
-    tanker.add(intake);
-  });
-
-  // Red belly stripe (retardant tank indicator)
-  const bellyGeo = new THREE.BoxGeometry(1.2 * s, 0.04 * s, 0.28 * s);
-  const bellyMat = new THREE.MeshStandardMaterial({
-    color: 0xcc2211,
-    roughness: 0.5,
-    metalness: 0.2,
-  });
-  const belly = new THREE.Mesh(bellyGeo, bellyMat);
-  belly.position.set(0, -0.17 * s, 0);
-  tanker.add(belly);
-
-  return tanker;
-}
-
-// ─── Deploy units ───────────────────────────────────────────────────────
-const CREW_POSITIONS  = [[-14, -4], [-8, 2], [2, -10], [-20, 0]];
-const TANKER_POSITIONS = [[0, -20], [-20, -20]];
-
-function buildDeployGroup() {
-  const group = new THREE.Group();
-
-  CREW_POSITIONS.forEach(([x, z]) => {
-    const y = getHeight(x, z);
-    // Crew marker — solid orange cone
-    const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xE06820,
-      roughness: 0.6,
-      metalness: 0.2,
-    });
-    const cone = new THREE.Mesh(geo, mat);
-    cone.position.set(x, y + 0.6, z);
-    cone.castShadow = true;
-    group.add(cone);
-  });
-
-  TANKER_POSITIONS.forEach(([x, z]) => {
-    const y = getHeight(x, z) + 9;
-    const tanker = buildTankerMesh(1.2);
-    tanker.position.set(x, y, z);
-    // Slight bank angle for flying look
-    tanker.rotation.y = Math.atan2(z, x) + Math.PI * 0.5;
-    tanker.rotation.z = 0.08;
-    tanker.userData.isTanker = true;
-    group.add(tanker);
+export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive, fireData, icsEngine, onLiveData, highlightedNode, onNodeHover }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const simRef = useRef(null);
+  const animRef = useRef(null);
+  const tooltipDivRef = useRef(null);
+  const highlightRef = useRef(null);
+  const onNodeHoverRef = useRef(null);
+  highlightRef.current = highlightedNode;
+  onNodeHoverRef.current = onNodeHover;
+  const [mapStatus, setMapStatus] = useState('initializing');
+  const [fogOfWar, setFogOfWar] = useState(false);
+  const fogRef = useRef(false);
+  const [ui, setUi] = useState({
+    speed:1, acres:0, contain:0, drones:'0/12', phase:'Patrol',
+    events:[], evac:0, actions:0, fireDetected:false, fireActive:false,
   });
 
-  group.visible = false;
-  return group;
-}
-
-// ─── Subtle grid overlay ────────────────────────────────────────────────
-function buildGridOverlay() {
-  const grid = new THREE.GridHelper(TERRAIN_SIZE, 24,
-    new THREE.Color(0.25, 0.50, 0.75),
-    new THREE.Color(0.25, 0.50, 0.75)
-  );
-  grid.material.transparent = true;
-  grid.material.opacity = 0.04;
-  grid.material.blending = THREE.AdditiveBlending;
-  grid.position.y = 0.6;
-  return grid;
-}
-
-// ─── Placed units (from context menu) ───────────────────────────────────
-function buildPlacedUnits(placedUnits, scene, existingGroup) {
-  // Clear previous
-  if (existingGroup) {
-    existingGroup.traverse((child) => {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) child.material.dispose();
-    });
-    scene.remove(existingGroup);
-  }
-
-  const group = new THREE.Group();
-
-  placedUnits.forEach(u => {
-    const x = u.position.x;
-    const z = u.position.z;
-    const y = getHeight(x, z) || 3;
-
-    if (u.type === 'drone') {
-      // Realistic quadcopter
-      const drone = buildDroneMesh(2.5);
-      drone.position.set(x, y + 3.5, z);
-      drone.rotation.y = Math.random() * Math.PI * 2;
-      group.add(drone);
-    } else if (u.type === 'evac') {
-      // Arrow/marker for evac
-      const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x3DB87A,
-        transparent: true, opacity: 0.88,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(x, y + 0.6, z);
-      group.add(mesh);
-    } else {
-      // Crew — cone marker
-      const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xFFB84A,
-        transparent: true, opacity: 0.88,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(x, y + 0.6, z);
-      group.add(mesh);
-    }
-  });
-
-  scene.add(group);
-  return group;
-}
-
-// ─── Main component ─────────────────────────────────────────────────────
-export default function TerrainScene({
-  timeSlot,
-  sliderValue,
-  onTerrainClick,
-  onDroneSelect,
-  activeDroneIndex,
-  simulationMode,
-  activeLayers,
-  swarmActive,
-  evacActive,
-  deployActive,
-  placedUnits,
-}) {
-  const mountRef = useRef(null);
-  const sceneRef = useRef({});
-  const onDroneSelectRef = useRef(onDroneSelect);
-  const activeDroneIndexRef = useRef(activeDroneIndex);
-  useEffect(() => { onDroneSelectRef.current = onDroneSelect; }, [onDroneSelect]);
-  useEffect(() => { activeDroneIndexRef.current = activeDroneIndex; }, [activeDroneIndex]);
-
-  const handleClick = useCallback((e) => {
-    const { renderer, camera, terrain, swarmGroup } = sceneRef.current;
-    if (!renderer || !camera || !terrain) return;
-
-    const canvas = renderer.domElement;
-    const rect = canvas.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -((e.clientY - rect.top) / rect.height) * 2 + 1
-    );
-
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, camera);
-
-    // ── Check drone clicks first (higher priority than terrain) ──────────
-    if (swarmGroup && swarmGroup.visible) {
-      const droneHits = raycaster.intersectObjects(swarmGroup.children, true);
-      for (const hit of droneHits) {
-        // Walk up to direct child of swarmGroup
-        let obj = hit.object;
-        while (obj.parent && obj.parent !== swarmGroup) obj = obj.parent;
-        // Only trigger on actual drone meshes (skip coverage discs)
-        if (obj.userData.isDrone) {
-          const childIdx = swarmGroup.children.indexOf(obj);
-          // Children are [drone0, disc0, drone1, disc1, ...] → droneIndex = childIdx/2
-          const droneIndex = Math.floor(childIdx / 2);
-          onDroneSelect?.(droneIndex);
-          return;
-        }
-      }
-    }
-
-    // ── Terrain click fallback ────────────────────────────────────────────
-    const hits = raycaster.intersectObject(terrain);
-    if (hits.length > 0) {
-      const pt = hits[0].point;
-      onTerrainClick?.({
-        screenX: e.clientX,
-        screenY: e.clientY,
-        worldPos: { x: pt.x, z: pt.z },
-      });
-    }
-  }, [onTerrainClick, onDroneSelect]);
-
+  // ── Initialize Three.js Tile Map ────────────────────────────────────────
   useEffect(() => {
-    const container = mountRef.current;
-    if (!container) return;
+    if (!mapContainerRef.current) return;
+    let destroyed = false;
+    setMapStatus('loading');
 
-    const w = container.clientWidth;
-    const h = container.clientHeight;
+    // ── Web Mercator helpers ──
+    const DEG2RAD = Math.PI / 180;
+    function lat2mercY(lat) { return Math.log(Math.tan(Math.PI / 4 + (lat * DEG2RAD) / 2)); }
+    function mercY2lat(y) { return (Math.atan(Math.exp(y)) - Math.PI / 4) * 2 / DEG2RAD; }
+    function lng2mercX(lng) { return lng * DEG2RAD; }
+    function mercX2lng(x) { return x / DEG2RAD; }
 
-    // ── Renderer ────────────────────────────────────────────────────
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(w, h);
-    renderer.setClearColor(0x060a10, 1);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
-    renderer.xr.enabled = true;
+    // Merc bounds for the fire zone
+    const mercXMin = lng2mercX(LNG_MIN), mercXMax = lng2mercX(LNG_MAX);
+    const mercYMin = lat2mercY(LAT_MIN), mercYMax = lat2mercY(LAT_MAX);
+    const mercCX = (mercXMin + mercXMax) / 2, mercCY = (mercYMin + mercYMax) / 2;
+
+    // ── Three.js scene ──
+    const container = mapContainerRef.current;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(container.offsetWidth, container.offsetHeight);
+    renderer.setClearColor(0x0a0e16);
     container.appendChild(renderer.domElement);
 
-    // ── VR Enter button ─────────────────────────────────────────────
-    const vrBtn = VRButton.createButton(renderer);
-    Object.assign(vrBtn.style, {
-      position: 'absolute', bottom: '14px', right: '14px',
-      fontFamily: 'monospace', fontSize: '10px', letterSpacing: '0.10em',
-      padding: '8px 16px', borderRadius: '6px',
-      background: 'rgba(4,6,10,0.80)', color: '#5b9bd5',
-      border: '1px solid rgba(91,155,213,0.60)',
-      cursor: 'pointer', textTransform: 'uppercase',
-    });
-    container.style.position = 'relative';
-    container.appendChild(vrBtn);
-
-    // ── Scene ────────────────────────────────────────────────────────
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x080e18, 0.005);
-    scene.background = new THREE.Color(0x060a10);
 
-    // ── Camera ───────────────────────────────────────────────────────
-    const camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 400);
-    camera.position.set(0, CAM_HEIGHT, CAM_RADIUS);
-    camera.lookAt(0, 4, 0);
+    // Orthographic camera — units are Web Mercator radians
+    const aspect = container.offsetWidth / container.offsetHeight;
+    const viewH = (mercYMax - mercYMin) * 1.3; // slight padding
+    const viewW = viewH * aspect;
+    const camera = new THREE.OrthographicCamera(-viewW/2, viewW/2, viewH/2, -viewH/2, 0.1, 10);
+    camera.position.set(mercCX, mercCY, 5);
+    camera.lookAt(mercCX, mercCY, 0);
+    camera.up.set(0, 1, 0);
 
-    // ── Lighting ────────────────────────────────────────────────────
-    const ambient = new THREE.AmbientLight(0x304868, 2.0);
-    scene.add(ambient);
+    // ── Tile loading ──
+    const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+    const tileCache = new Map();
+    const tileMeshes = new Map();
+    const loader = new THREE.TextureLoader();
+    loader.crossOrigin = 'anonymous';
 
-    const dir = new THREE.DirectionalLight(0x88aacc, 1.8);
-    dir.position.set(-30, 55, 20);
-    dir.castShadow = true;
-    dir.shadow.mapSize.set(1024, 1024);
-    dir.shadow.camera.near = 0.5;
-    dir.shadow.camera.far = 200;
-    dir.shadow.camera.left = -50;
-    dir.shadow.camera.right = 50;
-    dir.shadow.camera.top = 50;
-    dir.shadow.camera.bottom = -50;
-    dir.shadow.bias = -0.001;
-    scene.add(dir);
+    function tileKey(z, x, y) { return `${z}/${x}/${y}`; }
 
-    const rim = new THREE.DirectionalLight(0xddaa66, 0.7);
-    rim.position.set(25, 20, -30);
-    scene.add(rim);
-
-    const fill = new THREE.DirectionalLight(0x445566, 0.5);
-    fill.position.set(0, 10, 50);
-    scene.add(fill);
-
-    const hemi = new THREE.HemisphereLight(0x445577, 0x1a1a10, 0.6);
-    scene.add(hemi);
-
-    // ── Terrain ─────────────────────────────────────────────────────
-    const geo = buildTerrain();
-    const terrainMat = new THREE.MeshPhongMaterial({
-      vertexColors: true,
-      shininess: 12,
-      specular: new THREE.Color(0x334455),
-    });
-    const terrainMesh = new THREE.Mesh(geo, terrainMat);
-    terrainMesh.receiveShadow = true;
-    scene.add(terrainMesh);
-
-    scene.add(buildGridOverlay());
-
-    // ── Fire ────────────────────────────────────────────────────────
-    const glowTex = makeGlowTexture();
-    const overlays = [];
-    const halos = [];
-    const particleSystems = [];
-    const fireLights = [];
-    const fireVolumes = [];
-
-    FIRE_ZONES.forEach((zone) => {
-      const overlay = buildFireOverlay(zone, false);
-      scene.add(overlay);
-      overlays.push(overlay);
-
-      const halo = buildFireOverlay(zone, true);
-      scene.add(halo);
-      halos.push(halo);
-
-      // Ember particles (small sparks, fewer and subtler)
-      const ps = buildFireParticles(zone, glowTex);
-      scene.add(ps);
-      particleSystems.push(ps);
-
-      // Volumetric fire shader
-      const vol = buildFireVolume(zone);
-      scene.add(vol);
-      fireVolumes.push(vol);
-
-      const light = new THREE.PointLight(new THREE.Color(0.95, 0.4, 0.05), 0, zone.radius * 4, 1.8);
-      const lh = getHeight(zone.cx, zone.cz);
-      light.position.set(zone.cx, lh + 4, zone.cz);
-      scene.add(light);
-      fireLights.push(light);
-    });
-
-    const perimeterRings = FIRE_ZONES.map((zone) => {
-      const ring = buildPerimeterRing(zone);
-      scene.add(ring);
-      return ring;
-    });
-
-    const windArrows = buildWindArrows();
-    scene.add(windArrows);
-
-    const swarmGroup = buildSwarmGroup();
-    scene.add(swarmGroup);
-
-    const evacRoutes = buildEvacRoutes();
-    scene.add(evacRoutes);
-
-    const deployGroup = buildDeployGroup();
-    scene.add(deployGroup);
-
-    // ── Store refs ──────────────────────────────────────────────────
-    sceneRef.current = {
-      renderer, scene, camera, terrain: terrainMesh,
-      overlays, halos, particleSystems, fireLights, fireVolumes,
-      perimeterRings, windArrows,
-      swarmGroup, evacRoutes, deployGroup,
-      camAngle: 0,
-      placedGroup: null,
-      xrDroneIndex: null,
-      xrControllers: [],
-    };
-
-    // ── XR Controllers (PICO) ────────────────────────────────────────
-    const tempMatrix = new THREE.Matrix4();
-    const xrRaycaster = new THREE.Raycaster();
-
-    function buildControllerRay() {
-      const geo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, -1),
-      ]);
-      const mat = new THREE.LineBasicMaterial({ color: 0x5b9bd5, transparent: true, opacity: 0.7 });
-      const line = new THREE.Line(geo, mat);
-      line.scale.z = 30;
-      return line;
+    function lng2tileX(lng, z) { return Math.floor((lng + 180) / 360 * (1 << z)); }
+    function lat2tileY(lat, z) {
+      const r = lat * DEG2RAD;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+    function tileX2lng(x, z) { return x / (1 << z) * 360 - 180; }
+    function tileY2lat(y, z) {
+      const n = Math.PI - 2 * Math.PI * y / (1 << z);
+      return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
     }
 
-    [0, 1].forEach((i) => {
-      const ctrl = renderer.xr.getController(i);
-      ctrl.add(buildControllerRay());
-      scene.add(ctrl);
-      sceneRef.current.xrControllers.push(ctrl);
+    function loadTile(z, tx, ty) {
+      const key = tileKey(z, tx, ty);
+      if (tileCache.has(key)) return;
+      tileCache.set(key, 'loading');
 
-      ctrl.addEventListener('selectstart', () => {
-        const s = sceneRef.current;
-        if (!s.swarmGroup?.visible) {
-          s.xrDroneIndex = null;
-          onDroneSelectRef.current?.(null);
-          return;
-        }
-        tempMatrix.identity().extractRotation(ctrl.matrixWorld);
-        xrRaycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
-        xrRaycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      const url = TILE_URL.replace('{z}', z).replace('{x}', tx).replace('{y}', ty);
+      loader.load(url, (tex) => {
+        if (destroyed) return;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = true;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
-        const hits = xrRaycaster.intersectObjects(s.swarmGroup.children, true);
-        for (const hit of hits) {
-          let obj = hit.object;
-          while (obj.parent && obj.parent !== s.swarmGroup) obj = obj.parent;
-          if (obj.userData.isDrone) {
-            const childIdx = s.swarmGroup.children.indexOf(obj);
-            const droneIndex = Math.floor(childIdx / 2);
-            // Toggle: pressing same drone again deselects
-            const next = s.xrDroneIndex === droneIndex ? null : droneIndex;
-            s.xrDroneIndex = next;
-            onDroneSelectRef.current?.(next);
-            return;
+        // Tile geographic bounds in Mercator
+        const west = tileX2lng(tx, z), east = tileX2lng(tx + 1, z);
+        const north = tileY2lat(ty, z), south = tileY2lat(ty + 1, z);
+        const mx0 = lng2mercX(west), mx1 = lng2mercX(east);
+        const my0 = lat2mercY(south), my1 = lat2mercY(north);
+        const tw = mx1 - mx0, th = my1 - my0;
+
+        const geo = new THREE.PlaneGeometry(tw, th);
+        const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.FrontSide });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(mx0 + tw / 2, my0 + th / 2, 0);
+        mesh.userData = { z, tx, ty };
+        scene.add(mesh);
+        tileMeshes.set(key, mesh);
+        tileCache.set(key, 'loaded');
+      }, undefined, () => { tileCache.set(key, 'error'); });
+    }
+
+    let currentZoom = -1;
+    let pendingCleanup = false;
+    let cleanupTimer = null;
+
+    function updateTiles() {
+      // Determine visible bounds in Mercator
+      const left = camera.position.x + camera.left;
+      const right = camera.position.x + camera.right;
+      const bottom = camera.position.y + camera.bottom;
+      const top2 = camera.position.y + camera.top;
+
+      // Pick zoom level based on how many screen pixels each tile would cover
+      const viewWidthMerc = right - left;
+      const screenWidth = container.offsetWidth;
+      const targetPxPerTile = 384;
+      const idealZoom = Math.log2(2 * Math.PI * screenWidth / (viewWidthMerc * targetPxPerTile));
+      // Cap at zoom 17 — z18 is too dense and Esri tiles are blurry there anyway
+      let z = Math.max(2, Math.min(17, Math.round(idealZoom)));
+
+      // Convert visible bounds to tile coordinates
+      const westLng = mercX2lng(left), eastLng = mercX2lng(right);
+      const southLat = mercY2lat(bottom), northLat = mercY2lat(top2);
+      const txMin = Math.max(0, lng2tileX(westLng, z) - 1);
+      const txMax = Math.min((1 << z) - 1, lng2tileX(eastLng, z) + 1);
+      const tyMin = Math.max(0, lat2tileY(northLat, z) - 1);
+      const tyMax = Math.min((1 << z) - 1, lat2tileY(southLat, z) + 1);
+
+      // If tile grid is too large at this zoom, step down
+      const tileCountX = txMax - txMin + 1;
+      const tileCountY = tyMax - tyMin + 1;
+      if (tileCountX * tileCountY > 64) {
+        z = Math.max(2, z - 1);
+        // Recalculate at lower zoom
+        const txMin2 = Math.max(0, lng2tileX(westLng, z) - 1);
+        const txMax2 = Math.min((1 << z) - 1, lng2tileX(eastLng, z) + 1);
+        const tyMin2 = Math.max(0, lat2tileY(northLat, z) - 1);
+        const tyMax2 = Math.min((1 << z) - 1, lat2tileY(southLat, z) + 1);
+        // Load at reduced zoom
+        for (let ty = tyMin2; ty <= tyMax2; ty++) {
+          for (let tx = txMin2; tx <= txMax2; tx++) {
+            loadTile(z, tx, ty);
           }
-        }
-        // Missed all drones — deselect
-        s.xrDroneIndex = null;
-        onDroneSelectRef.current?.(null);
-      });
-    });
-
-    // Show zone 0 immediately
-    overlays[0].visible = true;
-    halos[0].visible = true;
-    particleSystems[0].visible = true;
-    fireVolumes[0].visible = true;
-    fireLights[0].intensity = 2.5;
-
-    // ── Resize ──────────────────────────────────────────────────────
-    const onResize = () => {
-      const nw = container.clientWidth;
-      const nh = container.clientHeight;
-      camera.aspect = nw / nh;
-      camera.updateProjectionMatrix();
-      renderer.setSize(nw, nh);
-    };
-    const resizeObs = new ResizeObserver(onResize);
-    resizeObs.observe(container);
-
-    // ── Animation loop ──────────────────────────────────────────────
-    const clock = new THREE.Clock();
-
-    function animate() {
-      const dt = clock.getDelta();
-      const elapsed = clock.elapsedTime;
-
-      const s = sceneRef.current;
-      if (!s.renderer) return;
-
-      // Camera — drone POV or default orbit
-      const curDroneIdx = s.xrDroneIndex ?? activeDroneIndexRef.current;
-      if (curDroneIdx !== null && curDroneIdx !== undefined && s.swarmGroup?.visible) {
-        const droneChildIdx = curDroneIdx * 2; // [drone, disc, drone, disc, ...]
-        const droneObj = s.swarmGroup.children[droneChildIdx];
-        if (droneObj) {
-          const tx = droneObj.position.x;
-          const tz = droneObj.position.z;
-          const ty = droneObj.position.y + 2; // just above the drone
-          // Smoothly lerp camera to drone position
-          s.camera.position.x += (tx - s.camera.position.x) * 0.06;
-          s.camera.position.y += (ty - s.camera.position.y) * 0.06;
-          s.camera.position.z += (tz - s.camera.position.z) * 0.06;
-          s.camera.lookAt(-4, 1, 2); // look toward fire center, slightly down
         }
       } else {
-        s.camAngle += CAM_SPEED * dt;
-        const cx = Math.sin(s.camAngle) * CAM_RADIUS;
-        const cz = Math.cos(s.camAngle) * CAM_RADIUS;
-        s.camera.position.set(cx, CAM_HEIGHT, cz);
-        s.camera.lookAt(0, 4, 0);
-      }
-
-      // Animate particles
-      s.particleSystems.forEach((ps) => {
-        if (!ps.visible) return;
-        const { opacities, speeds, offsets, zone, count } = ps.userData;
-        const posArr = ps.geometry.attributes.position.array;
-
-        for (let i = 0; i < count; i++) {
-          posArr[i * 3 + 1] += speeds[i];
-          opacities[i] += speeds[i] * 0.35;
-
-          posArr[i * 3 + 0] += Math.sin(elapsed + i * 0.37) * 0.004;
-          posArr[i * 3 + 2] += Math.cos(elapsed + i * 0.53) * 0.004;
-
-          if (opacities[i] > 1.0) {
-            opacities[i] = 0;
-            const r2 = Math.sqrt(Math.random()) * zone.radius * 0.85;
-            const theta2 = Math.random() * Math.PI * 2;
-            const nx = zone.cx + Math.cos(theta2) * r2;
-            const nz = zone.cz + Math.sin(theta2) * r2;
-            posArr[i * 3 + 0] = nx;
-            posArr[i * 3 + 2] = nz;
-            offsets[i * 2 + 0] = nx;
-            offsets[i * 2 + 1] = nz;
-            posArr[i * 3 + 1] = getHeight(nx, nz);
+        for (let ty = tyMin; ty <= tyMax; ty++) {
+          for (let tx = txMin; tx <= txMax; tx++) {
+            loadTile(z, tx, ty);
           }
         }
-        ps.geometry.attributes.position.needsUpdate = true;
+      }
 
-        const base = zone.slot === 0 ? 0.85 : zone.slot === 1 ? 0.70 : 0.55;
-        ps.material.opacity = base + Math.sin(elapsed * 2.5 + zone.slot) * 0.08;
-      });
+      // Remove out-of-view tiles at current zoom (with padding)
+      const padMerc = viewWidthMerc * 0.5;
+      for (const [key, mesh] of tileMeshes) {
+        if (mesh.userData.z === z) {
+          const mx = mesh.position.x, my = mesh.position.y;
+          if (mx < left - padMerc || mx > right + padMerc || my < bottom - padMerc || my > top2 + padMerc) {
+            scene.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.map?.dispose();
+            mesh.material.dispose();
+            tileMeshes.delete(key);
+            tileCache.delete(key);
+          }
+        }
+      }
 
-      // Animate drone rotors + hover bob
-      if (s.swarmGroup && s.swarmGroup.visible) {
-        s.swarmGroup.children.forEach((child) => {
-          if (child.userData.isDrone) {
-            // Gentle hover bob
-            child.position.y += Math.sin(elapsed * 1.8 + child.position.x * 0.5) * 0.004;
-            // Spin each rotor pivot on Y axis (rotorPivot is horizontal plane)
-            child.children.forEach((part) => {
-              if (part.userData.isRotor) {
-                part.rotation.y += 0.22;
-              }
+      // Handle zoom transitions — schedule old tile cleanup with debounce
+      if (z !== currentZoom) {
+        // Push old tiles behind new ones
+        for (const [key, mesh] of tileMeshes) {
+          mesh.position.z = (mesh.userData.z === z) ? 0 : -0.1;
+        }
+        // Debounced cleanup: wait 300ms for zoom to settle, then remove old tiles
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+        cleanupTimer = setTimeout(() => {
+          if (destroyed) return;
+          for (const [key, mesh] of tileMeshes) {
+            if (mesh.userData.z !== z) {
+              scene.remove(mesh);
+              mesh.geometry.dispose();
+              mesh.material.map?.dispose();
+              mesh.material.dispose();
+              tileMeshes.delete(key);
+              tileCache.delete(key);
+            }
+          }
+          currentZoom = z;
+        }, 300);
+      }
+    }
+
+    // ── Pan / Zoom controls ──
+    let isDragging = false, lastMX = 0, lastMY = 0;
+    const el = renderer.domElement;
+
+    el.addEventListener('mousedown', (e) => {
+      isDragging = true; lastMX = e.clientX; lastMY = e.clientY;
+      el.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
+      lastMX = e.clientX; lastMY = e.clientY;
+      // Convert pixel delta to Mercator delta
+      const pxToMerc = (camera.right - camera.left) / container.offsetWidth;
+      camera.position.x -= dx * pxToMerc;
+      camera.position.y += dy * pxToMerc;
+      camera.updateProjectionMatrix();
+      needTileUpdate = true;
+    });
+    window.addEventListener('mouseup', () => { isDragging = false; el.style.cursor = 'grab'; });
+
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+
+      // Zoom toward mouse position
+      const rect = el.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width;
+      const my = (e.clientY - rect.top) / rect.height;
+      const worldX = camera.position.x + camera.left + mx * (camera.right - camera.left);
+      const worldY = camera.position.y + camera.top - my * (camera.top - camera.bottom);
+
+      camera.left *= zoomFactor; camera.right *= zoomFactor;
+      camera.top *= zoomFactor; camera.bottom *= zoomFactor;
+
+      // Adjust position to keep point under mouse
+      camera.position.x = worldX - camera.left - mx * (camera.right - camera.left);
+      camera.position.y = worldY - camera.top + my * (camera.top - camera.bottom);
+      camera.updateProjectionMatrix();
+      needTileUpdate = true;
+    }, { passive: false });
+
+    el.style.cursor = 'grab';
+    let needTileUpdate = true;
+
+    // ── Fire overlay canvas ──
+    const overlayCanvas = document.createElement('canvas');
+    overlayCanvas.style.position = 'absolute';
+    overlayCanvas.style.pointerEvents = 'none';
+    overlayCanvas.style.top = '0';
+    overlayCanvas.style.left = '0';
+    container.appendChild(overlayCanvas);
+
+    function syncOverlay() {
+      const cw = container.offsetWidth, ch = container.offsetHeight;
+      const dpr = window.devicePixelRatio || 1;
+
+      // Fire zone bounds in screen pixels
+      const viewLeft = camera.position.x + camera.left;
+      const viewRight = camera.position.x + camera.right;
+      const viewTop = camera.position.y + camera.top;
+      const viewBottom = camera.position.y + camera.bottom;
+      const viewW2 = viewRight - viewLeft, viewH2 = viewTop - viewBottom;
+
+      const fxLeft = (mercXMin - viewLeft) / viewW2 * cw;
+      const fxRight = (mercXMax - viewLeft) / viewW2 * cw;
+      const fyTop = (viewTop - mercYMax) / viewH2 * ch;
+      const fyBottom = (viewTop - mercYMin) / viewH2 * ch;
+
+      const fw = fxRight - fxLeft, fh = fyBottom - fyTop;
+
+      overlayCanvas.style.left = fxLeft + 'px';
+      overlayCanvas.style.top = fyTop + 'px';
+      overlayCanvas.style.width = fw + 'px';
+      overlayCanvas.style.height = fh + 'px';
+      // Cap canvas resolution to avoid massive buffers when zoomed in far
+      const maxCanvasDim = 4096;
+      const rawW = Math.round(fw * dpr), rawH = Math.round(fh * dpr);
+      const canvasScale = Math.min(1, maxCanvasDim / Math.max(rawW, rawH, 1));
+      const finalW = Math.max(1, Math.round(rawW * canvasScale));
+      const finalH = Math.max(1, Math.round(rawH * canvasScale));
+      overlayCanvas.width = finalW;
+      overlayCanvas.height = finalH;
+
+      const ctx2 = overlayCanvas.getContext('2d');
+      if (ctx2) ctx2.setTransform(finalW / Math.max(1, fw), 0, 0, finalH / Math.max(1, fh), 0, 0);
+
+      return { gw: Math.max(1, fw), gh: Math.max(1, fh) };
+    }
+
+    // ── Click to ignite (screen → Mercator → lat/lng) ──
+    el.addEventListener('click', (e) => {
+      if (destroyed) return;
+      const rect = el.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width;
+      const my = (e.clientY - rect.top) / rect.height;
+      const worldX = camera.position.x + camera.left + mx * (camera.right - camera.left);
+      const worldY = camera.position.y + camera.top - my * (camera.top - camera.bottom);
+      const clickLng = mercX2lng(worldX);
+      const clickLat = mercY2lat(worldY);
+      // Only fire the click callback, don't ignite here
+      if (simRef.current?._handleClick) simRef.current._handleClick(clickLat, clickLng, e);
+    });
+
+    // ── Resize handling ──
+    function onResize() {
+      if (destroyed) return;
+      const w = container.offsetWidth, h = container.offsetHeight;
+      if (w === 0 || h === 0) return;
+      renderer.setSize(w, h);
+      const aspect2 = w / h;
+      const halfH = (camera.top - camera.bottom) / 2;
+      camera.left = -halfH * aspect2;
+      camera.right = halfH * aspect2;
+      camera.updateProjectionMatrix();
+      needTileUpdate = true;
+    }
+    const resObs = new ResizeObserver(onResize);
+    resObs.observe(container);
+
+    // ── Render loop ──
+    let rafId;
+    function renderLoop() {
+      if (destroyed) return;
+      rafId = requestAnimationFrame(renderLoop);
+      if (needTileUpdate) { updateTiles(); needTileUpdate = false; }
+      renderer.render(scene, camera);
+    }
+    updateTiles();
+    renderLoop();
+
+    // Store map utilities for initSim
+    const mapUtils = {
+      mercXMin, mercXMax, mercYMin, mercYMax,
+      lng2mercX, lat2mercY, mercX2lng, mercY2lat,
+      camera, renderer, overlayCanvas, syncOverlay,
+      container,
+    };
+
+    setMapStatus('ready');
+    initSim(mapUtils);
+
+    return () => {
+      destroyed = true;
+      if (simRef.current?._decisionCleanup) simRef.current._decisionCleanup();
+      if (simRef.current?._cleanupFireIgnite) simRef.current._cleanupFireIgnite();
+      if (simRef.current?._positionEmitTimer) clearInterval(simRef.current._positionEmitTimer);
+      cancelAnimationFrame(rafId);
+      resObs.disconnect();
+      renderer.dispose();
+      if (renderer.domElement.parentNode) renderer.domElement.remove();
+      if (overlayCanvas.parentNode) overlayCanvas.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  // ── Initialize Simulation ───────────────────────────────────────────────
+  function initSim(mapUtils) {
+    const engine = new FireSpreadEngine({ windSpeed:25, windDirection:315, humidity:12, temperature:94 });
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = GRID_COLS; offCanvas.height = GRID_ROWS;
+
+    const drones = makeDrones();
+    const units = makeUnits();
+
+    const sim = {
+      engine, offCanvas, offCtx: offCanvas.getContext('2d'),
+      drones, units,
+      fireOps: { hoseLines:[], dozerLines:[], handLines:[], retardantDrops:[], waterDrops:[], backfireLines:[], structProtect:[] },
+      routeStates: {}, zoneStates: POP_ZONES.map(z => ({ ...z, status:'clear', evacPct:0 })),
+      speed: 1, frame: 0,
+      fireStepAccum: 0, fireStepsPerFrame: 0.05,  // balanced: spreads but agents can contain it
+      fireActive: false,       // user has placed fire
+      fireDetected: false,     // a drone has spotted it
+      fireDetectedAt: 0,       // timestamp of detection
+      detectorDroneId: null,   // which drone found it
+      icsStarted: false,       // ICS engine activated
+      simTimeSec: 0,           // accumulated simulation time in seconds
+      ag: { dronesDeployed:0, lastDroneAssign:0, logged:new Set(), actions:0,
+            retardantReq:false, crewWithdrawn:false, routesActive:false, escalated:false,
+            lastWaterDrop:0 },
+      events: [], lastUi: 0,
+      canvas: null, ctx: null, gw: 0, gh: 0,
+      tooltipTarget: null,     // { type, id, x, y } for hover tooltips
+    };
+    simRef.current = sim;
+
+    // ── Listen for IC decision effects from ICS graph iframe ──
+    function onDecisionEffect(ev) {
+      if (!ev.data || ev.data.type !== 'ic_decision_resolved') return;
+      const fx = ev.data.effects;
+      if (!fx) return;
+      const s = simRef.current;
+      if (!s) return;
+      const eng = s.engine;
+
+      // Apply containment delta — visually suppress/expand burning cells
+      if (fx.containmentDelta && fx.containmentDelta > 0) {
+        // Positive containment = extinguish some burning cells
+        const fronts = eng.getActiveFronts();
+        const toKill = Math.round(fronts.length * (fx.containmentDelta / 100));
+        for (let i = 0; i < toKill && i < fronts.length; i++) {
+          const f = fronts[i];
+          eng.cells[f.row * GRID_COLS + f.col] = BURNED;
+        }
+        s.events.push({ time: Date.now(), agent: 'deploy', msg: `IC DECISION EFFECT: Containment improved +${fx.containmentDelta}%. ${toKill} cells suppressed.`, t: Date.now() });
+      } else if (fx.containmentDelta && fx.containmentDelta < 0) {
+        // Negative containment = fire advances faster temporarily
+        s.fireStepsPerFrame = Math.min(0.2, s.fireStepsPerFrame * 1.3);
+        setTimeout(() => { if (simRef.current) simRef.current.fireStepsPerFrame = 0.05; }, 15000);
+        s.events.push({ time: Date.now(), agent: 'deploy', msg: `IC DECISION EFFECT: Containment weakened ${fx.containmentDelta}%. Fire advancing faster.`, t: Date.now() });
+      }
+
+      // Apply ROS multiplier — slow/speed fire spread
+      if (fx.rosMultiplier && fx.rosMultiplier !== 1) {
+        if (fx.rosMultiplier < 1) {
+          // Slow spread: apply retardant at the leading edge
+          const lead = eng.getActiveFronts()[0];
+          if (lead) {
+            eng.applyRetardant(lead.row, lead.col, 8, 30);
+            s.fireOps.retardantDrops.push({
+              r1: lead.row - 6, c1: lead.col - 6,
+              r2: lead.row + 6, c2: lead.col + 6,
+              startTime: Date.now(), duration: 20000
             });
           }
-        });
-      }
-
-      // Animate volumetric fire shaders
-      if (s.fireVolumes) {
-        s.fireVolumes.forEach((group) => {
-          if (!group.visible) return;
-          group.children.forEach((mesh) => {
-            if (mesh.userData.uniforms) {
-              mesh.userData.uniforms.uTime.value = elapsed;
-            }
-          });
-        });
-      }
-
-      // Pulse fire lights — subtle warm glow, not blinding
-      s.fireLights.forEach((light, idx) => {
-        if (light.intensity > 0) {
-          const base = 1.6 + idx * 0.2;
-          light.intensity = base + Math.sin(elapsed * 2.8 + idx * 1.5) * 0.4;
-        }
-      });
-
-      // ── XR thumbstick drone flight (PICO controllers) ────────────
-      const xrSession = s.renderer.xr.getSession?.();
-      if (xrSession && s.xrDroneIndex !== null && s.swarmGroup?.visible) {
-        const droneChildIdx = s.xrDroneIndex * 2;
-        const droneObj = s.swarmGroup.children[droneChildIdx];
-        if (droneObj) {
-          const FLY_SPEED = 10 * dt;
-          const sources = xrSession.inputSources;
-          // Left controller → XZ movement, Right controller → altitude
-          if (sources[0]?.gamepad) {
-            const ax = sources[0].gamepad.axes[2] ?? 0;
-            const az = sources[0].gamepad.axes[3] ?? 0;
-            if (Math.abs(ax) > 0.12) droneObj.position.x += ax * FLY_SPEED;
-            if (Math.abs(az) > 0.12) droneObj.position.z += az * FLY_SPEED;
-          }
-          if (sources[1]?.gamepad) {
-            const ay = sources[1].gamepad.axes[3] ?? 0;
-            if (Math.abs(ay) > 0.12) droneObj.position.y -= ay * FLY_SPEED;
-          }
+          s.events.push({ time: Date.now(), agent: 'deploy', msg: `IC DECISION EFFECT: Fire spread reduced ${Math.round((1 - fx.rosMultiplier) * 100)}%. Retardant applied.`, t: Date.now() });
         }
       }
 
-      s.renderer.render(s.scene, s.camera);
+      // Apply threatened structures reduction — move struct engines
+      if (fx.threatenedDelta && fx.threatenedDelta < 0) {
+        const structEng = s.units.find(u => u.type === 'structeng');
+        if (structEng && POP_ZONES.length > 0) {
+          setUnitTarget(structEng, POP_ZONES[0].row, POP_ZONES[0].col);
+          s.events.push({ time: Date.now(), agent: 'deploy', msg: `IC DECISION EFFECT: Structure protection deployed. ${Math.abs(fx.threatenedDelta)} structures secured.`, t: Date.now() });
+        }
+      }
+
+      // Move units visually in response to decision
+      if (ev.data.decisionId === 'wind_shift_reposition') {
+        // Move engines eastward on map
+        const engines = s.units.filter(u => u.type === 'engine');
+        const windRad = ((eng.windDirection + 180) % 360) * Math.PI / 180;
+        engines.forEach((u, i) => {
+          setUnitTarget(u, u.trow + Math.sin(windRad) * 20, u.tcol + Math.cos(windRad) * 20);
+        });
+      } else if (ev.data.decisionId === 'spot_fire_divert') {
+        // Move drones to spot fire areas
+        const scouts = s.drones.filter(d => d.launched && d.dtype === 'scout').slice(0, 3);
+        const stats = eng.getStats();
+        const cR = stats?.centroidRow || 128, cC = stats?.centroidCol || 128;
+        scouts.forEach(d => {
+          d.trow = cR + (Math.random() - 0.5) * 40;
+          d.tcol = cC + (Math.random() - 0.5) * 40;
+        });
+      } else if (ev.data.decisionId === 'crew_fatigue') {
+        // If pulled crew, move hotshots back
+        if (fx.containmentDelta < 0) {
+          const hs = s.units.find(u => u.type === 'hotshot');
+          if (hs) setUnitTarget(hs, hs.homeRow, hs.homeCol);
+        }
+      }
     }
-    renderer.setAnimationLoop(animate);
+    window.addEventListener('message', onDecisionEffect);
+    sim._decisionCleanup = () => window.removeEventListener('message', onDecisionEffect);
 
-    // ── Cleanup ─────────────────────────────────────────────────────
-    return () => {
-      renderer.setAnimationLoop(null);
-      resizeObs.disconnect();
-      if (vrBtn.parentNode) vrBtn.parentNode.removeChild(vrBtn);
-      geo.dispose();
-      terrainMat.dispose();
-      glowTex.dispose();
-      overlays.forEach((o) => { o.geometry.dispose(); o.material.dispose(); });
-      halos.forEach((o) => { o.geometry.dispose(); o.material.dispose(); });
-      particleSystems.forEach((ps) => { ps.geometry.dispose(); ps.material.dispose(); });
-      fireVolumes.forEach((g) => g.traverse((c) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }));
-      perimeterRings.forEach((r) => { r.geometry.dispose(); r.material.dispose(); });
-      windArrows.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
-      swarmGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
-      evacRoutes.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
-      deployGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
-      renderer.dispose();
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
-      }
-      sceneRef.current = {};
+    // ── DEBUG: Log drone init state ──
+    const launchedInit = drones.filter(d => d.launched);
+    debugLog(`SIM INIT: ${drones.length} drones created, ${launchedInit.length} launched initially`);
+    for (const d of launchedInit) {
+      debugLog(`  ${d.id} [${d.dtype}] ${d.model} at (${d.row.toFixed(1)},${d.col.toFixed(1)}) → target (${d.trow.toFixed(1)},${d.tcol.toFixed(1)})`);
+    }
+    debugLog(`MPH_TO_CPF = ${MPH_TO_CPF.toFixed(6)}, SIM_TIME_SCALE = ${SIM_TIME_SCALE}`);
+    debugLog(`Scout 40mph → ${(40 * MPH_TO_CPF).toFixed(4)} cells/frame → ${(40 * MPH_TO_CPF * 60).toFixed(2)} cells/sec`);
+
+    // ── Fire overlay canvas — synced from Three.js camera ──
+    sim.canvas = mapUtils.overlayCanvas;
+    sim.ctx = mapUtils.overlayCanvas.getContext('2d');
+    sim._syncOverlay = mapUtils.syncOverlay;
+    // Initial sync
+    const dims = mapUtils.syncOverlay();
+    sim.gw = dims.gw;
+    sim.gh = dims.gh;
+
+    // ── Click to ignite ──
+    sim._handleClick = (lat, lng, e) => {
+      if (lat < LAT_MIN || lat > LAT_MAX || lng < LNG_MIN || lng > LNG_MAX) return;
+      engine.igniteAtLatLng(lat, lng, 5);
+      sim.fireActive = true;
+      debugLog(`IGNITE at (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+      sim.events.push({ time: Date.now(), agent:'system', msg: `Fire ignited at ${lat.toFixed(3)}\u00B0N, ${Math.abs(lng).toFixed(3)}\u00B0W`, t:Date.now() });
+      // Notify 3D iframe to ignite at same location
+      window.postMessage({ type: 'fire_ignite_to_3d', lat, lng }, '*');
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Respond to timeSlot ───────────────────────────────────────────────
-  useEffect(() => {
-    const { overlays, halos, particleSystems, fireLights, fireVolumes } = sceneRef.current;
-    if (!overlays) return;
+    // ── Listen for fire ignition from 3D view ──
+    function onFireIgnite(ev) {
+      if (ev.data?.type === 'fire_ignite' && ev.data.lat && ev.data.lng) {
+        const { lat, lng } = ev.data;
+        if (lat >= LAT_MIN && lat <= LAT_MAX && lng >= LNG_MIN && lng <= LNG_MAX) {
+          engine.igniteAtLatLng(lat, lng, 5);
+          sim.fireActive = true;
+          debugLog(`IGNITE from 3D at (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+          sim.events.push({ time: Date.now(), agent:'system', msg: `Fire ignited at ${lat.toFixed(3)}\u00B0N, ${Math.abs(lng).toFixed(3)}\u00B0W`, t:Date.now() });
+        }
+      }
+    }
+    window.addEventListener('message', onFireIgnite);
+    sim._cleanupFireIgnite = () => window.removeEventListener('message', onFireIgnite);
 
-    overlays.forEach((overlay, idx) => {
-      const zone = FIRE_ZONES[idx];
-      const visible = zone.slot <= timeSlot;
-      overlay.visible = visible;
-      halos[idx].visible = visible;
-      particleSystems[idx].visible = visible;
-      if (fireVolumes) fireVolumes[idx].visible = visible;
-      fireLights[idx].intensity = visible ? 2.0 : 0;
-    });
-  }, [timeSlot]);
+    // ── Periodic position emitter for 3D view (every 200ms) ──
+    sim._positionEmitTimer = setInterval(() => {
+      if (!sim.drones || !sim.units) return;
+      const drones = sim.drones.map(d => ({
+        id: d.id, dtype: d.dtype, model: d.model, launched: d.launched,
+        lat: LAT_MAX - (d.row / GRID_ROWS) * (LAT_MAX - LAT_MIN),
+        lng: LNG_MIN + (d.col / GRID_COLS) * (LNG_MAX - LNG_MIN),
+      }));
+      const units = sim.units.map(u => ({
+        id: u.id, type: u.type,
+        lat: LAT_MAX - (u.row / GRID_ROWS) * (LAT_MAX - LAT_MIN),
+        lng: LNG_MIN + (u.col / GRID_COLS) * (LNG_MAX - LNG_MIN),
+        atHome: Math.abs(u.row - u.homeRow) < 2 && Math.abs(u.col - u.homeCol) < 2,
+      }));
+      window.postMessage({
+        type: 'unit_positions', drones, units,
+        fireActive: sim.fireActive || false,
+        fireDetected: sim.fireDetected || false,
+      }, '*');
+    }, 200);
 
-  // ── Respond to simulationMode ─────────────────────────────────────────
-  useEffect(() => {
-    const { perimeterRings } = sceneRef.current;
-    if (!perimeterRings) return;
-    perimeterRings.forEach((ring, idx) => {
-      ring.visible = simulationMode && FIRE_ZONES[idx].slot <= timeSlot;
-    });
-  }, [simulationMode, timeSlot]);
+    // ── Tooltip on hover ──
+    function grid2ll(row, col) {
+      const lat = LAT_MAX - (row / GRID_ROWS) * (LAT_MAX - LAT_MIN);
+      const lng = LNG_MIN + (col / GRID_COLS) * (LNG_MAX - LNG_MIN);
+      return { lat, lng };
+    }
 
-  // ── Respond to activeLayers ───────────────────────────────────────────
-  useEffect(() => {
-    const { windArrows } = sceneRef.current;
-    if (!windArrows) return;
-    windArrows.visible = !!(activeLayers?.wind);
-  }, [activeLayers]);
+    const dtypeLabels = {
+      scout:'DFR Scout Drone', mapper:'Mapping Fixed-Wing', relay:'Comms Relay UAS',
+      safety:'Safety Overwatch', ignis:'IGNIS Aerial Ignition', reaper:'MQ-9 Reaper (HALE)',
+      suppression:'Heavy-Lift Suppression',
+      // Legacy aliases
+      recon:'DFR Scout Drone', spotter:'Mapping Fixed-Wing', ignition:'IGNIS Aerial Ignition',
+    };
+    const dtypeDescs = {
+      scout:'DJI M30T / Skydio X10 quadcopter. 40mph, 30-45min flight. Thermal + visual camera. First on scene for fire confirmation.',
+      mapper:'senseFly eBee X / JOUAV CW-25 fixed-wing. 25mph, 1-4hr flight. Systematic grid mapping builds real-time fire perimeter.',
+      relay:'Comms relay at altitude. Bridges P25 radio frequencies for ground crews in canyons. 2hr endurance.',
+      safety:'DJI Mavic 3T. 40mph. Monitors crew positions via IR. Verifies escape routes. Flags safety concerns.',
+      ignis:'DJI M600 + IGNIS II system. Drops dragon eggs (KMnO4 spheres) for backfire ops. 10-120 spheres/min. 30min flight.',
+      reaper:'General Atomics MQ-9 Reaper. 230mph at 25,000ft. 27hr endurance. Wide-area persistent thermal surveillance.',
+      suppression:'FireSwarm Thunder Wasp. Heavy-lift, carries 350kg water/retardant payload. Autonomous pickup and drop.',
+      // Legacy
+      recon:'DJI M30T / Skydio X10 quadcopter. 40mph, 30-45min flight. Thermal + visual camera.',
+      spotter:'senseFly eBee X fixed-wing. 25mph, 1-4hr flight. Systematic grid mapping.',
+      ignition:'DJI M600 + IGNIS II. Dragon egg aerial ignition for backfire operations.',
+    };
+    const unitLabels = {
+      engine:'Type 3 Engine', tender:'Water Tender (4,000gal)', hotshot:'Hotshot Crew (IHC) — 20 personnel',
+      crew:'Type 2 Hand Crew — 20 personnel', dozer:'Cat D8T Dozer', air:'DC-10 VLAT (11,600gal)',
+      seat:'AT-802 Air Tractor SEAT', heli:'CH-47D Chinook Helitack', lead:'OV-10A Bronco Lead Plane',
+      structeng:'Structure Engine (Type 1)',
+    };
+    const unitDescs = {
+      engine:'3-person crew, 500gal tank. Direct attack with hose lines. Pump-and-roll. 35mph on road.',
+      tender:'2-person crew. Shuttles 4,000gal water to engines on fireline. 30mph on road.',
+      hotshot:'20-person elite IHC crew. Hikes at 2.5mph through brush. Hand line construction, burnout with drip torches.',
+      crew:'20-person hand crew. Hikes at 2.5mph. Manual fireline with Pulaski and McLeod tools. Mop-up, cold trailing.',
+      dozer:'Cat D8T with 15ft blade. Transported on lowboy trailer (25mph), cuts firebreak off-road at 6mph.',
+      air:'DC-10 VLAT. 11,600gal Phos-Chek retardant. 300mph cruise. Drops AHEAD of fire. 35min turnaround at Van Nuys.',
+      seat:'AT-802 Air Tractor. 800gal retardant. 170mph. Fast turnaround. Flanks and initial attack.',
+      heli:'CH-47D Chinook. 2,600gal Bambi Bucket. 157mph. Cools hot spots. Night-capable with NVG.',
+      lead:'OV-10A Bronco. 200mph. Scouts drop zone, marks with smoke, guides tanker approach through smoke.',
+      structeng:'Structure protection: triage, sprinklers, gel, foam application.',
+    };
 
-  // ── Respond to swarmActive ────────────────────────────────────────────
-  useEffect(() => {
-    const { swarmGroup } = sceneRef.current;
-    if (!swarmGroup) return;
-    swarmGroup.visible = !!swarmActive;
-  }, [swarmActive]);
+    const tooltipHandler = (e) => {
+      const s = simRef.current;
+      if (!s || !s.canvas) return;
+      const tt = tooltipDivRef.current;
+      if (!tt) return;
+      const el = mapContainerRef.current;
+      if (!el) return;
 
-  // ── Respond to evacActive ─────────────────────────────────────────────
-  useEffect(() => {
-    const { evacRoutes } = sceneRef.current;
-    if (!evacRoutes) return;
-    evacRoutes.visible = !!evacActive;
-  }, [evacActive]);
+      // Use the overlay canvas bounding rect directly — this correctly accounts for
+      // ALL CSS transforms (scale, translate) without needing projection APIs
+      const canvasRect = s.canvas.getBoundingClientRect();
+      const parentRect = el.getBoundingClientRect();
 
-  // ── Respond to deployActive ───────────────────────────────────────────
-  useEffect(() => {
-    const { deployGroup } = sceneRef.current;
-    if (!deployGroup) return;
-    deployGroup.visible = !!deployActive;
-  }, [deployActive]);
+      // Mouse position in overlay canvas coordinates (same space as g2px)
+      const mx = (e.clientX - canvasRect.left) / canvasRect.width * s.gw;
+      const my = (e.clientY - canvasRect.top) / canvasRect.height * s.gh;
 
-  // ── Respond to placedUnits ────────────────────────────────────────────
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (!s.scene) return;
-    s.placedGroup = buildPlacedUnits(placedUnits || [], s.scene, s.placedGroup);
-  }, [placedUnits]);
+      // Tooltip position in the parent div's internal coordinate space
+      const parentScale = el.offsetWidth / parentRect.width;
+      const tmx = (e.clientX - parentRect.left) * parentScale;
+      const tmy = (e.clientY - parentRect.top) * parentScale;
 
-  return (
-    <div
-      ref={mountRef}
-      onClick={handleClick}
-      style={{
-        width: '100%',
-        height: '100%',
-        borderRadius: 14,
-        overflow: 'hidden',
-        cursor: 'crosshair',
-        background: '#060a10',
-        position: 'relative',
-      }}
-    >
-      {activeDroneIndex === null && <SceneOverlay />}
-    </div>
-  );
-}
+      const hitRadius = 20;
 
-    // ── DEPLOY: CONDITION-DRIVEN dispatch (not fixed timers) ──
-    // Level 2+: Engines deploy when fire confirmed and actively spreading
+      // Check drones — g2px returns canvas-space coords, same as mx/my
+      for (const d of s.drones) {
+        if (!d.launched) continue;
+        const sp = g2px(d.row, d.col, s.gw, s.gh);
+        if (Math.abs(sp.x - mx) < hitRadius && Math.abs(sp.y - my) < hitRadius) {
+          const dc = DTYPE_COLORS[d.dtype] || '#22D3EE';
+          const spd = SPEED[d.dtype] || 40;
+          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${dc};margin-bottom:3px">${d.id} — ${d.model || dtypeLabels[d.dtype] || d.dtype}</div>` +
+            `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${dtypeDescs[d.dtype] || ''}</div>` +
+            `<div style="font-size:8px;color:#64748B">Speed: ${spd}mph | Flight time: ${d.flightTime||40}min<br>Status: ${s.fireDetected ? 'Active Response' : 'Patrol'}</div>`;
+          tt.style.display = 'block';
+          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
+          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          // Cross-highlight: notify ICS graph with individual drone ID
+          if (onNodeHoverRef.current) onNodeHoverRef.current('d_' + d.id.replace('D-', ''));
+          return;
+        }
+      }
+
+      // Check units
+      for (const u of s.units) {
+        const sp = g2px(u.row, u.col, s.gw, s.gh);
+        if (Math.abs(sp.x - mx) < hitRadius && Math.abs(sp.y - my) < hitRadius) {
+          const uc = UTYPE[u.type]?.c || '#FBBF24';
+          const spd = SPEED[u.type] || 20;
+          const crewInfo = u.crew ? `Crew: ${u.crew} | ` : '';
+          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${uc};margin-bottom:3px">${u.id} — ${unitLabels[u.type] || u.type}</div>` +
+            `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${unitDescs[u.type] || ''}</div>` +
+            `<div style="font-size:8px;color:#64748B">${crewInfo}Speed: ${spd}mph | From: ${u.station||'Unknown'}<br>Vehicle: ${u.vehicle||''}<br>Status: ${s.fireDetected ? 'Deployed' : 'Staged at station'}</div>`;
+          tt.style.display = 'block';
+          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
+          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          // Cross-highlight: notify ICS graph
+          if (onNodeHoverRef.current) onNodeHoverRef.current(MAP_TO_ICS[u.id] || u.type);
+          return;
+        }
+      }
+
+      // Check ICP personnel
+      for (const p of ICP_PERSONNEL) {
+        const pp = g2px(COMMAND_CENTER.row + p.offsetR, COMMAND_CENTER.col + p.offsetC, s.gw, s.gh);
+        if (Math.abs(pp.x - mx) < 12 && Math.abs(pp.y - my) < 12) {
+          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${p.color};margin-bottom:3px">${p.name}</div>` +
+            `<div style="font-size:9px;color:#94A3B8">Stationed at Incident Command Post</div>`;
+          tt.style.display = 'block';
+          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
+          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          if (onNodeHoverRef.current) onNodeHoverRef.current(p.id);
+          return;
+        }
+      }
+
+      // Check field entities (branch directors, sensors, AI agents)
+      for (const fe of FIELD_ENTITIES) {
+        const fePx = g2px(fe.row, fe.col, s.gw, s.gh);
+        if (Math.abs(fePx.x - mx) < 14 && Math.abs(fePx.y - my) < 14) {
+          const catLabel = fe.category === 'ai' ? 'AI Agent' : fe.category === 'sensor' ? 'External Sensor' :
+            fe.category === 'airborne' ? 'Airborne Supervisor' : 'Field Command';
+          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${fe.color};margin-bottom:3px">${fe.name}</div>` +
+            `<div style="font-size:9px;color:#94A3B8">${catLabel}</div>`;
+          tt.style.display = 'block';
+          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
+          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          if (onNodeHoverRef.current) onNodeHoverRef.current(fe.id);
+          return;
+        }
+      }
+
+      // Check command center
+      const ccSp = g2px(COMMAND_CENTER.row, COMMAND_CENTER.col, s.gw, s.gh);
+      if (Math.abs(ccSp.x - mx) < 20 && Math.abs(ccSp.y - my) < 20) {
+        const stashed = s.drones.filter(d => !d.launched).length;
+        const launched = s.drones.filter(d => d.launched).length;
+        const phase = icsEngine ? icsEngine.icsPhase : 'standby';
+        tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:#A78BFA;margin-bottom:3px">FireSight ICP — Incident Command Post</div>` +
+          `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">Pepperdine University staging area (34.074°N, 118.551°W). Real ICP location used during the 2025 Palisades Fire.</div>` +
+          `<div style="font-size:8px;color:#64748B">UAS Fleet: ${launched} airborne / ${stashed} in reserve (${DRONE_STASH_TOTAL} total)<br>ICS Phase: ${phase.toUpperCase()}</div>`;
+        tt.style.display = 'block';
+        tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
+        tt.style.top = Math.max(tmy - 10, 4) + 'px';
+        if (onNodeHoverRef.current) onNodeHoverRef.current('ic');
+        return;
+      }
+
+      // Nothing hovered — clear highlight
+      tt.style.display = 'none';
+      if (onNodeHoverRef.current) onNodeHoverRef.current(null);
+    };
+
+    mapContainerRef.current?.addEventListener('mousemove', tooltipHandler);
+
+    // Click-to-ignite is now handled via sim._handleClick from the Three.js click listener
+
+    startLoop();
+  }
+
+  // ── Grid (row,col) → Overlay canvas pixel ─────────────────────────────
+  function g2px(row, col, gw, gh) {
+    return { x: (col / GRID_COLS) * gw, y: (row / GRID_ROWS) * gh };
+  }
+
+  function ll2px(lat, lng, gw, gh) {
+    const x = ((lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * gw;
+    const y = (1 - (lat - LAT_MIN) / (LAT_MAX - LAT_MIN)) * gh;
+    return { x, y };
+  }
+
+  // ── K-Means Clustering of Fire Fronts ─────────────────────────────────
+  function clusterFronts(fronts, k) {
+    if (fronts.length === 0) return [];
+    if (fronts.length <= k) return fronts.map(f => ({ row:f.row, col:f.col, size:1 }));
+    const step = Math.max(1, Math.floor(fronts.length / k));
+    const centroids = [];
+    for (let i = 0; i < k; i++) centroids.push({ row:fronts[Math.min(i*step,fronts.length-1)].row, col:fronts[Math.min(i*step,fronts.length-1)].col });
+    for (let iter = 0; iter < 3; iter++) {
+      const groups = centroids.map(() => ({ sR:0, sC:0, n:0 }));
+      for (const f of fronts) {
+        let best = 0, bestD = Infinity;
+        for (let j = 0; j < centroids.length; j++) { const d = (f.row-centroids[j].row)**2 + (f.col-centroids[j].col)**2; if (d < bestD) { bestD=d; best=j; } }
+        groups[best].sR += f.row; groups[best].sC += f.col; groups[best].n++;
+      }
+      for (let j = 0; j < centroids.length; j++) { if (groups[j].n > 0) { centroids[j].row = groups[j].sR/groups[j].n; centroids[j].col = groups[j].sC/groups[j].n; } }
+    }
+    const sizes = centroids.map(() => 0);
+    for (const f of fronts) {
+      let best = 0, bestD = Infinity;
+      for (let j = 0; j < centroids.length; j++) { const d = (f.row-centroids[j].row)**2 + (f.col-centroids[j].col)**2; if (d < bestD) { bestD=d; best=j; } }
+      sizes[best]++;
+    }
+    return centroids.map((c,i) => ({ row:Math.round(c.row), col:Math.round(c.col), size:sizes[i] })).filter(c => c.size > 0).sort((a,b) => b.size - a.size);
+  }
+
+  function getDefensePos(fronts, count, engine) {
+    // Place engines at evenly-spaced points ALONG the active fire edge, offset
+    // a few cells OUTWARD (away from fire center) so they're just outside the flames.
+    if (fronts.length === 0) return [];
+    // Fire center (used only to compute outward direction)
+    let fcR=0,fcC=0;
+    for (const f of fronts) { fcR+=f.row; fcC+=f.col; }
+    fcR/=fronts.length; fcC/=fronts.length;
+    // Sample `count` evenly-spaced front cells
+    const step = Math.max(1, Math.floor(fronts.length / count));
+    const OFFSET = 8; // cells outward from the fire edge
+    const positions = [];
+    for (let i = 0; i < count; i++) {
+      const f = fronts[Math.min(i * step, fronts.length - 1)];
+      // Direction from fire center → this front cell = outward
+      const dr = f.row - fcR, dc = f.col - fcC;
+      const len = Math.sqrt(dr*dr + dc*dc) || 1;
+      const nr = dr/len, nc = dc/len;
+      positions.push({
+        row: Math.round(Math.max(2, Math.min(GRID_ROWS-2, f.row + nr * OFFSET))),
+        col: Math.round(Math.max(2, Math.min(GRID_COLS-2, f.col + nc * OFFSET))),
+      });
+    }
+    return positions;
+  }
+
+  function fireDist(zone, engine) {
+    let minD = 999;
+    for (let i = 0; i < engine.rows * engine.cols; i++) {
+      if (engine.cells[i] !== BURNING) continue;
+      const r = Math.floor(i/engine.cols), c = i%engine.cols;
+      const d = Math.sqrt((r-zone.row)**2 + (c-zone.col)**2);
+      if (d < minD) minD = d;
+    }
+    return minD;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // DRONE PATROL — autonomous scan patterns before fire detection
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  function updateDronePatrol(sim) {
+    const { drones } = sim;
+    for (const d of drones) {
+      if (!d.launched) continue;  // still in stash at command center
+      d.patrolAngle += 0.008 * sim.speed;
+
+      if (d.dtype === 'scout' || d.dtype === 'recon') {
+        // Scout (Skydio/M30): fast figure-8 scan pattern
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.sin(d.patrolAngle * 2) * d.patrolRadius * 0.6;
+      } else if (d.dtype === 'mapper' || d.dtype === 'spotter') {
+        // Mapper (eBee): systematic grid lines (fixed-wing lawnmower pattern)
+        const row = Math.floor(d.patrolAngle / (Math.PI * 2)) % 8;
+        const progress = (d.patrolAngle % (Math.PI * 2)) / (Math.PI * 2);
+        const rowDir = row % 2 === 0 ? 1 : -1;
+        d.trow = d.patrolCenterRow - d.patrolRadius + (row / 8) * d.patrolRadius * 2;
+        d.tcol = d.patrolCenterCol + rowDir * (progress - 0.5) * d.patrolRadius * 2;
+      } else if (d.dtype === 'relay') {
+        // Comms relay: slow station-keeping at altitude
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.3) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.3) * d.patrolRadius;
+      } else if (d.dtype === 'safety') {
+        // Safety overwatch (Mavic 3T): patrol near crew positions
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.7) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.7) * d.patrolRadius;
+      } else if (d.dtype === 'reaper') {
+        // MQ-9 Reaper: wide slow orbit at 25,000ft
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.15) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.15) * d.patrolRadius;
+      } else if (d.dtype === 'suppression') {
+        // Heavy-lift: circular pattern near water source then fire
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.5) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.5) * d.patrolRadius;
+      } else {
+        // IGNIS/other: standby, small hover drift
+        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.2) * d.patrolRadius;
+        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.2) * d.patrolRadius;
+      }
+    }
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // FIRE DETECTION — check if any drone can see burning cells
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  function checkFireDetection(sim) {
+    if (sim.fireDetected || !sim.fireActive) return false;
+    const { drones, engine } = sim;
+    const range = DRONE_SENSOR_RANGE;
+    const rangeSq = range * range;
+
+    for (const d of drones) {
+      if (!d.launched) continue;
+      if (!['recon','spotter','scout','mapper','safety','reaper'].includes(d.dtype)) continue;
+      const dr = Math.round(d.row), dc = Math.round(d.col);
+
+      for (let r = Math.max(0, dr - range); r < Math.min(GRID_ROWS, dr + range); r++) {
+        for (let c = Math.max(0, dc - range); c < Math.min(GRID_COLS, dc + range); c++) {
+          if ((r-dr)*(r-dr) + (c-dc)*(c-dc) > rangeSq) continue;
+          if (engine.cells[r * GRID_COLS + c] === BURNING) {
+            sim.fireDetected = true;
+            sim.fireDetectedAt = Date.now();
+            sim.detectorDroneId = d.id;
+            sim.events.push({
+              time: Date.now(), agent:'swarm',
+              msg: `${d.id} (${d.dtype}) THERMAL ALERT \u2014 fire detected! Vectoring fleet.`,
+              t: Date.now()
+            });
+            sim.events.push({
+              time: Date.now(), agent:'overwatch',
+              msg: `INCIDENT DECLARED. 5 AI agents online. Orchestrating response.`,
+              t: Date.now()
+            });
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // FIRE BEHAVIOR SCORING — composite threat assessment drives all dispatch
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  function getResponseLevel(acres, ros, fronts, spots, windSpeed) {
+    // Composite score: weights calibrated to real ICS escalation thresholds
+    const score = (acres * 0.3) + (ros * 10) + (fronts * 0.1) + (windSpeed * 0.5) + (spots * 5);
+    // Level 1: Size-up (initial detection, < 2 acres)
+    // Level 2: Initial Attack (confirmed fire, engines + heli)
+    // Level 3: Extended Attack (growing, add heavy resources)
+    // Level 4: Major Fire (structure threat, VLAT + evac)
+    // Level 5: Type 1 Incident (all resources committed)
+    if (score > 120) return 5;
+    if (score > 60)  return 4;
+    if (score > 25)  return 3;
+    if (score > 8)   return 2;
+    return 1;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // AUTONOMOUS AGENT TICK — only runs AFTER fire detection
+  // Dispatch is CONDITION-DRIVEN: units deploy based on fire behavior, not timers
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  function agentTick(sim) {
+    if (!sim.fireDetected) return;
+    const now = Date.now();
+    if (now - (sim._lastAgentTick || 0) < 1500) return;
+    sim._lastAgentTick = now;
+
+    const { engine, drones, units, fireOps, ag } = sim;
+    const stats = engine.getStats();
+    if (!stats || stats.totalAffected === 0) return;
+
+    const acres = Math.round(stats.totalAcres);
+    const ros = stats.rosChainPerHour;
+    const fronts = stats.activeFrontCells;
+    const spots = stats.spotFireCount;
+    const activeFronts = engine.getActiveFronts();
+    const windRad = ((engine.windDirection + 180) % 360) * Math.PI / 180;
+    const secSinceDetection = (now - sim.fireDetectedAt) / 1000;
+    const level = getResponseLevel(acres, ros, fronts, spots, engine.windSpeed);
+
+    // Fire centroid (center of active fronts — IN THE ASH, only for direction calc)
+    let cR = 0, cC = 0;
+    if (activeFronts.length > 0) { for (const f of activeFronts) { cR += f.row; cC += f.col; } cR /= activeFronts.length; cC /= activeFronts.length; }
+    // Leading edge: the frontmost burning cell in the wind direction
+    function leadingEdge() { let b = activeFronts[0], bs = -Infinity; for (const f of activeFronts) { const s = -Math.cos(windRad)*f.row + Math.sin(windRad)*f.col; if (s > bs) { bs=s; b=f; } } return b; }
+    // Helper: get a fire-edge point offset outward from fire center
+    // Used to place ground units AT the fire edge, not in the ash
+    function edgePoint(angleFraction) {
+      // Pick a front cell at the given fraction (0-1) of the sorted perimeter
+      if (activeFronts.length === 0) return { row: 128, col: 128 };
+      const idx = Math.min(Math.floor(angleFraction * activeFronts.length), activeFronts.length - 1);
+      const f = activeFronts[idx];
+      // Offset outward from fire center
+      const dr = f.row - cR, dc = f.col - cC;
+      const len = Math.sqrt(dr*dr + dc*dc) || 1;
+      return { row: f.row + (dr/len)*6, col: f.col + (dc/len)*6 };
+    }
+    // Helper: get the fire-edge point closest to a given direction from center
+    function edgeInDirection(dirRow, dirCol) {
+      if (activeFronts.length === 0) return { row: 128, col: 128 };
+      let best = activeFronts[0], bestDot = -Infinity;
+      const len = Math.sqrt(dirRow*dirRow + dirCol*dirCol) || 1;
+      const nr = dirRow/len, nc = dirCol/len;
+      for (const f of activeFronts) {
+        const dot = (f.row - cR)*nr + (f.col - cC)*nc;
+        if (dot > bestDot) { bestDot = dot; best = f; }
+      }
+      return { row: best.row + nr*8, col: best.col + nc*8 };
+    }
+    const addEvent = (agent, msg) => {
+      sim.events.push({ time: now, agent, msg, t: now });
+      // Forward to comms log via postMessage (same window — App.jsx listens)
+      const agentLabels = { swarm:'DRONE SWARM', predict:'AI PREDICT', deploy:'DEPLOY', evac:'AI EVAC', overwatch:'OVERWATCH', system:'SYSTEM' };
+      window.postMessage({ type: 'map_event', from: agentLabels[agent]||agent.toUpperCase(), msg, msgType: agent==='evac'?'safety':agent==='deploy'?'command':'ai' }, '*');
+    };
+
+    // ── SWARM: launch drones from command center stash based on fire size ──
+    const launchedDrones = drones.filter(d => d.launched);
+    const stashedDrones = drones.filter(d => !d.launched);
+    const desiredLaunched = Math.min(DRONE_STASH_TOTAL, Math.max(INITIAL_PATROL, INITIAL_PATROL + Math.ceil(acres / 15) + Math.ceil(fronts / 25) + spots * 2));
+
+    if (launchedDrones.length < desiredLaunched && stashedDrones.length > 0) {
+      const toLaunch = Math.min(desiredLaunched - launchedDrones.length, stashedDrones.length);
+      for (let i = 0; i < toLaunch; i++) {
+        const d = stashedDrones[i];
+        d.launched = true;
+        // Send new drones to the fire edge, not the ash center
+        const ep = edgePoint(i / Math.max(1, toLaunch));
+        d.trow = Math.round(ep.row + (Math.random() - 0.5) * 8);
+        d.tcol = Math.round(ep.col + (Math.random() - 0.5) * 8);
+      }
+      const newTotal = drones.filter(d => d.launched).length;
+      const remaining = drones.filter(d => !d.launched).length;
+      if (!ag.logged.has('launch_' + newTotal)) {
+        ag.logged.add('launch_' + newTotal);
+        addEvent('swarm', `DECISION: ${acres} acres / ${fronts} front cells → launching ${toLaunch} drone${toLaunch>1?'s':''}. Fleet: ${newTotal}/${DRONE_STASH_TOTAL} (${remaining} reserve).`);
+        ag.actions++;
+      }
+    }
+
+    // Reassign all launched drones to fire edge clusters
+    if (now - ag.lastDroneAssign > 4000) {
+      ag.lastDroneAssign = now;
+      const active = drones.filter(d => d.launched);
+      const clusters = clusterFronts(activeFronts, Math.min(active.length, Math.max(3, Math.ceil(active.length / 3))));
+      let di = 0;
+      for (let ci = 0; ci < clusters.length && di < active.length; ci++) {
+        const cl = clusters[ci];
+        // Offset cluster center outward from fire center so drones hover over the edge, not the ash
+        const dr = cl.row - cR, dc = cl.col - cC;
+        const len = Math.sqrt(dr*dr + dc*dc) || 1;
+        const oRow = cl.row + (dr/len)*5, oCol = cl.col + (dc/len)*5;
+        const dronesFor = Math.min(4, Math.max(1, Math.round(cl.size / Math.max(1, fronts) * active.length)));
+        for (let d = 0; d < dronesFor && di < active.length; d++) {
+          active[di].trow = oRow + (d - dronesFor / 2) * 3;
+          active[di].tcol = oCol + (d - dronesFor / 2) * 2;
+          di++;
+        }
+      }
+      // Remaining drones orbit the fire perimeter
+      while (di < active.length) {
+        const frac = di / active.length;
+        const ep = edgePoint(frac);
+        active[di].trow = ep.row;
+        active[di].tcol = ep.col;
+        di++;
+      }
+      ag.dronesDeployed = active.length;
+    }
+
+    // ── PREDICT: fire behavior analysis (condition-driven) ──
+    if (acres >= 1 && !ag.logged.has('predict_init')) {
+      ag.logged.add('predict_init');
+      addEvent('predict', `ANALYSIS: ROS ${ros.toFixed(1)} ch/hr, Wind ${engine.windSpeed}mph @ ${engine.windDirection}°, ${fronts} active fronts. Threat Level ${level}/5. Spotting risk: ${engine.windSpeed>20?'EXTREME':engine.windSpeed>15?'HIGH':'MODERATE'}.`);
+      ag.actions++;
+    }
+    if (acres >= 5 && !ag.logged.has('predict_forecast')) {
+      ag.logged.add('predict_forecast');
+      const est1h = Math.round(acres * (1 + ros * 0.5 + engine.windSpeed * 0.05));
+      addEvent('predict', `FORECAST: 1h projection ${est1h} acres (50-scenario ensemble). Confidence ${ros>2?'58':'72'}%. ${ros>2?'Extreme ROS — recommend aerial suppression.':'Recommend direct attack.'}`);
+      ag.actions++;
+    }
+    // Periodic updates as fire grows
+    if (acres > 20 && !ag.logged.has('predict_update_'+Math.floor(acres/30)*30)) {
+      ag.logged.add('predict_update_'+Math.floor(acres/30)*30);
+      addEvent('predict', `UPDATE: Fire now ${acres} acres, ROS ${ros.toFixed(1)} ch/hr. Threat Level ${level}/5. ${spots>0?`${spots} spot fires active.`:''} Containment ${engine.windSpeed>20?'unlikely':'possible'} with current resources.`);
+      ag.actions++;
+    }
+
+    // ── DEPLOY: CONDITION-DRIVEN dispatch ──
+    // Units are dispatched ONCE to a road-accessible staging point near the fire.
+    // After arriving, they hold position and only reposition every 30 seconds (real time).
+
+    // Helper: find nearest road node to a point (for staging on roads, not in brush)
+    function nearestRoadStaging(targetRow, targetCol) {
+      let bestR = targetRow, bestC = targetCol, bestDist = Infinity;
+      for (const rn of ROAD_NODES) {
+        const d = (rn.row - targetRow) ** 2 + (rn.col - targetCol) ** 2;
+        if (d < bestDist) { bestDist = d; bestR = rn.row; bestC = rn.col; }
+      }
+      return { row: bestR, col: bestC };
+    }
+
     const engines = units.filter(u => u.type === 'engine');
     if (level >= 2 && acres >= 2 && activeFronts.length > 0) {
-      const defPos = getDefensePos(activeFronts, engines.length, engines);
-      fireOps.hoseLines.length = 0;
-      for (let ei = 0; ei < engines.length; ei++) {
-        if (ei < defPos.length) {
-          setUnitTarget(engines[ei], defPos[ei].row, defPos[ei].col);
-          const nearF = activeFronts[Math.min(ei*Math.floor(activeFronts.length/engines.length),activeFronts.length-1)];
-          fireOps.hoseLines.push({ ur:defPos[ei].row, uc:defPos[ei].col, fr:nearF.row, fc:nearF.col });
+      // Dispatch engines ONCE, then only reposition every 30s
+      if (!ag.logged.has('engine_attack')) {
+        ag.logged.add('engine_attack');
+        const defPos = getDefensePos(activeFronts, engines.length, engine);
+        for (let ei = 0; ei < engines.length; ei++) {
+          if (ei < defPos.length) {
+            const staging = nearestRoadStaging(defPos[ei].row, defPos[ei].col);
+            setUnitTarget(engines[ei], staging.row, staging.col);
+          }
+        }
+        addEvent('deploy',`DECISION: Fire confirmed ${acres} acres, ROS ${ros.toFixed(1)} ch/hr → dispatching ${engines.length} engines. E-69A/B (Palisades), E-23 (Brentwood). ETA 8-12 min.`);
+        ag.actions += 2;
+        ag.lastEngineRepos = now;
+      }
+      // Reposition engines every 30s to follow the fire's advance
+      if (ag.lastEngineRepos && now - ag.lastEngineRepos > 30000) {
+        ag.lastEngineRepos = now;
+        const defPos = getDefensePos(activeFronts, engines.length, engine);
+        for (let ei = 0; ei < engines.length; ei++) {
+          if (ei < defPos.length) {
+            // Only move if fire has shifted significantly (>15 cells from current position)
+            const dr = defPos[ei].row - engines[ei].row, dc = defPos[ei].col - engines[ei].col;
+            if (Math.sqrt(dr * dr + dc * dc) > 15) {
+              const staging = nearestRoadStaging(defPos[ei].row, defPos[ei].col);
+              setUnitTarget(engines[ei], staging.row, staging.col);
+            }
+          }
         }
       }
-      if (!ag.logged.has('engine_attack')) { ag.logged.add('engine_attack'); addEvent('deploy',`DECISION: Fire confirmed ${acres} acres, ROS ${ros.toFixed(1)} ch/hr → dispatching ${engines.length} engines. E-69A/B (Palisades), E-23 (Brentwood). ETA 8-12 min.`); ag.actions+=2; }
     }
 
-    // Level 2+: Water tender when fire needs sustained water supply
-    const tender = units.find(u => u.type==='tender');
+    // Level 2+: Water tender behind fire line (upwind, on road)
+    const tender = units.find(u => u.type === 'tender');
     if (tender && level >= 2 && acres >= 5) {
-      setUnitTarget(tender, (cR||128)+Math.cos(windRad)*20, (cC||128)-Math.sin(windRad)*20);
-      if (!ag.logged.has('tender')) { ag.logged.add('tender'); addEvent('deploy',`DECISION: ${acres} acres requires sustained water → WT-71 (4,000gal) from LACoFD Stn 71 via Malibu Canyon Rd.`); ag.actions++; }
+      if (!ag.logged.has('tender')) {
+        ag.logged.add('tender');
+        const upwindPt = edgeInDirection(Math.cos(windRad), -Math.sin(windRad));
+        const staging = nearestRoadStaging(upwindPt.row, upwindPt.col);
+        setUnitTarget(tender, staging.row, staging.col);
+        addEvent('deploy',`DECISION: ${acres} acres requires sustained water → WT-71 (4,000gal) from LACoFD Stn 71 via Malibu Canyon Rd.`);
+        ag.actions++;
+      }
     }
 
-    // Level 2+: Helicopter when perimeter too broad for ground-only attack
+    // Level 2+: Helicopter orbits the fire EDGE, not the center
     const heli = units.find(u => u.type==='heli');
     if (heli && level >= 2 && (acres >= 8 || fronts > 20 || ros > 2.0)) {
-      const orbitAng=now*0.0003; heli.trow=(cR||128)+Math.sin(orbitAng)*30; heli.tcol=(cC||128)+Math.cos(orbitAng)*30;
+      // Orbit along the active fire perimeter
+      const orbitFrac = ((now * 0.0001) % 1);
+      const ep = edgePoint(orbitFrac);
+      heli.trow = ep.row; heli.tcol = ep.col;
       if (!ag.lastWaterDrop || now-ag.lastWaterDrop > 3000/sim.speed) {
         ag.lastWaterDrop=now; const lead=leadingEdge();
         if (lead) { fireOps.waterDrops.push({row:heli.trow,col:heli.tcol,startTime:now,duration:2000}); for (let dr=-2;dr<=2;dr++) for (let dc=-2;dc<=2;dc++) { const rr=Math.round(lead.row+dr),cc=Math.round(lead.col+dc); if(rr>=0&&rr<GRID_ROWS&&cc>=0&&cc<GRID_COLS&&engine.cells[rr*GRID_COLS+cc]===BURNING) engine.cells[rr*GRID_COLS+cc]=BURNED; } }
@@ -1566,44 +1433,60 @@ export default function TerrainScene({
       }
     }
 
-    // Level 3+: Lead plane when aerial coordination needed
+    // Level 3+: Lead plane orbits just ahead of the fire edge
     const leadPlane = units.find(u => u.type==='lead');
-    if (leadPlane && level >= 3 && acres >= 15) { const ang=now*0.0005+1; leadPlane.trow=(cR||128)+Math.sin(ang)*38; leadPlane.tcol=(cC||128)+Math.cos(ang)*38; if (!ag.logged.has('lead')) { ag.logged.add('lead'); addEvent('deploy',`DECISION: Multiple aircraft on scene → LP-1 Bronco lead plane for drop zone coordination.`); ag.actions++; } }
+    if (leadPlane && level >= 3 && acres >= 15) {
+      const lpFrac = ((now * 0.00012 + 0.3) % 1);
+      const lpPt = edgePoint(lpFrac);
+      leadPlane.trow = lpPt.row; leadPlane.tcol = lpPt.col;
+      if (!ag.logged.has('lead')) { ag.logged.add('lead'); addEvent('deploy',`DECISION: Multiple aircraft on scene → LP-1 Bronco lead plane for drop zone coordination.`); ag.actions++; }
+    }
 
-    // Level 3+: Hand crews when perimeter needs containment lines
+    // Level 3+: Hand crews on fire flanks (perpendicular to wind, staged on nearest road)
     const handCrews = units.filter(u => u.type==='crew');
     if (handCrews.length>0 && level >= 3 && fronts > 30 && !ag.logged.has('crew_line')) {
       ag.logged.add('crew_line');
       for (let ci=0; ci<handCrews.length; ci++) {
-        const flankR=cR+Math.sin(windRad+ci*0.5)*15, flankC=cC+Math.cos(windRad+ci*0.5)*15;
-        setUnitTarget(handCrews[ci], flankR, flankC);
+        const side = ci % 2 === 0 ? 1 : -1;
+        const flankDir = { row: Math.sin(windRad + side * Math.PI/2), col: Math.cos(windRad + side * Math.PI/2) };
+        const pt = edgeInDirection(flankDir.row, flankDir.col);
+        const staging = nearestRoadStaging(pt.row, pt.col);
+        setUnitTarget(handCrews[ci], staging.row, staging.col);
       }
-      const len=12; const flankR=cR+Math.sin(windRad)*15,flankC=cC+Math.cos(windRad)*15;
-      fireOps.handLines.push({r1:Math.round(flankR-Math.cos(windRad)*len),c1:Math.round(flankC+Math.sin(windRad)*len),r2:Math.round(flankR+Math.cos(windRad)*len),c2:Math.round(flankC-Math.sin(windRad)*len)});
-      addEvent('deploy',`DECISION: ${fronts} fronts need containment → ${handCrews.length} hand crews (20 each) to eastern flank for fireline construction.`); ag.actions++;
+      addEvent('deploy',`DECISION: ${fronts} fronts need containment → ${handCrews.length} hand crews (20 each) to flanks for fireline construction.`); ag.actions++;
     }
 
-    // Level 3+: SEAT when flanks need retardant
+    // Level 3+: SEAT when flanks need retardant — orbits fire edge
     const seat = units.find(u => u.type==='seat');
-    if (seat && level >= 3 && acres >= 20) { const ang=now*0.0004+2; seat.trow=(cR||128)+Math.sin(ang)*22; seat.tcol=(cC||128)+Math.cos(ang)*22;
+    if (seat && level >= 3 && acres >= 20) {
+      const seatFrac = ((now * 0.00015 + 0.6) % 1);
+      const seatPt = edgePoint(seatFrac);
+      seat.trow = seatPt.row; seat.tcol = seatPt.col;
       if (!ag.logged.has('seat_drop') && acres>25 && activeFronts.length>0) { ag.logged.add('seat_drop'); const flank=activeFronts[Math.floor(activeFronts.length*0.3)]; if (flank) { fireOps.retardantDrops.push({r1:flank.row,c1:flank.col,r2:flank.row+8,c2:flank.col+8,startTime:now,duration:15000}); engine.applyRetardant(flank.row+4,flank.col+4,5,30); } addEvent('deploy',`DECISION: Flanks spreading → SE-1 SEAT (800gal retardant) on southern flank.`); ag.actions++; }
     }
 
-    // Level 3+: Dozer when fire needs mechanical firebreak
+    // Level 3+: Dozer ahead of fire (downwind edge, on nearest road)
     const dozer = units.find(u => u.type==='dozer');
     if (dozer && level >= 3 && acres >= 25 && engine.windSpeed > 12 && !ag.logged.has('dozer_break') && activeFronts.length>0) {
-      ag.logged.add('dozer_break'); const aR=cR-Math.cos(windRad)*25,aC=cC+Math.sin(windRad)*25; const pR=Math.sin(windRad)*20,pC=Math.cos(windRad)*20;
-      fireOps.dozerLines.push({r1:Math.round(aR-pR),c1:Math.round(aC-pC),r2:Math.round(aR+pR),c2:Math.round(aC+pC)});
-      setUnitTarget(dozer, aR, aC);
+      ag.logged.add('dozer_break');
+      const lead = leadingEdge();
+      if (lead) {
+        const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
+        const aR = lead.row + dwR * 15, aC = lead.col + dwC * 15;
+        const staging = nearestRoadStaging(aR, aC);
+        setUnitTarget(dozer, staging.row, staging.col);
+      }
       addEvent('deploy',`DECISION: Wind ${engine.windSpeed}mph driving spread → DZ-1 Cat D8T cutting 15ft firebreak ahead of fire.`); ag.actions+=2;
     }
 
-    // Level 3+: Hotshot burnout when indirect attack needed
+    // Level 3+: Hotshot burnout at the downwind flank (staged on nearest road)
     const hotshot = units.find(u => u.type==='hotshot');
     if (hotshot && level >= 3 && acres >= 30 && ros > 1.0 && !ag.crewWithdrawn && !ag.logged.has('backfire') && activeFronts.length>0) {
-      ag.logged.add('backfire'); const sR=cR+Math.sin(windRad)*18,sC=cC+Math.cos(windRad)*18; const lR=Math.cos(windRad)*15,lC=-Math.sin(windRad)*15;
-      fireOps.backfireLines.push({r1:Math.round(sR-lR),c1:Math.round(sC-lC),r2:Math.round(sR+lR),c2:Math.round(sC+lC),startTime:now,duration:25000});
-      setUnitTarget(hotshot, sR, sC);
+      ag.logged.add('backfire');
+      const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
+      const pt = edgeInDirection(dwR, dwC);
+      const staging = nearestRoadStaging(pt.row, pt.col);
+      setUnitTarget(hotshot, staging.row, staging.col);
       addEvent('deploy',`DECISION: ROS ${ros.toFixed(1)} ch/hr, direct attack failing → IHC-8 Hotshots for indirect burnout ops.`); ag.actions+=3;
     }
 
@@ -1614,7 +1497,7 @@ export default function TerrainScene({
     const structEng = units.find(u => u.type==='structeng');
     if (structEng && level >= 4 && !ag.logged.has('struct_protect')) {
       const nearest = sim.zoneStates.reduce((best,z) => { const d=fireDist(z,engine); return d<best.d?{z,d}:best; },{z:sim.zoneStates[0],d:999});
-      if (nearest.d<40) { ag.logged.add('struct_protect'); setUnitTarget(structEng, nearest.z.row, nearest.z.col); for (let si=0;si<4;si++) { const ang=(si/4)*Math.PI*2; fireOps.structProtect.push({row:nearest.z.row+Math.cos(ang)*4,col:nearest.z.col+Math.sin(ang)*4}); } addEvent('deploy',`DECISION: Fire ${Math.round(nearest.d)} cells from ${nearest.z.name} (${nearest.z.pop} residents) → SP-19 for structure triage.`); ag.actions+=2; }
+      if (nearest.d<40) { ag.logged.add('struct_protect'); const staging = nearestRoadStaging(nearest.z.row, nearest.z.col); setUnitTarget(structEng, staging.row, staging.col); addEvent('deploy',`DECISION: Fire ${Math.round(nearest.d)} cells from ${nearest.z.name} (${nearest.z.pop} residents) → SP-19 for structure triage.`); ag.actions+=2; }
     }
 
     // Safety: Crew withdrawal when overrun risk detected
@@ -1634,92 +1517,8 @@ export default function TerrainScene({
       if (dist<25 && zone.id==='B3' && sim.routeStates['R2']==='clear') { sim.routeStates['R2']='congested'; addEvent('evac','AI_EVAC: R2 PCH congested → recommending contraflow for single-exit zones.'); }
     }
 
-    // ── AI DECISION PROPOSALS (human-in-the-loop) ──
-    if (icsEngine) {
-      // AI_DEPLOY: Pre-stage on threatened flank when wind conditions warrant
-      if (level >= 3 && engine.windSpeed > 18 && !ag.logged.has('dp_prestage') && activeFronts.length > 0) {
-        ag.logged.add('dp_prestage');
-        const flankR = Math.round(cR + Math.sin(windRad) * 25), flankC = Math.round(cC + Math.cos(windRad) * 25);
-        icsEngine.proposeDecision('ai_deploy', 'prestage_east',
-          `Wind ${engine.windSpeed}mph pushing fire east. Pre-stage 2 engines on east flank to protect ${POP_ZONES[0].name}.`,
-          'high',
-          () => {
-            const avail = units.filter(u => u.type === 'engine').slice(0, 2);
-            avail.forEach((u, i) => setUnitTarget(u, flankR + i * 5, flankC));
-            addEvent('deploy', `APPROVED: Pre-staging engines on east flank per AI_DEPLOY recommendation.`);
-            ag.actions += 2;
-          }
-        );
-        addEvent('overwatch', `AI_DEPLOY proposes: pre-stage engines on east flank. Awaiting commander approval.`);
-      }
-
-      // AI_EVAC: Propose mandatory evacuation when zone critically threatened
-      for (const zone of sim.zoneStates) {
-        if (zone.status === 'warning') {
-          const dist = fireDist(zone, engine);
-          const dpKey = `dp_evac_${zone.id}`;
-          if (dist < 25 && !ag.logged.has(dpKey)) {
-            ag.logged.add(dpKey);
-            const eta = Math.round(dist * 95 / 1000 * 60 / (ros * 22 + 1));
-            icsEngine.proposeDecision('ai_evac', `mandatory_evac_${zone.id}`,
-              `Fire ETA ${eta}min to ${zone.id} (${zone.name}, ${zone.pop} residents). Single exit via ${ROUTES[0].name}. Recommend MANDATORY evacuation + contraflow.`,
-              'critical',
-              () => {
-                zone.status = 'order';
-                addEvent('evac', `APPROVED: Mandatory evacuation ${zone.id}. Genasys WEA + reverse-911 sent.`);
-                ag.actions += 2;
-              }
-            );
-            addEvent('evac', `AI_EVAC proposes: Mandatory evacuation ${zone.id}. Awaiting commander approval.`);
-          }
-        }
-      }
-
-      // AI_OVERWATCH: Request VLAT when containment is failing
-      if (level >= 4 && !ag.retardantReq && acres > 30 && !ag.logged.has('dp_vlat')) {
-        ag.logged.add('dp_vlat');
-        icsEngine.proposeDecision('ai_overwatch', 'request_vlat',
-          `Fire ${acres} acres, ROS ${ros.toFixed(1)} ch/hr. Ground suppression insufficient. Recommend DC-10 VLAT (11,600gal) ahead of fire head.`,
-          'high',
-          () => {
-            ag.retardantReq = true;
-            const lead = leadingEdge();
-            if (lead) {
-              const dropR = Math.round(lead.row - Math.cos(windRad) * 20), dropC = Math.round(lead.col + Math.sin(windRad) * 20);
-              const airUnit = units.find(u => u.type === 'air');
-              if (airUnit) { airUnit.trow = dropR; airUnit.tcol = dropC; }
-              addEvent('deploy', `APPROVED: AT-1 DC-10 VLAT inbound. 11,600gal Phos-Chek.`);
-              setTimeout(() => {
-                if (!sim.fireActive) return;
-                engine.applyRetardant(dropR, dropC, 10, 45);
-                fireOps.retardantDrops.push({ r1: Math.round(dropR + Math.sin(windRad) * 12), c1: Math.round(dropC + Math.cos(windRad) * 12), r2: Math.round(dropR - Math.sin(windRad) * 12), c2: Math.round(dropC - Math.cos(windRad) * 12), startTime: Date.now(), duration: 30000 });
-                addEvent('deploy', 'VLAT DROP COMPLETE — 11,600gal retardant line established.');
-              }, 6000 / sim.speed);
-            }
-            ag.actions += 3;
-          }
-        );
-        addEvent('overwatch', `AI_OVERWATCH proposes: VLAT request. Awaiting commander approval.`);
-      }
-
-      // AI_SWARM: Propose drone repositioning for spot fire investigation
-      if (spots > 0 && !ag.logged.has('dp_spot_recon_' + spots)) {
-        ag.logged.add('dp_spot_recon_' + spots);
-        icsEngine.proposeDecision('ai_swarm', 'spot_recon_' + spots,
-          `${spots} spot fire${spots > 1 ? 's' : ''} detected. Reassign 3 scout drones for thermal confirmation and perimeter mapping.`,
-          spots > 2 ? 'high' : 'medium',
-          () => {
-            const scouts = drones.filter(d => d.launched && d.dtype === 'scout').slice(0, 3);
-            scouts.forEach((d, i) => {
-              d.trow = Math.round(cR + (Math.random() - 0.5) * 30);
-              d.tcol = Math.round(cC + (Math.random() - 0.5) * 30);
-            });
-            addEvent('swarm', `APPROVED: 3 scouts vectored to spot fire investigation.`);
-            ag.actions++;
-          }
-        );
-      }
-    }
+    // ── AI DECISION PROPOSALS — now handled by ICS graph iframe via postMessage ──
+    // Old icsEngine.proposeDecision() calls removed; IC decisions come from ics-graph.html
 
     // ── Escalation (driven by response level) ──
     if (!ag.escalated && level >= 5) { ag.escalated=true; addEvent('overwatch',`ESCALATED to Type 1 Incident. ${acres} acres, Level ${level} threat. Requesting mutual aid via IROC.`); ag.actions+=3; }
@@ -1759,7 +1558,15 @@ export default function TerrainScene({
   function startLoop() {
     function animate() {
       const sim = simRef.current;
-      if (!sim || !sim.canvas || !sim.ctx || sim.gw === 0) { animRef.current = requestAnimationFrame(animate); return; }
+      if (!sim || !sim.canvas || !sim.ctx) { animRef.current = requestAnimationFrame(animate); return; }
+      // Sync overlay canvas position/size with Three.js camera
+      if (sim._syncOverlay) {
+        const dims = sim._syncOverlay();
+        sim.gw = dims.gw;
+        sim.gh = dims.gh;
+        sim.ctx = sim.canvas.getContext('2d');
+      }
+      if (sim.gw === 0) { animRef.current = requestAnimationFrame(animate); return; }
       sim.frame++;
       const { engine, offCanvas, offCtx, drones, units, fireOps, frame, ctx, gw, gh } = sim;
 
@@ -1896,19 +1703,25 @@ export default function TerrainScene({
             if (unitTypes.has('seat')) deployedUnits.push('seat');
             if (unitTypes.has('lead')) deployedUnits.push('lead_plane');
             if (unitTypes.has('structeng')) deployedUnits.push('struct_eng','struct_group');
-            // Drone nodes
-            const launchedCount = drones.filter(d => d.launched).length;
+            // Drone nodes — send individual drone IDs + type groups
             const droneNodes = [];
-            if (launchedCount > 0) {
+            const droneTypesSeen = new Set();
+            for (const d of drones) {
+              if (!d.launched) continue;
+              // Individual drone ID: D-01 → d_01
+              const icsId = 'd_' + d.id.replace('D-', '');
+              droneNodes.push(icsId);
+              droneTypesSeen.add(d.dtype);
+            }
+            if (droneNodes.length > 0) {
               droneNodes.push('drones');
-              const hasScout = drones.some(d => d.launched && d.dtype === 'scout');
-              const hasMapper = drones.some(d => d.launched && d.dtype === 'mapper');
-              const hasReaper = drones.some(d => d.launched && d.dtype === 'reaper');
-              const hasRelay = drones.some(d => d.launched && d.dtype === 'relay');
-              if (hasScout) droneNodes.push('drone_scout');
-              if (hasMapper) droneNodes.push('drone_mapper');
-              if (hasReaper) droneNodes.push('drone_reaper');
-              if (hasRelay) droneNodes.push('drone_relay');
+              if (droneTypesSeen.has('scout')) droneNodes.push('drone_scout');
+              if (droneTypesSeen.has('mapper')) droneNodes.push('drone_mapper');
+              if (droneTypesSeen.has('reaper')) droneNodes.push('drone_reaper');
+              if (droneTypesSeen.has('relay')) droneNodes.push('drone_relay');
+              if (droneTypesSeen.has('safety')) droneNodes.push('drone_safety');
+              if (droneTypesSeen.has('ignis')) droneNodes.push('drone_ignis');
+              if (droneTypesSeen.has('suppression')) droneNodes.push('drone_suppress');
             }
 
             iframe.contentWindow.postMessage({
@@ -2142,33 +1955,7 @@ export default function TerrainScene({
         ctx.drawImage(offCanvas, -3, -3, gw+6, gh+6); ctx.restore();
       }
 
-      // ── EVAC ROUTES ──
-      for (const route of ROUTES) {
-        const st = sim.routeStates[route.id]; if (!st) continue;
-        ctx.beginPath(); ctx.strokeStyle=st==='clear'?'rgba(52,211,153,.6)':st==='blocked'?'rgba(239,68,68,.6)':'rgba(251,191,36,.6)';
-        ctx.lineWidth=st==='congested'?3:2; ctx.setLineDash(st==='congested'?[6,4]:st==='blocked'?[3,3]:[4,8]);
-        route.pts.forEach((p,i) => { const px=ll2px(p[0],p[1],gw,gh); i===0?ctx.moveTo(px.x,px.y):ctx.lineTo(px.x,px.y); });
-        ctx.stroke(); ctx.setLineDash([]);
-      }
-
-      // ── ZONE LABELS ──
-      for (const zone of sim.zoneStates) {
-        if (zone.status==='clear') continue;
-        const zp = g2px(zone.row,zone.col,gw,gh);
-        ctx.font='bold 9px -apple-system,sans-serif'; ctx.fillStyle=zone.status==='order'?'#FCA5A5':zone.status==='warning'?'#FCD34D':'#6EE7B7'; ctx.textAlign='center';
-        ctx.fillText(`${zone.id}: ${zone.status.toUpperCase()}`,zp.x,zp.y);
-        if (zone.evacPct>0) { ctx.font='8px -apple-system,sans-serif'; ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.fillText(`Evac ${Math.round(zone.evacPct)}%`,zp.x,zp.y+12); }
-      }
-
-      // ── FIRE OPS ──
-      const nowT = Date.now();
-      for (const fb of fireOps.dozerLines) { const p1=g2px(fb.r1,fb.c1,gw,gh),p2=g2px(fb.r2,fb.c2,gw,gh); ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.strokeStyle='rgba(163,230,53,.4)'; ctx.lineWidth=2; ctx.setLineDash([3,4]); ctx.stroke(); ctx.setLineDash([]); ctx.strokeStyle='rgba(120,100,60,.15)'; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke(); }
-      for (const hl of fireOps.handLines) { const p1=g2px(hl.r1,hl.c1,gw,gh),p2=g2px(hl.r2,hl.c2,gw,gh); ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.strokeStyle='rgba(180,120,60,.4)'; ctx.lineWidth=1.5; ctx.setLineDash([2,3]); ctx.stroke(); ctx.setLineDash([]); }
-      for (const ho of fireOps.hoseLines) { const pu=g2px(ho.ur,ho.uc,gw,gh),pf=g2px(ho.fr,ho.fc,gw,gh); ctx.beginPath(); ctx.moveTo(pu.x,pu.y); ctx.lineTo(pf.x,pf.y); ctx.strokeStyle='rgba(56,189,248,.3)'; ctx.lineWidth=1; ctx.setLineDash([1,2]); ctx.stroke(); ctx.setLineDash([]); for(let sp=0;sp<3;sp++){const a=frame*0.08+sp*2.1;ctx.beginPath();ctx.arc(pf.x+Math.cos(a)*3,pf.y+Math.sin(a)*3,1.5,0,Math.PI*2);ctx.fillStyle='rgba(56,189,248,.25)';ctx.fill();} }
-      for (const sp of fireOps.structProtect) { const pp=g2px(sp.row,sp.col,gw,gh); ctx.beginPath(); ctx.arc(pp.x,pp.y,6,0,Math.PI*2); ctx.strokeStyle='rgba(56,189,248,.4)'; ctx.lineWidth=1.5; ctx.setLineDash([2,2]); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle='rgba(56,189,248,.08)'; ctx.fill(); }
-      for (let ri=fireOps.retardantDrops.length-1;ri>=0;ri--) { const rd=fireOps.retardantDrops[ri],age=(nowT-rd.startTime)/1000; if(age>rd.duration/1000){fireOps.retardantDrops.splice(ri,1);continue;} const alpha=Math.max(.1,1-age/(rd.duration/1000)); const p1=g2px(rd.r1,rd.c1,gw,gh),p2=g2px(rd.r2,rd.c2,gw,gh); ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.strokeStyle=`rgba(220,50,70,${alpha*.5})`; ctx.lineWidth=3; ctx.stroke(); }
-      for (const bf of fireOps.backfireLines) { const age=(nowT-bf.startTime)/1000,prog=Math.min(1,age/(bf.duration/1000)); const p1=g2px(bf.r1,bf.c1,gw,gh),p2=g2px(bf.r2,bf.c2,gw,gh); const ex=p1.x+(p2.x-p1.x)*prog,ey=p1.y+(p2.y-p1.y)*prog; ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(ex,ey); ctx.strokeStyle='rgba(80,40,10,.5)'; ctx.lineWidth=2; ctx.stroke(); if(prog<1){const fl=0.6+Math.sin(frame*0.2)*0.4;ctx.beginPath();ctx.arc(ex,ey,4,0,Math.PI*2);ctx.fillStyle=`rgba(255,${Math.round(100*fl)},0,${0.5*fl})`;ctx.fill();} }
-      for (let wi=fireOps.waterDrops.length-1;wi>=0;wi--) { const wd=fireOps.waterDrops[wi],age=(nowT-wd.startTime)/1000; if(age>wd.duration/1000){fireOps.waterDrops.splice(wi,1);continue;} const prog=age/(wd.duration/1000),radius=6+prog*10,alpha=Math.max(0,1-prog*1.1); const pp=g2px(wd.row,wd.col,gw,gh); ctx.beginPath(); ctx.arc(pp.x,pp.y,radius,0,Math.PI*2); ctx.fillStyle=`rgba(56,189,248,${alpha*0.15})`; ctx.fill(); ctx.strokeStyle=`rgba(56,189,248,${alpha*0.4})`; ctx.lineWidth=1; ctx.stroke(); }
+      // (Evac routes, zone labels, fire ops overlays, and road network removed for cleaner map)
 
       // ── COMMAND CENTER ──
       const ccPx = g2px(COMMAND_CENTER.row, COMMAND_CENTER.col, gw, gh);
@@ -2190,9 +1977,129 @@ export default function TerrainScene({
       }
       // Label
       ctx.fillStyle = '#A78BFA'; ctx.font = 'bold 7px -apple-system,sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('COMMAND', ccPx.x, ccPx.y - ccS - 4);
+      ctx.fillText('ICP', ccPx.x, ccPx.y - ccS - 4);
       ctx.fillStyle = 'rgba(167,139,250,0.7)'; ctx.font = '6px monospace';
-      ctx.fillText(`${stashedCount} in reserve`, ccPx.x, ccPx.y + ccS + 10);
+      ctx.fillText(`${stashedCount} reserve`, ccPx.x, ccPx.y + ccS + 10);
+
+      // ── ICP PERSONNEL — stationary command staff at the ICP ──
+      const hl = highlightRef.current;
+      const hlMapId = hl ? ICS_TO_MAP[hl] : null;
+      for (const p of ICP_PERSONNEL) {
+        const px = g2px(COMMAND_CENTER.row + p.offsetR, COMMAND_CENTER.col + p.offsetC, gw, gh);
+        const isHL = hl === p.id || hlMapId === p.id;
+        const sz = isHL ? 6 : 4;
+        // Person dot
+        ctx.beginPath(); ctx.arc(px.x, px.y, sz, 0, Math.PI * 2);
+        ctx.fillStyle = p.color + (isHL ? '80' : '40');
+        ctx.fill();
+        ctx.strokeStyle = p.color + (isHL ? 'FF' : '80');
+        ctx.lineWidth = isHL ? 1.5 : 0.8; ctx.stroke();
+        // Highlight ring
+        if (isHL) {
+          ctx.beginPath(); ctx.arc(px.x, px.y, sz + 5, 0, Math.PI * 2);
+          ctx.strokeStyle = '#FBBF24'; ctx.lineWidth = 2;
+          ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]);
+        }
+        // Label
+        ctx.fillStyle = p.color + (isHL ? 'FF' : '90');
+        ctx.font = (isHL ? 'bold ' : '') + '5px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(p.label, px.x, px.y - sz - 2);
+      }
+
+      // ── FIELD ENTITIES — branch directors, sensors, AI agents ──
+      for (const fe of FIELD_ENTITIES) {
+        const fePx = g2px(fe.row, fe.col, gw, gh);
+        const isFeHL = hl === fe.id || hlMapId === fe.id;
+        const feSz = isFeHL ? 6 : 3.5;
+
+        if (fe.category === 'ai') {
+          // AI agents: pulsing hexagon
+          const pulse = 0.5 + Math.sin(frame * 0.04 + fe.row) * 0.3;
+          ctx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+            const r = feSz + 1;
+            i === 0 ? ctx.moveTo(fePx.x + Math.cos(a) * r, fePx.y + Math.sin(a) * r)
+                     : ctx.lineTo(fePx.x + Math.cos(a) * r, fePx.y + Math.sin(a) * r);
+          }
+          ctx.closePath();
+          ctx.fillStyle = fe.color + (isFeHL ? '60' : Math.round(pulse * 40).toString(16).padStart(2, '0'));
+          ctx.fill();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
+          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+        } else if (fe.category === 'sensor') {
+          // Sensors: diamond shape
+          ctx.beginPath();
+          ctx.moveTo(fePx.x, fePx.y - feSz); ctx.lineTo(fePx.x + feSz, fePx.y);
+          ctx.lineTo(fePx.x, fePx.y + feSz); ctx.lineTo(fePx.x - feSz, fePx.y);
+          ctx.closePath();
+          ctx.fillStyle = fe.color + (isFeHL ? '60' : '25');
+          ctx.fill();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '70');
+          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+          // Pulse ring for active sensors
+          if (sim.fireDetected) {
+            const sp = 0.3 + Math.sin(frame * 0.03 + fe.col) * 0.2;
+            ctx.beginPath(); ctx.arc(fePx.x, fePx.y, feSz + 4, 0, Math.PI * 2);
+            ctx.strokeStyle = fe.color + Math.round(sp * 60).toString(16).padStart(2, '0');
+            ctx.lineWidth = 0.5; ctx.setLineDash([2, 2]); ctx.stroke(); ctx.setLineDash([]);
+          }
+        } else if (fe.category === 'airborne') {
+          // ATGS: orbiting aircraft indicator
+          const orbitAng = frame * 0.008 + fe.row;
+          const ox = fePx.x + Math.cos(orbitAng) * 8, oy = fePx.y + Math.sin(orbitAng) * 4;
+          ctx.save(); ctx.translate(ox, oy); ctx.rotate(orbitAng + Math.PI / 2);
+          ctx.strokeStyle = fe.color + (isFeHL ? 'CC' : '60'); ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(0, 3); ctx.stroke();
+          ctx.restore();
+          // Orbit path
+          ctx.beginPath(); ctx.ellipse(fePx.x, fePx.y, 10, 5, 0, 0, Math.PI * 2);
+          ctx.strokeStyle = fe.color + '15'; ctx.lineWidth = 0.5; ctx.setLineDash([2, 3]); ctx.stroke(); ctx.setLineDash([]);
+        } else if (fe.category === 'group') {
+          // Unit group supervisors: circle with inner ring (commander badge)
+          ctx.beginPath(); ctx.arc(fePx.x, fePx.y, feSz + 1, 0, Math.PI * 2);
+          ctx.fillStyle = fe.color + (isFeHL ? '50' : '20');
+          ctx.fill();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
+          ctx.lineWidth = isFeHL ? 1.5 : 1; ctx.stroke();
+          // Inner dot
+          ctx.beginPath(); ctx.arc(fePx.x, fePx.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = fe.color + (isFeHL ? 'FF' : '90');
+          ctx.fill();
+        } else if (fe.category === 'drone_ctrl') {
+          // Drone controllers: triangle (antenna/control icon)
+          const sz = feSz + 1;
+          ctx.beginPath();
+          ctx.moveTo(fePx.x, fePx.y - sz);
+          ctx.lineTo(fePx.x + sz, fePx.y + sz * 0.6);
+          ctx.lineTo(fePx.x - sz, fePx.y + sz * 0.6);
+          ctx.closePath();
+          ctx.fillStyle = fe.color + (isFeHL ? '50' : '20');
+          ctx.fill();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
+          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+        } else {
+          // Branch directors: small square
+          const half = feSz;
+          ctx.fillStyle = fe.color + (isFeHL ? '60' : '25');
+          ctx.fillRect(fePx.x - half, fePx.y - half, half * 2, half * 2);
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '70');
+          ctx.lineWidth = isFeHL ? 1.5 : 0.8;
+          ctx.strokeRect(fePx.x - half, fePx.y - half, half * 2, half * 2);
+        }
+
+        // Highlight ring
+        if (isFeHL) {
+          ctx.beginPath(); ctx.arc(fePx.x, fePx.y, feSz + 6, 0, Math.PI * 2);
+          ctx.strokeStyle = '#FBBF24'; ctx.lineWidth = 2;
+          ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]);
+        }
+        // Label
+        ctx.fillStyle = fe.color + (isFeHL ? 'FF' : '80');
+        ctx.font = (isFeHL ? 'bold ' : '') + '5px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(fe.label, fePx.x, fePx.y - feSz - 3);
+      }
 
       // ── DRONES with type-specific rendering ──
       for (const d of drones) {
@@ -2200,6 +2107,16 @@ export default function TerrainScene({
         const dp=g2px(d.row,d.col,gw,gh);
         const dx=dp.x+Math.sin(frame*0.02+d.row*0.1)*2, dy=dp.y+Math.cos(frame*0.015+d.col*0.1)*1.5;
         const dc=DTYPE_COLORS[d.dtype]||'#22D3EE';
+
+        // Cross-highlight from ICS graph hover
+        const droneIcsId = 'd_' + d.id.replace('D-', '');
+        const droneHL = hlMapId === d.id || MAP_TO_ICS[d.id] === hl ||
+          hl === droneIcsId || hl === 'drones' || hl === 'drone_' + d.dtype;
+        if (droneHL) {
+          ctx.beginPath(); ctx.arc(dx, dy, 12, 0, Math.PI * 2);
+          ctx.strokeStyle = '#FBBF24'; ctx.lineWidth = 2;
+          ctx.setLineDash([4, 2]); ctx.stroke(); ctx.setLineDash([]);
+        }
 
         // Sensor range circle (for scouts/mappers/safety pre-detection)
         if ((d.dtype==='scout'||d.dtype==='mapper'||d.dtype==='safety'||d.dtype==='recon'||d.dtype==='spotter') && !sim.fireDetected) {
@@ -2256,18 +2173,20 @@ export default function TerrainScene({
         ctx.fillStyle=dc+'70'; ctx.font='6px monospace'; ctx.textAlign='center'; ctx.fillText(d.id,dx,dy+10);
       }
 
-      // ── ROAD NETWORK (faint overlay) ──
-      if (sim.fireDetected) {
-        ctx.strokeStyle='rgba(167,139,250,0.08)'; ctx.lineWidth=1.5; ctx.setLineDash([4,6]);
-        for (const seg of ROAD_SEGMENTS) { ctx.beginPath(); for(let i=0;i<seg.length;i++){const p=g2px(seg[i][0],seg[i][1],gw,gh);i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);} ctx.stroke(); }
-        ctx.setLineDash([]);
-      }
+      // (Road network overlay removed for cleaner map)
 
       // ── UNITS ──
       for (const u of units) {
         const up=g2px(u.row,u.col,gw,gh); const ux=up.x,uy=up.y; const uc=UTYPE[u.type]?.c||'#FBBF24';
         const idleAlpha = sim.fireDetected ? '' : '40';
-        ctx.beginPath(); ctx.arc(ux,uy,6,0,Math.PI*2); ctx.fillStyle=uc+'18'; ctx.fill(); ctx.strokeStyle=uc+(sim.fireDetected?'90':'30'); ctx.lineWidth=1; ctx.stroke();
+        // Cross-highlight from ICS graph hover
+        const unitHL = hlMapId === u.id || MAP_TO_ICS[u.id] === hl;
+        if (unitHL) {
+          ctx.beginPath(); ctx.arc(ux, uy, 14, 0, Math.PI * 2);
+          ctx.strokeStyle = '#FBBF24'; ctx.lineWidth = 2;
+          ctx.setLineDash([4, 2]); ctx.stroke(); ctx.setLineDash([]);
+        }
+        ctx.beginPath(); ctx.arc(ux,uy,6,0,Math.PI*2); ctx.fillStyle=uc+(unitHL?'40':'18'); ctx.fill(); ctx.strokeStyle=uc+(sim.fireDetected||unitHL?'90':'30'); ctx.lineWidth=unitHL?1.5:1; ctx.stroke();
 
         // Type-specific vehicle/crew rendering
         if (u.type==='heli') {
@@ -2428,7 +2347,7 @@ export default function TerrainScene({
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   return (
     <div style={{ position:'relative', width:'100%', height:'100%', borderRadius:14, overflow:'hidden', background:'#060a10' }}>
-      {hasApiKey && <div ref={mapContainerRef} style={{ position:'absolute', inset:0, zIndex:1 }} />}
+      <div ref={mapContainerRef} style={{ position:'absolute', inset:0, zIndex:1 }} />
 
       {/* Speed Slider + Fog of War */}
       <div style={{ position:'absolute', top:8, left:8, zIndex:10, display:'flex', gap:6, alignItems:'center' }}>
@@ -2466,22 +2385,40 @@ export default function TerrainScene({
 
       {/* Event log removed — map + graph only */}
 
-function Compass() {
+      {/* Map Status + Sim Clock */}
+      <div style={{ position:'absolute', top:8, right:8, zIndex:10, display:'flex', alignItems:'center', gap:8, padding:'3px 10px', background:'rgba(0,0,0,0.5)', borderRadius:10, backdropFilter:'blur(12px)' }}>
+        <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:11, fontWeight:700, color:'#E2E8F0', letterSpacing:'0.04em' }}>
+          T+{ui.simClock || '0m'}
+        </span>
+        <div style={{ width:1, height:12, background:'rgba(255,255,255,0.1)' }} />
+        <div style={{ width:5, height:5, borderRadius:'50%', background: mapStatus==='ready'?'#10B981':mapStatus==='error'?'#E84430':'#FFD700' }} />
+        <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:8, color:'rgba(200,210,225,0.5)', letterSpacing:'0.06em' }}>
+          FIRESIGHT {mapStatus!=='ready'?`(${mapStatus})`:''}
+        </span>
+      </div>
+
+      {/* Tooltip for drones/units/command center */}
+      <div ref={tooltipDivRef} style={{
+        position: 'absolute', display: 'none', zIndex: 100,
+        background: 'rgba(17,24,39,.95)', border: '1px solid #1E2636',
+        borderRadius: 6, padding: '10px 14px', fontSize: 10, maxWidth: 320,
+        pointerEvents: 'none', boxShadow: '0 8px 32px rgba(0,0,0,.5)',
+        color: '#E2E8F0',
+      }} />
+
+      {/* Map powered by Esri World Imagery + Three.js */}
+    </div>
+  );
+}
+
+const btnS = { background:'rgba(20,26,36,0.85)', border:'1px solid rgba(30,38,54,0.6)', color:'#8896AB', padding:'5px 10px', borderRadius:6, cursor:'pointer', fontSize:10, fontWeight:700, fontFamily:'-apple-system,sans-serif', backdropFilter:'blur(8px)', transition:'all .15s' };
+const aBtnS = { background:'#EF4444', borderColor:'#EF4444', color:'#fff' };
+
+function M({ l, v, c }) {
   return (
-    <div style={{
-      position: 'absolute', bottom: 12, left: 14,
-      pointerEvents: 'none',
-      width: 36, height: 36,
-      opacity: 0.5,
-    }}>
-      <svg viewBox="0 0 36 36" fill="none">
-        <circle cx="18" cy="18" r="16" stroke="rgba(140,160,190,0.15)" strokeWidth="0.8" />
-        <circle cx="18" cy="18" r="1.2" fill="rgba(140,160,190,0.35)" />
-        <polygon points="18,3.5 16.2,16 18,14 19.8,16" fill="rgba(212,80,50,0.7)" />
-        <polygon points="18,32.5 16.2,20 18,22 19.8,20" fill="rgba(140,160,190,0.3)" />
-        <text x="18" y="3" textAnchor="middle" fontSize="4.5" fill="rgba(212,80,50,0.6)"
-          fontFamily="Inter, sans-serif" fontWeight="600">N</text>
-      </svg>
+    <div style={{ display:'flex', alignItems:'center', gap:4, background:'rgba(12,16,24,0.85)', padding:'4px 10px' }}>
+      <span style={{ color:'#4A5568', fontSize:7, textTransform:'uppercase', letterSpacing:0.5, fontWeight:600 }}>{l}</span>
+      <span style={{ fontWeight:800, fontSize:11, fontFamily:"'SF Mono',monospace", color:c||'#E2E8F0' }}>{v}</span>
     </div>
   );
 }

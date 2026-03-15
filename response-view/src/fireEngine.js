@@ -21,12 +21,12 @@ export const BURNED   = 2;
 
 // Fuel types
 const FUEL = {
-  WATER:  { id: 0, rate: 0.00, burnDur: 0   },
-  ROAD:   { id: 1, rate: 0.04, burnDur: 10  },
-  URBAN:  { id: 2, rate: 0.28, burnDur: 55  },
-  TIMBER: { id: 3, rate: 0.50, burnDur: 75  },
-  BRUSH:  { id: 4, rate: 0.80, burnDur: 45  },
-  GRASS:  { id: 5, rate: 1.00, burnDur: 25  },
+  WATER:  { id: 0, rate: 0.00, burnDur: 0  },
+  ROAD:   { id: 1, rate: 0.04, burnDur: 3  },
+  URBAN:  { id: 2, rate: 0.28, burnDur: 20 },
+  TIMBER: { id: 3, rate: 0.50, burnDur: 25 },
+  BRUSH:  { id: 4, rate: 0.80, burnDur: 15 },
+  GRASS:  { id: 5, rate: 1.00, burnDur: 8  },
 };
 const FUEL_BY_ID = Object.values(FUEL);
 
@@ -54,7 +54,6 @@ export class FireEngine {
     this.elevation = new Float32Array(N);
     this.intensity = new Float32Array(N);
     this.age       = new Uint16Array(N);
-    this.burnDur   = new Uint16Array(N);  // per-cell individual burn duration
 
     this.windSpeed = 30;       // km/h
     this.windDir   = 315;      // degrees, blowing FROM (NW Santa Ana)
@@ -64,76 +63,72 @@ export class FireEngine {
   }
 
   _buildTerrain() {
-    // Pass 1: compute elevation using procedural model
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
         const idx = r * GRID_COLS + c;
+        // Use real-world lat/lng for terrain classification
         const lat = LAT_MIN + (r / GRID_ROWS) * (LAT_MAX - LAT_MIN);
         const lng = LNG_MIN + (c / GRID_COLS) * (LNG_MAX - LNG_MIN);
         const latNorm = r / GRID_ROWS;
         const lngNorm = c / GRID_COLS;
 
+        // Procedural elevation model
         let elev = latNorm * 400;
+        // Santa Monica Mountains ridge
         elev += Math.exp(-Math.pow((latNorm - 0.55) * 4, 2)) * 600;
+        // Canyon cuts
         elev -= Math.exp(-Math.pow((lngNorm - 0.35) * 8, 2)) * 900 * Math.max(0, latNorm - 0.3);
         elev -= Math.exp(-Math.pow((lngNorm - 0.55) * 10, 2)) * 700 * Math.max(0, latNorm - 0.25);
         elev -= Math.exp(-Math.pow((lngNorm - 0.75) * 8, 2)) * 500 * Math.max(0, latNorm - 0.2);
+        // Coastal bluffs
         if (latNorm < 0.2 && lngNorm > 0.4) elev = Math.max(elev, 25);
+        // Noise
         elev += Math.sin(latNorm * 12.5 + lngNorm * 8.3) * 35;
         elev += fbm(latNorm * 6, lngNorm * 6, 42) * 70 - 35;
 
-        // Ocean cells get negative elevation — noisy coastline for organic shape
-        // Coastline: higher values = more ocean coverage
-        // Malibu (-118.75): coast ~34.04
-        // Palisades (-118.53): coast ~34.03
-        // Santa Monica (-118.49): coast ~34.015
-        // Venice (-118.46): coast ~34.00
-        // Marina/LAX (-118.40): coast ~33.96
-        const coastBase = 34.055 - (lng + 118.75) * 0.22;
-        const coastNoise = fbm(lat * 40, lng * 40, 7) * 0.005 - 0.0025;
-        if (lat < coastBase + coastNoise) {
-          elev = -10;
-        }
+        this.elevation[idx] = Math.max(0, elev);
 
-        this.elevation[idx] = elev;
-      }
-    }
-
-    // Pass 2: classify fuel type based purely on elevation and noise
-    // No bounding boxes — each cell is classified individually
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        const idx = r * GRID_COLS + c;
-        const elev = this.elevation[idx];
-        const lat = LAT_MIN + (r / GRID_ROWS) * (LAT_MAX - LAT_MIN);
-        const lng = LNG_MIN + (c / GRID_COLS) * (LNG_MAX - LNG_MIN);
-
-        // Noise fields for organic, non-grid-aligned fuel boundaries
-        const n1 = fbm(lat * 30, lng * 30, 99);
-        const n2 = fbm(lat * 15, lng * 15, 55);
-
+        // Terrain classification → fuel type
         let fuel;
 
-        if (elev <= 0) {
-          // Below sea level = water. Not burnable.
+        // Ocean: LA coastline runs NW→SE
+        // Malibu (lng -118.75): coast at ~34.03
+        // Pacific Palisades (lng -118.53): coast at ~34.02
+        // Santa Monica (lng -118.50): coast at ~34.01
+        // Venice/LAX (lng -118.40): coast at ~33.96
+        const coastLat = 34.035 - (lng + 118.75) * 0.15;
+        if (lat < coastLat || elev <= 2) {
           fuel = FUEL.WATER;
-        } else if (n1 > 0.92 && elev < 300) {
-          // Sparse road-like firebreaks (~8% of land cells)
+        }
+        // Major roads (approximate)
+        else if (
+          // PCH
+          (Math.abs(lat - coastLat - 0.005) < 0.003 && lat > coastLat) ||
+          // Sunset Blvd (roughly lat 34.04-34.06)
+          (Math.abs(lat - 34.05) < 0.003 && lng > -118.65 && lng < -118.35) ||
+          // I-405
+          (Math.abs(lng - (-118.47)) < 0.003 && lat > 33.95 && lat < 34.10) ||
+          // I-10
+          (Math.abs(lat - 34.02) < 0.003 && lng > -118.55 && lng < -118.25)
+        ) {
           fuel = FUEL.ROAD;
-        } else if (elev < 100 + n2 * 60) {
-          // Low elevation flats — urban/developed. Burns slowly.
+        }
+        // Urban: LA basin lowlands
+        else if (elev < 120 && lat > coastLat && lat < 34.08) {
           fuel = FUEL.URBAN;
-        } else if (elev < 150 + n1 * 50) {
-          // Low-mid elevation — grass/open. Burns fast but short.
+        }
+        // Grass: low coastal areas
+        else if (elev < 60) {
           fuel = FUEL.GRASS;
-        } else if (elev > 350 - n2 * 80) {
-          // High elevation — timber/forest. Burns slow and long.
+        }
+        // Timber: high mountain areas
+        else if (elev > 350 || (elev > 250 && latNorm > 0.65)) {
           fuel = FUEL.TIMBER;
-        } else {
-          // Mid elevation hillsides — brush/chaparral. Burns very fast.
+        }
+        // Brush (chaparral): hillsides — most common in fire zone
+        else {
           fuel = FUEL.BRUSH;
         }
-
         this.fuelType[idx] = fuel.id;
       }
     }
@@ -167,9 +162,6 @@ export class FireEngine {
         this.cells[idx] = BURNING;
         this.intensity[idx] = 0.3 + Math.random() * 0.3;
         this.age[idx] = 0;
-        // Individual burn duration: 1x to 2.5x the fuel's base duration
-        const baseDur = FUEL_BY_ID[this.fuelType[idx]].burnDur;
-        this.burnDur[idx] = Math.round(baseDur * (1 + Math.random() * 1.5));
       }
     }
   }
@@ -195,11 +187,11 @@ export class FireEngine {
 
         if (this.age[idx] <= 3) {
           this.intensity[idx] = Math.min(1.0, this.intensity[idx] + 0.25 + Math.random() * 0.15);
-        } else if (this.age[idx] > this.burnDur[idx] * 0.8) {
-          this.intensity[idx] = Math.max(0.05, this.intensity[idx] - 0.015 - Math.random() * 0.01);
+        } else if (this.age[idx] > srcFuel.burnDur * 0.7) {
+          this.intensity[idx] = Math.max(0.05, this.intensity[idx] - 0.03 - Math.random() * 0.02);
         }
 
-        if (this.age[idx] >= this.burnDur[idx]) {
+        if (this.age[idx] >= srcFuel.burnDur) {
           this.cells[idx] = BURNED;
           this.intensity[idx] = 0;
           continue;
@@ -224,7 +216,7 @@ export class FireEngine {
           const diagFactor = (d % 2 === 1) ? 0.72 : 1.0;
 
           const prob = Math.min(0.85,
-            0.025 * slopeFactor * windFactor * dstFuel.rate * intensityFactor * diagFactor
+            0.035 * slopeFactor * windFactor * dstFuel.rate * intensityFactor * diagFactor
           );
 
           if (Math.random() < prob) {
@@ -232,7 +224,7 @@ export class FireEngine {
           }
         }
 
-        if (this.intensity[idx] > 0.5 && Math.random() < 0.001 * this.intensity[idx]) {
+        if (this.intensity[idx] > 0.5 && Math.random() < 0.004 * this.intensity[idx]) {
           const dist = 4 + Math.floor(Math.random() * 10);
           const sr = r + Math.round(Math.cos(windToRad) * dist);
           const sc = c + Math.round(Math.sin(windToRad) * dist);
@@ -251,9 +243,6 @@ export class FireEngine {
         this.cells[idx] = BURNING;
         this.intensity[idx] = intensity;
         this.age[idx] = 0;
-        // Individual burn duration: 1x to 2.5x the fuel's base duration
-        const baseDur = FUEL_BY_ID[this.fuelType[idx]].burnDur;
-        this.burnDur[idx] = Math.round(baseDur * (1 + Math.random() * 1.5));
       }
     }
 

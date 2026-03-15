@@ -33,6 +33,30 @@
     }
     #controls button:hover { background: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.5); }
     #controls button.active { border-color: rgba(0,229,255,0.5); color: #00e5ff; }
+    #vehicle-tooltip {
+      position: absolute; z-index: 25; pointer-events: none; display: none;
+      background: rgba(0,0,0,0.85); border: 1px solid rgba(0,229,255,0.5);
+      border-radius: 3px; padding: 4px 10px;
+      color: #00e5ff; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      letter-spacing: 1px; white-space: nowrap;
+      text-shadow: 0 0 4px rgba(0,229,255,0.3);
+    }
+    #fpv-banner {
+      position: absolute; top: 50px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.85); border: 1px solid rgba(0,229,255,0.6);
+      border-radius: 4px; padding: 6px 18px; color: #00e5ff;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      letter-spacing: 1.5px; z-index: 20; pointer-events: none;
+      display: none; text-shadow: 0 0 6px rgba(0,229,255,0.4);
+    }
+    #fpv-exit {
+      position: absolute; top: 50px; right: 20px; z-index: 20;
+      background: rgba(255,60,60,0.2); border: 1px solid rgba(255,60,60,0.6);
+      border-radius: 4px; color: #ff6644; padding: 6px 14px; cursor: pointer;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.5px;
+      display: none; transition: all 0.15s;
+    }
+    #fpv-exit:hover { background: rgba(255,60,60,0.35); color: #ff4422; }
     #vr-button {
       position: absolute; bottom: 20px; right: 20px; z-index: 10;
       background: rgba(0,229,255,0.15); border: 1px solid rgba(0,229,255,0.5);
@@ -65,6 +89,88 @@
       color: #00e5ff; font-family: 'JetBrains Mono', monospace; font-size: 10px;
       letter-spacing: 1px; z-index: 5; pointer-events: none;
     }
+
+    /* ---- FPV COMMAND PANEL ---- */
+    #cmd-panel {
+      display: none; position: absolute; bottom: 24px; left: 24px; z-index: 30;
+      font-family: 'JetBrains Mono', monospace; pointer-events: auto;
+      width: 260px;
+    }
+    .cmd-card {
+      background: rgba(6,12,18,0.88); border: 1px solid rgba(0,229,255,0.25);
+      border-radius: 6px; padding: 14px 16px; margin-bottom: 8px;
+      backdrop-filter: blur(8px);
+    }
+    .cmd-card-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    }
+    .cmd-card-header .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #00e5ff;
+      box-shadow: 0 0 6px rgba(0,229,255,0.6);
+    }
+    .cmd-card-header .dot.orange { background: #ff8800; box-shadow: 0 0 6px rgba(255,136,0,0.6); }
+    .cmd-card-header .dot.green { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.6); }
+    .cmd-card-title {
+      color: #00e5ff; font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+    }
+    .cmd-vehicle-name {
+      color: #fff; font-size: 16px; letter-spacing: 1px; margin-bottom: 4px;
+    }
+    .cmd-vehicle-type {
+      color: rgba(255,255,255,0.4); font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+    }
+    .cmd-stat-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 0; border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .cmd-stat-label { color: rgba(255,255,255,0.35); font-size: 9px; letter-spacing: 1.5px; }
+    .cmd-stat-value { color: #fff; font-size: 10px; letter-spacing: 0.5px; }
+    .cmd-stat-value.active { color: #00ff88; }
+    .cmd-stat-value.warning { color: #ff8800; }
+
+    /* Mode toggle */
+    .cmd-mode-toggle {
+      display: flex; gap: 0; border-radius: 4px; overflow: hidden; margin: 8px 0 4px;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    .cmd-mode-btn {
+      flex: 1; padding: 7px 0; text-align: center; cursor: pointer;
+      background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35);
+      font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 1.5px;
+      border: none; transition: all 0.15s;
+    }
+    .cmd-mode-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.6); }
+    .cmd-mode-btn.selected {
+      background: rgba(0,229,255,0.12); color: #00e5ff;
+      border-bottom: 2px solid #00e5ff;
+    }
+    .cmd-mode-btn.selected.manual {
+      background: rgba(255,136,0,0.12); color: #ff8800;
+      border-bottom-color: #ff8800;
+    }
+
+    /* Manual controls hint */
+    .cmd-manual-hint {
+      display: none; margin-top: 6px; padding: 8px 10px;
+      background: rgba(255,136,0,0.06); border: 1px solid rgba(255,136,0,0.2);
+      border-radius: 4px; color: rgba(255,255,255,0.5); font-size: 9px; letter-spacing: 1px;
+      line-height: 1.6;
+    }
+    .cmd-manual-hint .key {
+      display: inline-block; padding: 1px 6px; margin: 0 2px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 3px; color: #ff8800; font-size: 9px;
+    }
+
+    /* Speed bar */
+    .cmd-speed-bar {
+      display: none; margin-top: 6px; height: 4px; background: rgba(255,255,255,0.06);
+      border-radius: 2px; overflow: hidden;
+    }
+    .cmd-speed-fill {
+      height: 100%; width: 0%; background: linear-gradient(90deg, #00e5ff, #ff8800);
+      border-radius: 2px; transition: width 0.1s;
+    }
   </style>
 </head>
 <body>
@@ -88,7 +194,69 @@
     <button id="btn-overhead">OVERHEAD</button>
     <button id="btn-street">STREET LEVEL</button>
   </div>
+  <div id="vehicle-tooltip"></div>
+  <div id="fpv-banner"></div>
+  <button id="fpv-exit">ESC — EXIT FPV</button>
   <button id="vr-button" class="hidden">ENTER VR</button>
+
+  <!-- FPV Command Panel -->
+  <div id="cmd-panel">
+    <!-- Vehicle identity card -->
+    <div class="cmd-card">
+      <div class="cmd-card-header">
+        <div class="dot" id="cmd-dot"></div>
+        <span class="cmd-card-title">COMMANDING</span>
+      </div>
+      <div class="cmd-vehicle-name" id="cmd-name">—</div>
+      <div class="cmd-vehicle-type" id="cmd-type">—</div>
+      <div class="cmd-stat-row">
+        <span class="cmd-stat-label">STATUS</span>
+        <span class="cmd-stat-value active" id="cmd-status">ACTIVE</span>
+      </div>
+      <div class="cmd-stat-row">
+        <span class="cmd-stat-label">MODE</span>
+        <span class="cmd-stat-value" id="cmd-mode-label">AGENTIC</span>
+      </div>
+      <div class="cmd-stat-row">
+        <span class="cmd-stat-label">SPEED</span>
+        <span class="cmd-stat-value" id="cmd-speed">0 kts</span>
+      </div>
+    </div>
+    <!-- Controls card -->
+    <div class="cmd-card">
+      <div class="cmd-card-header">
+        <div class="dot orange"></div>
+        <span class="cmd-card-title">CONTROL MODE</span>
+      </div>
+      <div class="cmd-mode-toggle">
+        <button class="cmd-mode-btn selected" id="cmd-btn-agentic">AGENTIC</button>
+        <button class="cmd-mode-btn" id="cmd-btn-manual">MANUAL</button>
+      </div>
+      <div style="margin-top:6px;color:rgba(255,255,255,0.3);font-size:8px;letter-spacing:1.5px;text-align:center;">
+        PRESS <span style="color:#00e5ff;padding:1px 5px;border:1px solid rgba(0,229,255,0.3);border-radius:3px;font-size:9px;">Q</span> TO TOGGLE MODE
+      </div>
+      <div class="cmd-manual-hint" id="cmd-hint-hover">
+        <span class="key">W</span> THROTTLE &nbsp;
+        <span class="key">S</span> BRAKE<br>
+        <span class="key">A</span> YAW LEFT &nbsp;
+        <span class="key">D</span> YAW RIGHT<br>
+        <span class="key">SPACE</span> ASCEND &nbsp;
+        <span class="key">SHIFT</span> DESCEND
+      </div>
+      <div class="cmd-manual-hint" id="cmd-hint-plane" style="display:none">
+        <span class="key">W</span> PITCH DOWN &nbsp;
+        <span class="key">S</span> PITCH UP<br>
+        <span class="key">A</span> BANK LEFT &nbsp;
+        <span class="key">D</span> BANK RIGHT<br>
+        <span class="key">SHIFT</span> THROTTLE &nbsp;
+        <span class="key">CTRL</span> BRAKE
+      </div>
+      <div class="cmd-speed-bar" id="cmd-speed-bar">
+        <div class="cmd-speed-fill" id="cmd-speed-fill"></div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

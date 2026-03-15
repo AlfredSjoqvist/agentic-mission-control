@@ -2814,3 +2814,28 @@ Error
 [05:42:17.033] [LOG] [FireEngine] Tick 410 (2.8ms): burning=78 cells (0.50 km²), burned=2933, new ignitions this tick=1, sim time=410 min
 [05:47:17.033] [LOG] [FireEngine] Tick 415 (3.4ms): burning=69 cells (0.44 km²), burned=2957, new ignitions this tick=5, sim time=415 min
 [05:52:17.031] [LOG] [FireEngine] Tick 420 (3.1ms): burning=61 cells (0.39 km²), burned=2981, new ignitions this tick=3, sim time=420 min
+[05:57:17.031] [LOG] [FireEngine] Tick 425 (2.1ms): burning=53 cells (0.34 km²), burned=3003, new ignitions this tick=2, sim time=425 min
+[06:02:17.025] [LOG] [FireEngine] Tick 430 (3.9ms): burning=60 cells (0.38 km²), burned=3017, new ignitions this tick=4, sim time=430 min
+[07:13:17.029] [LOG] [FireEngine] Tick 435 (1.8ms): burning=57 cells (0.36 km²), burned=3032, new ignitions this tick=4, sim time=435 min
+[07:18:17.033] [LOG] [FireEngine] Tick 440 (2.4ms): burning=52 cells (0.33 km²), burned=3049, new ignitions this tick=2, sim time=440 min
+[07:57:17.048] [LOG] [FireEngine] Tick 445 (2.5ms): burning=50 cells (0.32 km²), burned=3066, new ignitions this tick=2, sim time=445 min
+[08:02:17.027] [LOG] [FireEngine] Tick 450 (2.0ms): burning=43 cells (0.28 km²), burned=3082, new ignitions this tick=0, sim time=450 min
+[08:03:31.639] [LOG] [App] Cesium viewer initialized
+[08:03:31.640] [LOG] [App] Depth testing enabled for 3D tiles picking
+[08:03:31.662] [LOG] [FireEngine] Grid: 167x185 = 30895 cells @ 80m
+[08:03:31.664] [LOG] [FireEngine] Bounds: lat [33.99, 34.11] lng [-118.6, -118.44]
+[08:03:31.666] [LOG] [FireEngine] Fuel distribution: {"WATER":2112,"BRUSH":8432,"URBAN":4428,"ROAD":1757,"GRASS":1483,"TIMBER":12683}
+[08:03:31.667] [LOG] [FireEngine] Wind: 30 km/h from 315°
+[08:03:31.668] [LOG] [FireEngine] Canvas: 185x167
+[08:03:31.715] [LOG] [App] Fire sim interval cleared (running=false, engine=true)
+[08:03:32.076] [LOG] [App] Google 3D Tiles loaded successfully
+[08:03:32.088] [LOG] [FireVisuals] CustomShader applied for terrain tinting
+[08:03:32.089] [LOG] [FireVisuals v8] Projected canvas system initialized
+[08:03:32.090] [LOG] [App] Fire visuals: Shader + particles system
+[08:13:57.899] [LOG] [FireEngine] Grid: 167x185 = 30895 cells @ 80m
+[08:13:57.901] [LOG] [FireEngine] Bounds: lat [33.99, 34.11] lng [-118.6, -118.44]
+[08:13:57.902] [LOG] [FireEngine] Fuel distribution: {"WATER":2112,"BRUSH":8432,"URBAN":4428,"ROAD":1757,"GRASS":1483,"TIMBER":12683}
+[08:13:57.903] [LOG] [FireEngine] Wind: 30 km/h from 315°
+[08:13:57.904] [LOG] [FireEngine] Canvas: 185x167
+[08:13:58.158] [LOG] [FireVisuals] CustomShader applied for terrain tinting
+[08:13:58.159] [LOG] [FireVisuals v8] Projected canvas system initialized

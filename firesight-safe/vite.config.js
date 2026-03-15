@@ -14,8 +14,4 @@ export default defineConfig({
       '/assets': 'http://localhost:3001',
     },
   },
-  // drone-view 3D iframe URL (used by App.jsx)
-  define: {
-    __DRONE_VIEW_URL__: JSON.stringify('http://localhost:5176'),
-  },
 });
