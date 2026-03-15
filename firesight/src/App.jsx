@@ -1,9 +1,11 @@
 import React, { useState, useCallback, useLayoutEffect, useRef, useMemo, useEffect } from 'react';
 import TerrainScene from './components/TerrainScene.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
+import StrategyPanel from './components/StrategyPanel.jsx';
 import { colors, typography, radii } from './styles/designTokens.js';
 import { createPalisadesScenario } from './fireSpreadEngine.js';
 import { ICSEngine } from './icsEngine.js';
+import { DEFAULT_STRATEGY } from './strategyBehaviors.js';
 
 const TW = 1440;
 const TH = 900;
@@ -23,6 +25,30 @@ export default function App() {
   const logIdRef = useRef(0);
   const [highlightedNode, setHighlightedNode] = useState(null);
   const droneViewRef = useRef(null);
+  const [strategy, setStrategy] = useState({ ...DEFAULT_STRATEGY });
+  const [showStrategy, setShowStrategy] = useState(true);
+
+  const handleStrategyChange = useCallback((changes) => {
+    setStrategy(prev => {
+      const next = { ...prev, ...changes };
+      // Broadcast to TerrainScene and 3D view
+      window.postMessage({ type: 'strategy_update', strategy: next, changes }, '*');
+      // Forward to 3D iframe
+      const iframe = droneViewRef.current;
+      if (iframe?.contentWindow) {
+        try { iframe.contentWindow.postMessage({ type: 'strategy_update', strategy: next, changes }, '*'); } catch {}
+      }
+      // Log to comms
+      const desc = Object.entries(changes).map(([k, v]) => `${k}: ${v}`).join(', ');
+      setCommsLog(prev => [{
+        id: ++logIdRef.current,
+        from: 'IC', to: 'ALL',
+        msg: `STRATEGY UPDATE — ${desc}`,
+        msgType: 'command', time: new Date().toLocaleTimeString(), isDecision: true,
+      }, ...prev].slice(0, 200));
+      return next;
+    });
+  }, []);
 
   // Listen for ALL messages from ICS graph iframe, drone-view iframe, and TerrainScene
   useEffect(() => {
@@ -67,6 +93,16 @@ export default function App() {
           time: '', isMapEvent: true,
         }, ...prev].slice(0, 200));
       }
+      // === Manual position update from 3D → forward to TerrainScene ===
+      if (ev.data.type === 'manual_position_update') {
+        window.postMessage(ev.data, '*');
+      }
+      // === Tab switch from 3D iframe ===
+      if (ev.data.type === 'tab_switch' && ev.data.key) {
+        if (ev.data.key === '1') setTab('3d');
+        else if (ev.data.key === '2') setTab('map');
+        else if (ev.data.key === '3') setTab('command');
+      }
       // === BRIDGE: fire_ignite from 3D → forward to TerrainScene ===
       if (ev.data.type === 'fire_ignite_from_3d') {
         // TerrainScene listens for this on window
@@ -75,15 +111,34 @@ export default function App() {
       // === BRIDGE: fire_ignite from 2D TerrainScene → forward to 3D iframe ===
       if (ev.data.type === 'fire_ignite_to_3d') {
         const iframe = droneViewRef.current;
+        console.log('[App BRIDGE] fire_ignite_to_3d received, lat:', ev.data.lat, 'lng:', ev.data.lng, 'iframe:', !!iframe, 'contentWindow:', !!iframe?.contentWindow);
         if (iframe?.contentWindow) {
           iframe.contentWindow.postMessage({ type: 'fire_ignite', lat: ev.data.lat, lng: ev.data.lng }, '*');
+          console.log('[App BRIDGE] forwarded fire_ignite to 3D iframe');
         }
       }
+      // === BRIDGE: mount_vehicle from 2D → switch to 3D tab + enter FPV ===
+      if (ev.data.type === 'mount_vehicle' && ev.data.vehicleId) {
+        setTab('3d');
+        // Small delay so the 3D iframe becomes visible/interactive before we send enter_fpv
+        setTimeout(() => {
+          const iframe = droneViewRef.current;
+          if (iframe?.contentWindow) {
+            iframe.contentWindow.postMessage({ type: 'enter_fpv', vehicleId: ev.data.vehicleId }, '*');
+          }
+        }, 300);
+      }
       // === BRIDGE: unit_positions from TerrainScene → forward to 3D iframe ===
-      if (ev.data.type === 'unit_positions') {
+      if (ev.data.type === 'unit_positions' && ev.source === window) {
         const iframe = droneViewRef.current;
         if (iframe?.contentWindow) {
-          iframe.contentWindow.postMessage(ev.data, '*');
+          try {
+            iframe.contentWindow.postMessage(ev.data, '*');
+          } catch (e) {
+            console.warn('[App] postMessage to iframe failed:', e.message);
+          }
+        } else {
+          console.warn('[App] unit_positions: iframe ref not ready');
         }
       }
     }
@@ -132,10 +187,18 @@ export default function App() {
   useEffect(() => {
     function onKey(ev) {
       if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
-      if (ev.key === 'Tab') { ev.preventDefault(); setTab(t => t === '3d' ? 'map' : t === 'map' ? 'command' : '3d'); }
-      else if (ev.key === '1') setTab('3d');
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        setTab(t => {
+          const next = t === '3d' ? 'map' : t === 'map' ? 'command' : '3d';
+          if (next === '3d') setTimeout(() => { const iframe = droneViewRef.current; if (iframe) { iframe.focus(); iframe.contentWindow?.postMessage({ type: 'request_pointer_lock' }, '*'); } }, 50);
+          return next;
+        });
+      }
+      else if (ev.key === '1') { setTab('3d'); setTimeout(() => { const iframe = droneViewRef.current; if (iframe) { iframe.focus(); iframe.contentWindow?.postMessage({ type: 'request_pointer_lock' }, '*'); } }, 50); }
       else if (ev.key === '2') setTab('map');
       else if (ev.key === '3') setTab('command');
+      else if (ev.key.toLowerCase() === 'z') setShowStrategy(s => !s);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -172,10 +235,40 @@ export default function App() {
           backdropFilter: 'blur(12px)',
           transition: 'left 0.3s, transform 0.3s',
         }}>
-          <TabBtn active={is3d} onClick={() => setTab('3d')} label="3D VIEW" shortcut="1" />
+          <TabBtn active={is3d} onClick={() => { setTab('3d'); setTimeout(() => { const iframe = droneViewRef.current; if (iframe) { iframe.focus(); iframe.contentWindow?.postMessage({ type: 'request_pointer_lock' }, '*'); } }, 50); }} label="3D VIEW" shortcut="1" />
           <TabBtn active={isMap} onClick={() => setTab('map')} label="MAP" shortcut="2" />
           <TabBtn active={isCmd} onClick={() => setTab('command')} label="COMMAND" shortcut="3" />
         </div>
+
+        {/* Strategy Panel Toggle */}
+        {(isMap || is3d) && (
+          <button
+            onClick={() => setShowStrategy(s => !s)}
+            style={{
+              position: 'absolute', top: 8, left: showStrategy ? 248 : 8,
+              zIndex: 310, background: 'rgba(10,14,22,0.85)',
+              border: `1px solid ${colors.border}`, borderRadius: 4,
+              padding: '4px 8px', cursor: 'pointer',
+              color: showStrategy ? '#A78BFA' : '#64748B',
+              fontFamily: typography.monoFamily, fontSize: 8, fontWeight: 700,
+              letterSpacing: 1, transition: 'left 0.25s',
+              backdropFilter: 'blur(12px)',
+            }}
+          >{showStrategy ? '◀ HIDE' : '▶ ACTIONS'}</button>
+        )}
+
+        {/* Strategy Panel — left sidebar */}
+        {(isMap || is3d) && showStrategy && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, width: 240, height: TH,
+            zIndex: 250, transition: 'transform 0.25s',
+          }}>
+            <StrategyPanel
+              strategy={strategy}
+              onStrategyChange={handleStrategyChange}
+            />
+          </div>
+        )}
 
         {/* === 3D VIEW: drone-view iframe (always mounted, visibility toggled) === */}
         <iframe
@@ -209,6 +302,7 @@ export default function App() {
             onLiveData={setLiveData}
             highlightedNode={highlightedNode}
             onNodeHover={handleMapHover}
+            strategy={strategy}
           />
           {isCmd && (
             <div style={{

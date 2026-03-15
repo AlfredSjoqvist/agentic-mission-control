@@ -122,7 +122,7 @@ const ctx=canvas.getContext('2d');
 const tooltip=document.getElementById('tooltip');
 const msgEl=document.getElementById('messages');
 let W,H;
-function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;try{if(typeof initLayout==='function'&&NODES&&Object.keys(NODES).length)initLayout();}catch(e){}}
 resize();window.addEventListener('resize',resize);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1632,74 +1632,113 @@ function setScenario(){}  // placeholder for button compat
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // LAYOUT
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function layoutNode(id,n,allIds){
-  if(positions[id])return;
-  const cx=W/2,cy=H/2;
-  const tierY={command:cy-350,staff:cy-200,branch:cy-30,tactical:cy+160,external:cy+380,ai:cy-120};
-  const tierNodes=allIds.filter(i=>NODES[i].tier===n.tier);
-  const idx=tierNodes.indexOf(id);
-  const count=tierNodes.length;
-  if(n.tier==='ai'){
-    const sp=55;
-    positions[id]={x:cx+420+(Math.random()-.5)*15,y:(tierY.ai)+idx*sp-((count-1)*sp/2)+(Math.random()-.5)*8};
-  } else if(n.tier==='tactical'){
-    // Two rows for many tactical nodes
-    const cols=Math.ceil(count/2);
-    const row=idx<cols?0:1;
-    const colIdx=idx<cols?idx:idx-cols;
-    const colCount=row===0?cols:count-cols;
-    const spacing=Math.min(100,W*.85/colCount);
-    const startX=cx-(colCount-1)*spacing/2;
-    positions[id]={x:startX+colIdx*spacing+(Math.random()-.5)*10,y:tierY.tactical+row*70+(Math.random()-.5)*10};
-  } else {
-    const spacing=Math.min(130,W*.85/count);
-    const startX=cx-(count-1)*spacing/2;
-    positions[id]={x:startX+idx*spacing+(Math.random()-.5)*12,y:tierY[n.tier]+(Math.random()-.5)*12};
-  }
-  velocities[id]={x:0,y:0};
-}
+// ── Fixed hierarchical layout — no physics simulation needed ──
+// Positions are computed once based on ICS org chart structure.
+// This eliminates the O(n²) force-directed simulation that caused lag.
 
 function initLayout(){
-  const allIds=Object.keys(NODES);
-  for(const id of allIds)layoutNode(id,NODES[id],allIds);
-}
-
-// Force-directed physics
-function simulate(){
-  const damping=0.85,repulsion=8000,attraction=0.003,idealDist=120;
-  const ids=Object.keys(NODES);
-  for(let i=0;i<ids.length;i++){
-    for(let j=i+1;j<ids.length;j++){
-      const a=positions[ids[i]],b=positions[ids[j]];
-      if(!a||!b)continue;
-      let dx=a.x-b.x,dy=a.y-b.y,dist=Math.sqrt(dx*dx+dy*dy)||1;
-      let f=repulsion/(dist*dist),fx=dx/dist*f,fy=dy/dist*f;
-      velocities[ids[i]].x+=fx;velocities[ids[i]].y+=fy;
-      velocities[ids[j]].x-=fx;velocities[ids[j]].y-=fy;
-    }
-  }
-  // Attraction along hierarchy edges (only between active connected nodes)
-  for(const [a,b] of ICS_HIERARCHY){
-    if(!litNodes.has(a)||!litNodes.has(b))continue;
-    const pa=positions[a],pb=positions[b];
-    if(!pa||!pb)continue;
-    let dx=pb.x-pa.x,dy=pb.y-pa.y,dist=Math.sqrt(dx*dx+dy*dy)||1;
-    let f=(dist-idealDist)*attraction;
-    velocities[a].x+=dx/dist*f;velocities[a].y+=dy/dist*f;
-    velocities[b].x-=dx/dist*f;velocities[b].y-=dy/dist*f;
-  }
-  // Tier gravity
   const cx=W/2,cy=H/2;
-  const tierY={command:cy-280,staff:cy-140,branch:cy+20,tactical:cy+160,external:cy+300,ai:cy-60};
-  for(const id of ids){
-    const n=NODES[id];if(!positions[id])continue;
-    velocities[id].y+=(tierY[n.tier]-positions[id].y)*0.01;
-    if(n.tier==='ai')velocities[id].x+=(cx+380-positions[id].x)*0.008;
-    else velocities[id].x+=(cx-positions[id].x)*0.001;
-    velocities[id].x*=damping;velocities[id].y*=damping;
-    positions[id].x+=velocities[id].x;positions[id].y+=velocities[id].y;
-    positions[id].x=Math.max(40,Math.min(W-40,positions[id].x));
-    positions[id].y=Math.max(90,Math.min(H-40,positions[id].y));
+
+  // ── Tier Y positions (top to bottom: command → staff → branch → tactical → external) ──
+  const Y_CMD    = cy - 340;
+  const Y_STAFF  = cy - 190;
+  const Y_BRANCH = cy - 20;
+  const Y_TACT1  = cy + 120;  // tactical row 1 (group-level)
+  const Y_TACT2  = cy + 210;  // tactical row 2 (individual units)
+  const Y_TACT3  = cy + 290;  // tactical row 3 (individual drones)
+  const Y_EXT    = cy + 380;
+  const Y_AI     = cy - 100;  // right column
+
+  // Helper: spread N items centered on cx
+  function spread(n, spacing, centerX){
+    centerX = centerX || cx;
+    const arr = [];
+    for(let i=0;i<n;i++) arr.push(centerX - (n-1)*spacing/2 + i*spacing);
+    return arr;
+  }
+
+  // ── COMMAND ROW ──
+  const cmdIds = ['ic'];
+  const cmdStaffIds = ['safety','pio','liaison'];
+  positions['ic'] = {x:cx, y:Y_CMD};
+  const csX = spread(3, 90, cx);
+  cmdStaffIds.forEach((id,i) => { positions[id] = {x:csX[i], y:Y_CMD+50}; });
+
+  // ── GENERAL STAFF ROW ──
+  const staffIds = ['ops_chief','plan_chief','log_chief','fin_chief'];
+  const stX = spread(4, 160, cx);
+  staffIds.forEach((id,i) => { positions[id] = {x:stX[i], y:Y_STAFF}; });
+
+  // ── BRANCHES ROW ── (grouped under their parent)
+  // Under Ops Chief
+  const opsX = stX[0]; // ops_chief x
+  positions['fire_branch'] = {x:opsX-80, y:Y_BRANCH};
+  positions['air_ops'] = {x:opsX+80, y:Y_BRANCH};
+
+  // Under Fire Branch
+  const fbX = opsX-80;
+  positions['div_alpha'] = {x:fbX-80, y:Y_BRANCH+55};
+  positions['div_bravo'] = {x:fbX, y:Y_BRANCH+55};
+  positions['struct_group'] = {x:fbX+80, y:Y_BRANCH+55};
+
+  // Under Air Ops
+  const aoX = opsX+80;
+  positions['atgs'] = {x:aoX-40, y:Y_BRANCH+55};
+  positions['drones'] = {x:aoX+50, y:Y_BRANCH+55};
+
+  // Under Plan Chief
+  const planX = stX[1];
+  positions['sit_unit'] = {x:planX-55, y:Y_BRANCH};
+  positions['fban'] = {x:planX, y:Y_BRANCH};
+  positions['res_unit'] = {x:planX+55, y:Y_BRANCH};
+
+  // Under Log Chief
+  const logX = stX[2];
+  positions['comms'] = {x:logX-40, y:Y_BRANCH};
+  positions['medical'] = {x:logX+40, y:Y_BRANCH};
+
+  // Law Enforcement (under liaison area)
+  positions['le_branch'] = {x:cx+280, y:Y_BRANCH};
+  positions['traffic'] = {x:cx+240, y:Y_BRANCH+55};
+  positions['genasys'] = {x:cx+320, y:Y_BRANCH+55};
+
+  // ── TACTICAL ROW 1 — group-level resources ──
+  const tac1 = ['engines','hotshots','hand_crew','dozer','vlat','seat','lead_plane','heli','tender','struct_eng'];
+  const t1X = spread(tac1.length, 85, cx-40);
+  tac1.forEach((id,i) => { positions[id] = {x:t1X[i], y:Y_TACT1}; });
+
+  // ── TACTICAL ROW 2 — individual named units ──
+  const tac2 = ['eng_69a','eng_69b','eng_23','tender_71','heli_1','vlat_1','seat_1','lead_1','ihc_8','hc_2','hc_5','dozer_1','struct_19'];
+  const t2X = spread(tac2.length, 70, cx-40);
+  tac2.forEach((id,i) => { positions[id] = {x:t2X[i], y:Y_TACT2}; });
+
+  // ── TACTICAL ROW 2b — drone type controllers ──
+  const dCtrl = ['drone_scout','drone_mapper','drone_reaper','drone_relay','drone_safety','drone_ignis','drone_suppress'];
+  const dcX = spread(dCtrl.length, 75, cx-40);
+  dCtrl.forEach((id,i) => { positions[id] = {x:dcX[i], y:Y_TACT2+30}; });
+
+  // ── TACTICAL ROW 3 — individual drones ──
+  const dIndiv = [];
+  for(let i=1;i<=24;i++) dIndiv.push('d_'+String(i).padStart(2,'0'));
+  const d3X = spread(dIndiv.length, 42, cx-40);
+  dIndiv.forEach((id,i) => { positions[id] = {x:d3X[i], y:Y_TACT3}; });
+
+  // ── EXTERNAL ROW ──
+  const extIds = ['raws','satellite','alert_cam','dispatch','iroc','firis','nws'];
+  const eX = spread(extIds.length, 100, cx);
+  extIds.forEach((id,i) => { positions[id] = {x:eX[i], y:Y_EXT}; });
+
+  // ── AI COLUMN (right side) ──
+  const aiIds = ['ai_overwatch','ai_predict','ai_swarm','ai_evac','ai_deploy'];
+  const aiX = cx + 440;
+  const aiSpacing = 55;
+  const aiStartY = Y_AI;
+  aiIds.forEach((id,i) => { positions[id] = {x:aiX, y:aiStartY+i*aiSpacing}; });
+
+  // Init velocities (unused now, but keep for drag compatibility)
+  for(const id of Object.keys(NODES)){
+    if(!positions[id]) positions[id] = {x:cx+(Math.random()-.5)*200, y:cy+(Math.random()-.5)*200};
+    velocities[id] = {x:0, y:0};
   }
 }
 
@@ -1707,10 +1746,10 @@ function simulate(){
 // PARTICLES
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const TYPE_COLORS={command:'#FBBF24',intel:'#22D3EE',coord:'#34D399',ai:'#F472B6',safety:'#EF4444'};
-const MAX_PARTICLES=120; // hard cap to prevent lag
+const MAX_PARTICLES=50; // hard cap to prevent lag
 function spawnMsgParticle(from,to,type){
   if(particles.length>=MAX_PARTICLES)return; // drop if too many
-  particles.push({from,to,progress:0,speed:0.008+Math.random()*0.004,
+  particles.push({from,to,progress:0,speed:0.025,
     color:TYPE_COLORS[type]||'#94A3B8',size:2+Math.random()*1});
 }
 
@@ -1768,14 +1807,16 @@ const ICS_HIERARCHY=[
 // RENDER
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function draw(){
-  frame++;
   const now=performance.now();
+  // Throttle to ~30fps to reduce CPU usage
+  if(now-lastFrameTime<30){requestAnimationFrame(draw);return;}
+  frame++;
   if(playing){
     const dt=(now-lastFrameTime)/1000*simSpeed;
     simTime+=dt;
     // ── Continuous information flow: scale with fire intensity ──
     // Spawn rate: every 60 frames when quiet, every 30 when active, every 20 in crisis
-    const spawnRate=icsPhase==='crisis'||icsPhase==='full'?20:FIRE.area>10?30:60;
+    const spawnRate=icsPhase==='crisis'||icsPhase==='full'?30:FIRE.area>10?45:90;
     if(FIRE.area>0&&litNodes.size>3&&frame%spawnRate===0&&particles.length<MAX_PARTICLES){
       // Pick a random subset of active edges (max 6)
       const activeEdges=ICS_HIERARCHY.filter(([a,b])=>litNodes.has(a)&&litNodes.has(b));
@@ -1815,7 +1856,7 @@ function draw(){
   lastFrameTime=now;
 
   ctx.fillStyle='#0A0E17';ctx.fillRect(0,0,W,H);
-  if(frame%3===0)simulate(); // physics every 3rd frame for perf
+  // No physics simulation — fixed hierarchical layout
 
   // Apply zoom/pan transform
   ctx.save();
@@ -1991,17 +2032,17 @@ function draw(){
     }
   }
 
-  // Tier labels
+  // Tier labels (positions match fixed layout)
   const cx=W/2;
   ctx.fillStyle='rgba(30,38,54,0.5)';ctx.font='bold 8px -apple-system,sans-serif';ctx.textAlign='left';
   const tierLabels={command:'COMMAND',staff:'GENERAL STAFF',branch:'BRANCHES / DIVISIONS',tactical:'TACTICAL RESOURCES',external:'EXTERNAL SYSTEMS',ai:'AI AGENTS'};
-  const tierY2={command:H/2-350,staff:H/2-200,branch:H/2-30,tactical:H/2+160,external:H/2+380,ai:H/2-120};
+  const tierY2={command:H/2-340,staff:H/2-190,branch:H/2-20,tactical:H/2+120,external:H/2+380,ai:H/2-100};
   for(const[t,label]of Object.entries(tierLabels)){
-    const y=tierY2[t]-2;
+    const y=tierY2[t]-12;
     if(t==='ai'){
-      ctx.fillText(label,cx+300,y);
-      ctx.setLineDash([4,6]);ctx.beginPath();ctx.moveTo(cx+280,tierY2.command-20);
-      ctx.lineTo(cx+280,tierY2.external+30);ctx.strokeStyle='#F472B620';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
+      ctx.fillText(label,cx+400,y);
+      ctx.setLineDash([4,6]);ctx.beginPath();ctx.moveTo(cx+390,tierY2.command-20);
+      ctx.lineTo(cx+390,tierY2.external+30);ctx.strokeStyle='#F472B620';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
     } else ctx.fillText(label,30,y);
   }
 
@@ -2033,38 +2074,46 @@ function draw(){
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // INTERACTION
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let _lastHoverTime=0,_lastHoverId=null;
+const _nodeIds=Object.keys(NODES);
 canvas.addEventListener('mousemove',function(e){
+  const now=performance.now();
+  if(now-_lastHoverTime<50)return; // throttle to 20Hz
+  _lastHoverTime=now;
   const smx=e.clientX,smy=e.clientY;
-  // Convert screen to world for hit-testing
   const wm=screen2world(smx,smy);
   hoveredNode=null;
-  for(const id of Object.keys(NODES)){
+  for(const id of _nodeIds){
     const pos=positions[id];if(!pos)continue;
     if(Math.hypot(pos.x-wm.x,pos.y-wm.y)<(NODES[id].size+8)/viewScale*1.2){hoveredNode=id;break}
   }
-  // Notify parent of hovered node for cross-highlighting
   try{window.parent.postMessage({type:'ics_hover',nodeId:hoveredNode},'*')}catch(e){}
   if(hoveredNode){
-    const n=NODES[hoveredNode],a=agents[hoveredNode];
-    let html=`<div class="tt-title" style="color:${n.color}">${n.label}</div>`;
-    html+=`<div class="tt-role">${n.role}</div>`;
-    if(a.active){
-      html+=`<div class="tt-section"><div class="tt-label">Status: ACTIVE</div></div>`;
-      const incoming=a.inbox.slice(-5);
-      if(incoming.length){
-        html+=`<div class="tt-section"><div class="tt-label">Recent Messages (${a.inbox.length} total)</div>`;
-        incoming.forEach(m=>{
-          html+=`<div class="tt-flow" style="color:${NODES[m.from]?.color||'#94A3B8'}">← ${NODES[m.from]?.short}: ${m.msg.substring(0,80)}${m.msg.length>80?'...':''}</div>`;
-        });
-        html+=`</div>`;
+    // Only rebuild tooltip HTML when hovered node changes
+    if(_lastHoverId!==hoveredNode){
+      _lastHoverId=hoveredNode;
+      const n=NODES[hoveredNode],a=agents[hoveredNode];
+      let html=`<div class="tt-title" style="color:${n.color}">${n.label}</div>`;
+      html+=`<div class="tt-role">${n.role}</div>`;
+      if(a.active){
+        html+=`<div class="tt-section"><div class="tt-label">Status: ACTIVE</div></div>`;
+        const incoming=a.inbox.slice(-5);
+        if(incoming.length){
+          html+=`<div class="tt-section"><div class="tt-label">Recent Messages (${a.inbox.length} total)</div>`;
+          incoming.forEach(m=>{
+            html+=`<div class="tt-flow" style="color:${NODES[m.from]?.color||'#94A3B8'}">← ${NODES[m.from]?.short}: ${m.msg.substring(0,80)}${m.msg.length>80?'...':''}</div>`;
+          });
+          html+=`</div>`;
+        }
+      } else {
+        html+=`<div class="tt-section"><div class="tt-label">Status: INACTIVE</div><div class="tt-flow">Awaiting activation in ICS chain</div></div>`;
       }
-    } else {
-      html+=`<div class="tt-section"><div class="tt-label">Status: INACTIVE</div><div class="tt-flow">Awaiting activation in ICS chain</div></div>`;
+      tooltip.innerHTML=html;
     }
-    tooltip.innerHTML=html;tooltip.style.display='block';
+    tooltip.style.display='block';
     tooltip.style.left=Math.min(smx+16,W-340)+'px';
     tooltip.style.top=Math.max(smy-10,4)+'px';
-  } else tooltip.style.display='none';
+  } else {tooltip.style.display='none';_lastHoverId=null;}
 });
 
 let dragging=null,dragOff={x:0,y:0};

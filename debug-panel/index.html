@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Command Debug</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0A0D11; color: #D4DAE3;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    overflow: hidden; height: 100vh;
+  }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+
+  .header {
+    padding: 12px 16px 10px; display: flex; align-items: center; gap: 10;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .dot.live { background: #22C55E; box-shadow: 0 0 8px #22C55E; }
+  .dot.dead { background: #EF4444; box-shadow: 0 0 8px #EF4444; }
+  .header-title { font-size: 10px; color: #64748B; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; }
+  .header-status { margin-left: auto; font-size: 9px; letter-spacing: 0.5px; }
+
+  .last-cmd {
+    padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    transition: background 0.3s;
+  }
+  .last-cmd.active { background: rgba(167,139,250,0.06); }
+  .last-cmd-label { font-size: 8px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 5px; }
+  .last-cmd-value { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; color: #334155; transition: color 0.3s; }
+  .last-cmd-value.active { color: #A78BFA; }
+  .last-cmd-meta { font-size: 8px; color: #475569; margin-top: 4px; }
+  .confirmed-badge { color: #EF4444; margin-left: 8px; font-weight: 700; }
+
+  .history {
+    padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    max-height: 120px; overflow-y: auto;
+  }
+  .history-title { font-size: 8px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 5px; }
+  .history-entry {
+    font-size: 9px; padding: 2px 0 2px 8px; display: flex; gap: 8;
+    border-left: 2px solid transparent;
+  }
+  .history-entry.latest { border-left-color: #A78BFA; color: #A78BFA; font-weight: 700; }
+  .history-time { color: #334155; width: 60px; flex-shrink: 0; }
+
+  .filters {
+    padding: 8px 16px 6px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    display: flex; flex-wrap: wrap; gap: 4;
+  }
+  .filter-btn {
+    font-size: 8px; letter-spacing: 0.8px; font-weight: 700;
+    font-family: inherit; color: #475569;
+    background: transparent; border: 1px solid #1E2636;
+    border-radius: 3px; padding: 3px 8px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .filter-btn.active { color: var(--cat-color); background: color-mix(in srgb, var(--cat-color) 10%, transparent); border-color: color-mix(in srgb, var(--cat-color) 30%, transparent); }
+  .filter-btn:hover { background: rgba(255,255,255,0.03); }
+
+  .cmd-list { flex: 1; overflow-y: auto; }
+  .cmd-row {
+    padding: 7px 16px; display: flex; align-items: center; gap: 10;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+    border-left: 3px solid transparent; cursor: default;
+    transition: background 0.12s;
+  }
+  .cmd-row:hover { background: rgba(255,255,255,0.02); }
+  .cmd-row.active { background: rgba(167,139,250,0.12); border-left-color: #A78BFA; }
+  .cmd-dot {
+    width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+    border: 1px solid #1E2636;
+  }
+  .cmd-dot.active { background: #A78BFA; border-color: #A78BFA; box-shadow: 0 0 8px #A78BFA; }
+  .cmd-name { flex: 1; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: #94A3B8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-name.active { color: #A78BFA; }
+  .role-badge {
+    font-size: 7px; letter-spacing: 0.5px; padding: 2px 6px;
+    border-radius: 3px; white-space: nowrap; flex-shrink: 0;
+    opacity: 0.8;
+  }
+  .confirm-badge {
+    font-size: 7px; letter-spacing: 0.5px; color: #EF4444;
+    background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25);
+    padding: 2px 5px; border-radius: 3px; flex-shrink: 0;
+  }
+
+  .tooltip {
+    position: fixed; width: 320px; padding: 12px 14px;
+    background: #151920; border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    z-index: 10000; pointer-events: none; display: none;
+  }
+  .tooltip.show { display: block; }
+  .tooltip-title { font-size: 12px; font-weight: 700; color: #D4DAE3; margin-bottom: 4px; letter-spacing: 0.5px; }
+  .tooltip-cat { font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; }
+  .tooltip-desc { font-size: 11px; color: #94A3B8; line-height: 1.6; font-family: 'Inter', -apple-system, sans-serif; }
+  .tooltip-confirm {
+    font-size: 9px; color: #EF4444; margin-top: 8px;
+    padding: 4px 8px; background: rgba(239,68,68,0.08);
+    border-radius: 4px; border: 1px solid rgba(239,68,68,0.2);
+  }
+
+  .layout { display: flex; flex-direction: column; height: 100vh; }
+
+  /* Manual test bar */
+  .test-bar {
+    padding: 8px 16px; border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex; gap: 6; flex-shrink: 0;
+  }
+  .test-input {
+    flex: 1; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px; padding: 6px 10px; color: #D4DAE3;
+    font-family: inherit; font-size: 11px; outline: none;
+  }
+  .test-input:focus { border-color: #A78BFA; }
+  .test-btn {
+    background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.3);
+    border-radius: 4px; padding: 6px 14px; color: #A78BFA;
+    font-family: inherit; font-size: 10px; font-weight: 700;
+    letter-spacing: 1px; cursor: pointer;
+  }
+  .test-btn:hover { background: rgba(167,139,250,0.2); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="header">
+    <div class="dot" id="statusDot"></div>
+    <span class="header-title">OpenClaw Command Debug</span>
+    <span class="header-status" id="statusText"></span>
+  </div>
+
+  <div class="last-cmd" id="lastCmdBox">
+    <div class="last-cmd-label">LAST COMMAND FROM TELEGRAM BOT</div>
+    <div class="last-cmd-value" id="lastCmdValue">Waiting for Telegram command...</div>
+    <div class="last-cmd-meta" id="lastCmdMeta"></div>
+  </div>
+
+  <div class="history" id="historyBox" style="display:none">
+    <div class="history-title">COMMAND HISTORY (<span id="historyCount">0</span>)</div>
+    <div id="historyList"></div>
+  </div>
+
+  <div class="filters" id="filterBar"></div>
+
+  <div class="cmd-list" id="cmdList"></div>
+
+  <!-- Manual test input -->
+  <div class="test-bar">
+    <input class="test-input" id="testInput" placeholder="Type command to test (e.g. strategy defensive)" />
+    <button class="test-btn" id="testBtn">SEND</button>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip">
+  <div class="tooltip-title" id="ttTitle"></div>
+  <div class="tooltip-cat" id="ttCat"></div>
+  <div class="tooltip-desc" id="ttDesc"></div>
+  <div class="tooltip-confirm" id="ttConfirm" style="display:none">Requires explicit confirmation before execution</div>
+</div>
+
+<script>
+const COMMANDS = [
+  { cat: 'Strategy', cmd: 'strategy offensive', role: 'IC', desc: 'All resources attack the fire head-on. Maximum aggression. Used when fire is small or resources are overwhelming.', color: '#A78BFA' },
+  { cat: 'Strategy', cmd: 'strategy defensive', role: 'IC', desc: 'Hold existing lines, protect structures. No new fireline construction. Used when fire behavior exceeds suppression capability.', color: '#A78BFA' },
+  { cat: 'Strategy', cmd: 'strategy confine', role: 'IC', desc: 'Allow fire to burn within a containment box defined by natural barriers. Minimal direct engagement.', color: '#A78BFA' },
+  { cat: 'Strategy', cmd: 'strategy transition', role: 'IC / Safety', desc: 'All crews safely reposition. Temporary hold during strategy change. No one engages fire.', color: '#A78BFA' },
+  { cat: 'Attack Mode', cmd: 'attack direct', role: 'Ops Chief', desc: 'Crews work directly at the fire edge. Fastest suppression but highest exposure.', color: '#F59E0B' },
+  { cat: 'Attack Mode', cmd: 'attack parallel', role: 'Ops Chief', desc: 'Fireline built 30-100ft from fire edge. Burnout between line and fire. Balances speed with safety.', color: '#F59E0B' },
+  { cat: 'Attack Mode', cmd: 'attack indirect', role: 'Ops Chief', desc: 'Line built far from fire at natural barriers (roads, ridges). Backfire burns fuel between line and main fire.', color: '#F59E0B' },
+  { cat: 'Firing Ops', cmd: 'fire burnout', role: 'Div Supervisor', desc: 'Authorized burnout from existing fireline. Low-intensity firing to remove fuel.', color: '#EF4444' },
+  { cat: 'Firing Ops', cmd: 'fire backfire', role: 'IC (written)', desc: 'SAFETY-CRITICAL. Intentional large fire set to draw main fire. High risk if wind shifts.', color: '#EF4444', confirm: true },
+  { cat: 'Firing Ops', cmd: 'fire cancel', role: 'IC / Safety', desc: 'Cancel all firing operations immediately. All ignition devices secured.', color: '#EF4444' },
+  { cat: 'Structure', cmd: 'struct triage', role: 'Struct Group Sup', desc: 'Assess all structures: defensible, marginal, or non-defensible. No active protection yet.', color: '#F97316' },
+  { cat: 'Structure', cmd: 'struct protect', role: 'Struct Group Sup', desc: 'Active structure protection. Engines deploy foam, gel, sprinklers on defensible structures.', color: '#F97316' },
+  { cat: 'Structure', cmd: 'struct abandon', role: 'Div Supervisor', desc: 'Zone abandoned — all resources withdraw immediately. Structures in zone are lost.', color: '#F97316' },
+  { cat: 'Structure', cmd: 'struct bump-and-run', role: 'Engine Boss', desc: 'Rapid structure prep: quick foam/gel spray, move to next. No staying to defend.', color: '#F97316' },
+  { cat: 'Evacuation', cmd: 'evac advisory [zone]', role: 'IC → LE Liaison', desc: 'Voluntary evacuation suggested. Residents advised to prepare. No road closures.', color: '#22D3EE' },
+  { cat: 'Evacuation', cmd: 'evac warning [zone]', role: 'IC → LE Liaison', desc: 'Evacuation imminent. Vulnerable populations should leave now. Contraflow may activate.', color: '#22D3EE' },
+  { cat: 'Evacuation', cmd: 'evac order [zone]', role: 'IC → Sheriff', desc: 'MANDATORY evacuation. Law enforcement goes door-to-door. All roads one-way out.', color: '#22D3EE', confirm: true },
+  { cat: 'Evacuation', cmd: 'evac rescue [zone]', role: 'IC → Sheriff', desc: 'Rescue-only mode. Orderly evacuation failed. Only rescue teams enter zone.', color: '#22D3EE', confirm: true },
+  { cat: 'Evacuation', cmd: 'evac lift [zone]', role: 'IC', desc: 'Evacuation lifted. Residents may return. Roads reopen.', color: '#22D3EE' },
+  { cat: 'Air Ops', cmd: 'air priority head', role: 'Air Ops Dir', desc: 'All air resources target fire head. VLAT retardant + heli bucket drops on advancing front.', color: '#60A5FA' },
+  { cat: 'Air Ops', cmd: 'air priority structures', role: 'Air Ops Dir', desc: 'Retardant lines around threatened structures. Helicopters water-drop on structure groups.', color: '#60A5FA' },
+  { cat: 'Air Ops', cmd: 'air priority flanks', role: 'Air Ops Dir', desc: 'Split air force between flanks to contain lateral spread.', color: '#60A5FA' },
+  { cat: 'Air Ops', cmd: 'air hold', role: 'IC / Safety', desc: 'All aircraft grounded. Used for safety (wind/visibility) or airspace conflict.', color: '#60A5FA' },
+  { cat: 'Air Ops', cmd: 'air medevac', role: 'Safety Officer', desc: 'Helicopter diverted to medical evacuation. Overrides all air priorities.', color: '#60A5FA' },
+  { cat: 'Drones', cmd: 'drone recon', role: 'Plans Chief', desc: 'Drone fleet in distributed recon grid. IR + visual mapping for spread prediction.', color: '#818CF8' },
+  { cat: 'Drones', cmd: 'drone safety', role: 'Safety Officer', desc: 'Drones overwatch crew positions. Alert if fire approaches escape routes.', color: '#818CF8' },
+  { cat: 'Resources', cmd: 'crew rotate [resource]', role: 'Ops Chief', desc: 'Order crew rotation. Resource returns to camp, replacement dispatched from staging.', color: '#34D399' },
+  { cat: 'Resources', cmd: 'crew extend [resource]', role: 'IC', desc: 'Authorize extended shift beyond 16hr limit. Requires documented justification.', color: '#34D399' },
+  { cat: 'Resources', cmd: 'mutual aid', role: 'IC → IROC', desc: 'Request mutual aid through Interagency Resource Ordering. Regional/national resources dispatched.', color: '#34D399' },
+  { cat: 'Planning', cmd: 'iap approve', role: 'IC', desc: 'Approve Incident Action Plan. All section chiefs briefed. Operational period begins.', color: '#A3A3A3' },
+  { cat: 'Planning', cmd: 'night ops approve', role: 'IC', desc: 'Authorize night operations. Requires adequate lighting and verified safety zones.', color: '#A3A3A3' },
+  { cat: 'Planning', cmd: 'night ops cancel', role: 'IC', desc: 'Cancel night operations. All crews return to camp at sunset.', color: '#A3A3A3' },
+  { cat: 'Safety', cmd: 'safety stop all', role: 'Safety Officer', desc: 'FULL SAFETY STOP. Every crew ceases ALL operations and moves to safety zones. Only for imminent life threat.', color: '#EF4444', confirm: true },
+  { cat: 'Safety', cmd: 'safety stop [div]', role: 'Safety Officer', desc: 'Safety stop for specific division. That division ceases work, others continue.', color: '#EF4444' },
+  { cat: 'Safety', cmd: 'safety resume', role: 'IC', desc: 'Clear safety stop. All crews verify escape routes then resume operations.', color: '#EF4444' },
+  { cat: 'Safety', cmd: 'lces check', role: 'Safety Officer', desc: 'Order LCES (Lookouts, Communications, Escape Routes, Safety Zones) check for all crews.', color: '#EF4444' },
+];
+
+const CATEGORIES = [...new Set(COMMANDS.map(c => c.cat))];
+let currentFilter = 'all';
+let lastCommand = null;
+let commandHistory = [];
+
+// ── SSE Connection ──
+function connectSSE() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+
+  const es = new EventSource('http://localhost:3001/api/strategy/stream');
+
+  es.onopen = () => {
+    dot.className = 'dot live';
+    txt.textContent = 'SSE LIVE';
+    txt.style.color = '#22C55E';
+  };
+
+  es.onerror = () => {
+    dot.className = 'dot dead';
+    txt.textContent = 'DISCONNECTED';
+    txt.style.color = '#EF4444';
+  };
+
+  es.addEventListener('command', (ev) => {
+    const data = JSON.parse(ev.data);
+    setLastCommand(data.command, data.source || 'telegram', data.commander, data.confirmed);
+  });
+
+  es.addEventListener('reset', () => {
+    setLastCommand('strategy reset', 'system', 'system', false);
+  });
+}
+
+function setLastCommand(cmd, source, commander, confirmed) {
+  lastCommand = cmd;
+  const box = document.getElementById('lastCmdBox');
+  const val = document.getElementById('lastCmdValue');
+  const meta = document.getElementById('lastCmdMeta');
+
+  box.classList.add('active');
+  val.classList.add('active');
+  val.textContent = cmd;
+
+  const time = new Date().toLocaleTimeString();
+  meta.innerHTML = `via <b>${source || '?'}</b> at ${time}` + (confirmed ? '<span class="confirmed-badge">CONFIRMED</span>' : '');
+
+  commandHistory.unshift({ cmd, source, time, confirmed });
+  if (commandHistory.length > 50) commandHistory.pop();
+  renderHistory();
+  renderCommands();
+}
+
+function renderHistory() {
+  const box = document.getElementById('historyBox');
+  const list = document.getElementById('historyList');
+  const count = document.getElementById('historyCount');
+
+  if (commandHistory.length === 0) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  count.textContent = commandHistory.length;
+
+  list.innerHTML = commandHistory.slice(0, 10).map((e, i) =>
+    `<div class="history-entry ${i === 0 ? 'latest' : ''}">
+      <span class="history-time">${e.time}</span>
+      <span>${e.cmd}</span>
+    </div>`
+  ).join('');
+}
+
+// ── Filters ──
+function renderFilters() {
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '';
+
+  const allBtn = document.createElement('button');
+  allBtn.className = 'filter-btn' + (currentFilter === 'all' ? ' active' : '');
+  allBtn.style.setProperty('--cat-color', '#64748B');
+  allBtn.textContent = 'ALL';
+  allBtn.onclick = () => { currentFilter = 'all'; renderFilters(); renderCommands(); };
+  bar.appendChild(allBtn);
+
+  for (const cat of CATEGORIES) {
+    const color = COMMANDS.find(c => c.cat === cat)?.color || '#64748B';
+    const btn = document.createElement('button');
+    btn.className = 'filter-btn' + (currentFilter === cat ? ' active' : '');
+    btn.style.setProperty('--cat-color', color);
+    btn.textContent = cat.toUpperCase();
+    btn.onclick = () => { currentFilter = currentFilter === cat ? 'all' : cat; renderFilters(); renderCommands(); };
+    bar.appendChild(btn);
+  }
+}
+
+// ── Command List ──
+function renderCommands() {
+  const list = document.getElementById('cmdList');
+  const filtered = currentFilter === 'all' ? COMMANDS : COMMANDS.filter(c => c.cat === currentFilter);
+
+  list.innerHTML = filtered.map((cmd, i) => {
+    const baseCmd = cmd.cmd.split(' [')[0];
+    const isActive = lastCommand === cmd.cmd || lastCommand === baseCmd;
+    return `<div class="cmd-row ${isActive ? 'active' : ''}" data-idx="${COMMANDS.indexOf(cmd)}"
+      onmouseenter="showTooltip(event, ${COMMANDS.indexOf(cmd)})"
+      onmouseleave="hideTooltip()">
+      <div class="cmd-dot ${isActive ? 'active' : ''}"></div>
+      <div class="cmd-name ${isActive ? 'active' : ''}">${cmd.cmd}</div>
+      <div class="role-badge" style="color:${cmd.color};background:${cmd.color}15;border:1px solid ${cmd.color}30">${cmd.role}</div>
+      ${cmd.confirm ? '<div class="confirm-badge">CONFIRM</div>' : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Tooltip ──
+function showTooltip(ev, idx) {
+  const cmd = COMMANDS[idx];
+  const tt = document.getElementById('tooltip');
+  const rect = ev.currentTarget.getBoundingClientRect();
+
+  document.getElementById('ttTitle').textContent = cmd.cmd;
+  document.getElementById('ttCat').textContent = `${cmd.cat} — ${cmd.role}`;
+  document.getElementById('ttCat').style.color = cmd.color;
+  document.getElementById('ttDesc').textContent = cmd.desc;
+
+  const ttConfirm = document.getElementById('ttConfirm');
+  ttConfirm.style.display = cmd.confirm ? 'block' : 'none';
+
+  tt.classList.add('show');
+  tt.style.left = Math.max(10, rect.left - 340) + 'px';
+  tt.style.top = Math.min(rect.top, window.innerHeight - 160) + 'px';
+}
+
+function hideTooltip() {
+  document.getElementById('tooltip').classList.remove('show');
+}
+
+// ── Manual Test ──
+document.getElementById('testBtn').onclick = sendTest;
+document.getElementById('testInput').onkeydown = (e) => { if (e.key === 'Enter') sendTest(); };
+
+function sendTest() {
+  const input = document.getElementById('testInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+
+  fetch('http://localhost:3001/api/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: cmd, source: 'debug-panel', confirmed: true }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.status === 'ok') {
+      input.value = '';
+      input.placeholder = `✓ ${data.message}`;
+      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
+    } else if (data.status === 'clarify') {
+      input.placeholder = `Did you mean: ${data.suggestions?.join(', ')}`;
+      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 4000);
+    } else {
+      input.placeholder = `✗ ${data.message}`;
+      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
+    }
+  })
+  .catch(err => {
+    input.placeholder = `Error: ${err.message}`;
+    setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
+  });
+}
+
+// ── Init ──
+renderFilters();
+renderCommands();
+connectSSE();
+</script>
+</body>
+</html>

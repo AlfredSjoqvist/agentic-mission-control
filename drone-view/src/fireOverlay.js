@@ -287,7 +287,7 @@ export class FireOverlay {
       const idx = innerBurn[i];
       const r = Math.floor(idx / GRID_COLS);
       const c = idx % GRID_COLS;
-      if (innerStep > 1 && (r + c) % innerStep !== 0) continue;
+      if (innerStep > 1 && (this._hash(r, c) * innerStep | 0) !== 0) continue;
 
       const i3 = idx * 3;
       const bx = this._cellPos[i3], by = this._cellPos[i3 + 1], bz = this._cellPos[i3 + 2];
@@ -308,9 +308,16 @@ export class FireOverlay {
     }
 
     // ── Edge flame cells — 4 layers each ──
+    // Use hash-based selection (not modulo stepping) for stable visuals across frames
     const edgeStep = edgeFlames.length > maxEdge ? Math.ceil(edgeFlames.length / maxEdge) : 1;
 
-    for (let i = 0; i < edgeFlames.length && si < this.maxSprites - 3; i += edgeStep) {
+    for (let i = 0; i < edgeFlames.length && si < this.maxSprites - 3; i++) {
+      if (edgeStep > 1) {
+        const idx = edgeFlames[i];
+        const r = Math.floor(idx / GRID_COLS);
+        const c = idx % GRID_COLS;
+        if ((this._hash(r, c) * edgeStep | 0) !== 0) continue;
+      }
       const idx = edgeFlames[i];
       const r = Math.floor(idx / GRID_COLS);
       const c = idx % GRID_COLS;

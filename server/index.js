@@ -4,6 +4,7 @@ import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
+import { mountCommandApi } from './commandApi.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '..', '.env') });
@@ -379,9 +380,22 @@ app.post('/api/log', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Command API (OpenClaw / Telegram interface) ─────────────────────────────
+// getEngineState returns a snapshot of the ICS engine for status queries.
+// In production this would connect to the shared ICSEngine instance.
+// For now it returns empty state — the frontend pushes state via POST /api/engine-state.
+let latestEngineState = {};
+app.post('/api/engine-state', (req, res) => {
+  latestEngineState = req.body;
+  res.json({ ok: true });
+});
+mountCommandApi(app, () => latestEngineState);
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`FireSight server running on http://localhost:${PORT}`);
   console.log(`Marble API key: ${API_KEY ? 'loaded' : 'MISSING'}`);
   console.log(`Grid cache: ${gridCache.size} cells loaded`);
+  console.log(`Command API: http://localhost:${PORT}/api/command (OpenClaw/Telegram)`);
+  console.log(`Strategy SSE: http://localhost:${PORT}/api/strategy/stream`);
 });

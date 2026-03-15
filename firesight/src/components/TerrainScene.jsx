@@ -15,8 +15,8 @@ function debugLog(msg, level = 'log') {
 }
 
 // ── Geographic Bounds (must match fire engine) ──────────────────────────────
-const LAT_MIN = 33.950, LAT_MAX = 34.130;
-const LNG_MIN = -118.680, LNG_MAX = -118.370;
+const LAT_MIN = 33.70, LAT_MAX = 34.45;
+const LNG_MIN = -119.00, LNG_MAX = -117.90;
 const CENTER = { lat: (LAT_MIN + LAT_MAX) / 2, lng: (LNG_MIN + LNG_MAX) / 2 };
 
 // ── Agent Colors ────────────────────────────────────────────────────────────
@@ -113,6 +113,104 @@ function setUnitTarget(unit, tr, tc) {
   unit.trow=tr; unit.tcol=tc;
   if(IS_GROUND.has(unit.type)){unit._path=findRoadPath(Math.round(unit.row),Math.round(unit.col),Math.round(tr),Math.round(tc));unit._pi=0;}
   else{unit._path=null;}
+}
+
+// ── Apply strategy changes to agents — immediate visible redistribution ──────
+function applyStrategyToAgents(sim, strategy) {
+  if (!sim || !sim.units || !sim.drones) return;
+  const engine = sim.engine;
+  if (!engine) return;
+  const GRID_ROWS = engine.rows, GRID_COLS = engine.cols;
+
+  // Find fire center from burning cells
+  let cR = GRID_ROWS / 2, cC = GRID_COLS / 2, count = 0;
+  for (let r = 0; r < GRID_ROWS; r += 4) {
+    for (let c = 0; c < GRID_COLS; c += 4) {
+      if (engine.cells[r * GRID_COLS + c] === BURNING) { cR += r; cC += c; count++; }
+    }
+  }
+  if (count > 0) { cR /= (count + 1); cC /= (count + 1); }
+
+  const units = sim.units;
+  const drones = sim.drones;
+  const windRad = (engine.windDirection || 0) * Math.PI / 180;
+
+  // Strategy: posture changes move ground units
+  if (strategy.posture === 'defensive') {
+    // Pull units back from fire edge, form perimeter ring
+    units.forEach((u, i) => {
+      if (IS_GROUND.has(u.type)) {
+        const ang = (i / units.length) * Math.PI * 2;
+        const dist = 40; // further from fire
+        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
+      }
+    });
+  } else if (strategy.posture === 'offensive') {
+    // Push units toward fire edge
+    units.forEach((u, i) => {
+      if (IS_GROUND.has(u.type)) {
+        const ang = (i / units.length) * Math.PI * 2;
+        const dist = 15; // close to fire
+        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
+      }
+    });
+  } else if (strategy.posture === 'confine') {
+    // Units to natural barriers / roads around fire
+    units.forEach((u, i) => {
+      if (IS_GROUND.has(u.type)) {
+        const ang = (i / units.length) * Math.PI * 2;
+        const dist = 55;
+        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
+      }
+    });
+  }
+
+  // Air priority changes move aircraft
+  if (strategy.airPriority === 'head') {
+    // Aircraft toward fire head (downwind)
+    const headR = cR - Math.cos(windRad) * 20, headC = cC + Math.sin(windRad) * 20;
+    units.filter(u => u.type === 'heli' || u.type === 'air' || u.type === 'lead').forEach(u => {
+      u.trow = headR + (Math.random() - 0.5) * 10;
+      u.tcol = headC + (Math.random() - 0.5) * 10;
+    });
+  } else if (strategy.airPriority === 'flanks') {
+    units.filter(u => u.type === 'heli' || u.type === 'air').forEach((u, i) => {
+      const side = i % 2 === 0 ? 1 : -1;
+      u.trow = cR + Math.sin(windRad) * 25 * side;
+      u.tcol = cC + Math.cos(windRad) * 25 * side;
+    });
+  } else if (strategy.airPriority === 'hold') {
+    // Aircraft return toward command center
+    units.filter(u => u.type === 'heli' || u.type === 'air' || u.type === 'lead').forEach(u => {
+      u.trow = u.homeRow; u.tcol = u.homeCol;
+    });
+  }
+
+  // Drone mode changes
+  if (strategy.droneMode === 'safety') {
+    // Drones cluster near ground crews instead of fire perimeter
+    const groundUnits = units.filter(u => IS_GROUND.has(u.type) && (Math.abs(u.row - u.homeRow) > 5 || Math.abs(u.col - u.homeCol) > 5));
+    drones.filter(d => d.launched).forEach((d, i) => {
+      if (groundUnits.length > 0) {
+        const gu = groundUnits[i % groundUnits.length];
+        d.trow = gu.row + (Math.random() - 0.5) * 8;
+        d.tcol = gu.col + (Math.random() - 0.5) * 8;
+      }
+    });
+  } else if (strategy.droneMode === 'recon') {
+    // Spread drones around fire perimeter
+    drones.filter(d => d.launched).forEach((d, i) => {
+      const ang = (i / Math.max(1, drones.filter(x => x.launched).length)) * Math.PI * 2;
+      d.trow = cR + Math.cos(ang) * 30;
+      d.tcol = cC + Math.sin(ang) * 30;
+    });
+  }
+
+  // Safety stop — all units halt in place
+  if (strategy.safetyStop === 'all') {
+    units.forEach(u => { u.trow = u.row; u.tcol = u.col; u._path = null; });
+    drones.filter(d => d.launched).forEach(d => { d.trow = d.row; d.tcol = d.col; });
+  }
 }
 
 // ── Evacuation Routes (lat/lng points) ──────────────────────────────────────
@@ -398,6 +496,10 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(container.offsetWidth, container.offsetHeight);
     renderer.setClearColor(0x0a0e16);
+    renderer.domElement.style.position = 'absolute';
+    renderer.domElement.style.top = '0';
+    renderer.domElement.style.left = '0';
+    renderer.domElement.style.zIndex = '1';
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -606,6 +708,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     overlayCanvas.style.pointerEvents = 'none';
     overlayCanvas.style.top = '0';
     overlayCanvas.style.left = '0';
+    overlayCanvas.style.zIndex = '2';
     container.appendChild(overlayCanvas);
 
     function syncOverlay() {
@@ -645,8 +748,8 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       return { gw: Math.max(1, fw), gh: Math.max(1, fh) };
     }
 
-    // ── Click to ignite (screen → Mercator → lat/lng) ──
-    el.addEventListener('click', (e) => {
+    // ── Double-click to ignite (screen → Mercator → lat/lng) ──
+    el.addEventListener('dblclick', (e) => {
       if (destroyed) return;
       const rect = el.getBoundingClientRect();
       const mx = (e.clientX - rect.left) / rect.width;
@@ -848,8 +951,30 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       debugLog(`IGNITE at (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
       sim.events.push({ time: Date.now(), agent:'system', msg: `Fire ignited at ${lat.toFixed(3)}\u00B0N, ${Math.abs(lng).toFixed(3)}\u00B0W`, t:Date.now() });
       // Notify 3D iframe to ignite at same location
+      console.log('[TerrainScene] posting fire_ignite_to_3d', lat.toFixed(4), lng.toFixed(4));
       window.postMessage({ type: 'fire_ignite_to_3d', lat, lng }, '*');
+      // Also post with a small delay as fallback in case the bridge misses it
+      setTimeout(() => window.postMessage({ type: 'fire_ignite_to_3d', lat, lng }, '*'), 100);
     };
+
+    // ── Listen for manual position update from 3D (after switching back to agentic) ──
+    function onManualPosUpdate(ev) {
+      if (ev.data?.type === 'manual_position_update' && ev.data.vehicleId) {
+        const s = simRef.current;
+        if (!s) return;
+        const { vehicleId, lat, lng } = ev.data;
+        const newRow = Math.floor((1 - (lat - LAT_MIN) / (LAT_MAX - LAT_MIN)) * GRID_ROWS);
+        const newCol = Math.floor(((lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * GRID_COLS);
+        // Update drone position + target so it resumes movement from new location
+        const drone = s.drones.find(d => d.id === vehicleId);
+        if (drone) { drone.row = newRow; drone.col = newCol; drone.trow = newRow; drone.tcol = newCol; return; }
+        // Update unit position + target
+        const unit = s.units.find(u => u.id === vehicleId);
+        if (unit) { unit.row = newRow; unit.col = newCol; if (unit.trow != null) { unit.trow = newRow; unit.tcol = newCol; } }
+      }
+    }
+    window.addEventListener('message', onManualPosUpdate);
+    sim._cleanupManualPos = () => window.removeEventListener('message', onManualPosUpdate);
 
     // ── Listen for fire ignition from 3D view ──
     function onFireIgnite(ev) {
@@ -880,8 +1005,21 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         lng: LNG_MIN + (u.col / GRID_COLS) * (LNG_MAX - LNG_MIN),
         atHome: Math.abs(u.row - u.homeRow) < 2 && Math.abs(u.col - u.homeCol) < 2,
       }));
+      // ICP personnel → lat/lng
+      const icpUnits = ICP_PERSONNEL.map(p => {
+        const r = COMMAND_CENTER.row + p.offsetR, c = COMMAND_CENTER.col + p.offsetC;
+        return { id: p.id, type: 'icp', label: p.label, name: p.name, color: p.color, category: 'icp',
+          lat: LAT_MAX - (r / GRID_ROWS) * (LAT_MAX - LAT_MIN),
+          lng: LNG_MIN + (c / GRID_COLS) * (LNG_MAX - LNG_MIN) };
+      });
+      // Field entities → lat/lng
+      const fieldUnits = FIELD_ENTITIES.map(fe => ({
+        id: fe.id, type: 'field', label: fe.label, name: fe.name, color: fe.color, category: fe.category,
+        lat: LAT_MAX - (fe.row / GRID_ROWS) * (LAT_MAX - LAT_MIN),
+        lng: LNG_MIN + (fe.col / GRID_COLS) * (LNG_MAX - LNG_MIN),
+      }));
       window.postMessage({
-        type: 'unit_positions', drones, units,
+        type: 'unit_positions', drones, units, icpUnits, fieldUnits,
         fireActive: sim.fireActive || false,
         fireDetected: sim.fireDetected || false,
       }, '*');
@@ -957,6 +1095,15 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
 
       const hitRadius = 20;
 
+      // Mountable types: only aircraft and drones
+      const MOUNTABLE_UTYPES = new Set(['heli', 'air', 'seat', 'lead']);
+
+      // Helper: show info tooltip in bottom-right corner (positioned via CSS)
+      function showCornerInfo(html) {
+        tt.innerHTML = html;
+        tt.style.display = 'block';
+      }
+
       // Check drones — g2px returns canvas-space coords, same as mx/my
       for (const d of s.drones) {
         if (!d.launched) continue;
@@ -964,13 +1111,15 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         if (Math.abs(sp.x - mx) < hitRadius && Math.abs(sp.y - my) < hitRadius) {
           const dc = DTYPE_COLORS[d.dtype] || '#22D3EE';
           const spd = SPEED[d.dtype] || 40;
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${dc};margin-bottom:3px">${d.id} — ${d.model || dtypeLabels[d.dtype] || d.dtype}</div>` +
+          showCornerInfo(
+            `<div style="font-size:12px;font-weight:700;color:${dc};margin-bottom:3px">${d.id} — ${d.model || dtypeLabels[d.dtype] || d.dtype}</div>` +
             `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${dtypeDescs[d.dtype] || ''}</div>` +
-            `<div style="font-size:8px;color:#64748B">Speed: ${spd}mph | Flight time: ${d.flightTime||40}min<br>Status: ${s.fireDetected ? 'Active Response' : 'Patrol'}</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
-          // Cross-highlight: notify ICS graph with individual drone ID
+            `<div style="font-size:8px;color:#64748B">Speed: ${spd}mph | Flight time: ${d.flightTime||40}min<br>Status: ${s.fireDetected ? 'Active Response' : 'Patrol'}</div>`
+          );
+          el.style.cursor = 'pointer'; // mountable drone
+          s._hoveredMountId = d.id;
+          s._hoveredMountRow = d.row;
+          s._hoveredMountCol = d.col;
           if (onNodeHoverRef.current) onNodeHoverRef.current('d_' + d.id.replace('D-', ''));
           return;
         }
@@ -983,13 +1132,21 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           const uc = UTYPE[u.type]?.c || '#FBBF24';
           const spd = SPEED[u.type] || 20;
           const crewInfo = u.crew ? `Crew: ${u.crew} | ` : '';
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${uc};margin-bottom:3px">${u.id} — ${unitLabels[u.type] || u.type}</div>` +
+          const mountable = MOUNTABLE_UTYPES.has(u.type);
+          showCornerInfo(
+            `<div style="font-size:12px;font-weight:700;color:${uc};margin-bottom:3px">${u.id} — ${unitLabels[u.type] || u.type}</div>` +
             `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${unitDescs[u.type] || ''}</div>` +
-            `<div style="font-size:8px;color:#64748B">${crewInfo}Speed: ${spd}mph | From: ${u.station||'Unknown'}<br>Vehicle: ${u.vehicle||''}<br>Status: ${s.fireDetected ? 'Deployed' : 'Staged at station'}</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
-          // Cross-highlight: notify ICS graph
+            `<div style="font-size:8px;color:#64748B">${crewInfo}Speed: ${spd}mph | From: ${u.station||'Unknown'}<br>Vehicle: ${u.vehicle||''}<br>Status: ${s.fireDetected ? 'Deployed' : 'Staged at station'}</div>`
+          );
+          if (mountable) {
+            el.style.cursor = 'pointer';
+            s._hoveredMountId = u.id;
+            s._hoveredMountRow = u.row;
+            s._hoveredMountCol = u.col;
+          } else {
+            el.style.cursor = '';
+            s._hoveredMountId = null; s._hoveredMountRow = null; s._hoveredMountCol = null;
+          }
           if (onNodeHoverRef.current) onNodeHoverRef.current(MAP_TO_ICS[u.id] || u.type);
           return;
         }
@@ -999,11 +1156,12 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       for (const p of ICP_PERSONNEL) {
         const pp = g2px(COMMAND_CENTER.row + p.offsetR, COMMAND_CENTER.col + p.offsetC, s.gw, s.gh);
         if (Math.abs(pp.x - mx) < 12 && Math.abs(pp.y - my) < 12) {
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${p.color};margin-bottom:3px">${p.name}</div>` +
-            `<div style="font-size:9px;color:#94A3B8">Stationed at Incident Command Post</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          showCornerInfo(
+            `<div style="font-size:12px;font-weight:700;color:${p.color};margin-bottom:3px">${p.name}</div>` +
+            `<div style="font-size:9px;color:#94A3B8">Stationed at Incident Command Post</div>`
+          );
+          el.style.cursor = '';
+          s._hoveredMountId = null; s._hoveredMountRow = null; s._hoveredMountCol = null;
           if (onNodeHoverRef.current) onNodeHoverRef.current(p.id);
           return;
         }
@@ -1015,11 +1173,12 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         if (Math.abs(fePx.x - mx) < 14 && Math.abs(fePx.y - my) < 14) {
           const catLabel = fe.category === 'ai' ? 'AI Agent' : fe.category === 'sensor' ? 'External Sensor' :
             fe.category === 'airborne' ? 'Airborne Supervisor' : 'Field Command';
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${fe.color};margin-bottom:3px">${fe.name}</div>` +
-            `<div style="font-size:9px;color:#94A3B8">${catLabel}</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          showCornerInfo(
+            `<div style="font-size:12px;font-weight:700;color:${fe.color};margin-bottom:3px">${fe.name}</div>` +
+            `<div style="font-size:9px;color:#94A3B8">${catLabel}</div>`
+          );
+          el.style.cursor = '';
+          s._hoveredMountId = null; s._hoveredMountRow = null; s._hoveredMountCol = null;
           if (onNodeHoverRef.current) onNodeHoverRef.current(fe.id);
           return;
         }
@@ -1031,22 +1190,97 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         const stashed = s.drones.filter(d => !d.launched).length;
         const launched = s.drones.filter(d => d.launched).length;
         const phase = icsEngine ? icsEngine.icsPhase : 'standby';
-        tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:#A78BFA;margin-bottom:3px">FireSight ICP — Incident Command Post</div>` +
+        showCornerInfo(
+          `<div style="font-size:12px;font-weight:700;color:#A78BFA;margin-bottom:3px">FireSight ICP — Incident Command Post</div>` +
           `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">Pepperdine University staging area (34.074°N, 118.551°W). Real ICP location used during the 2025 Palisades Fire.</div>` +
-          `<div style="font-size:8px;color:#64748B">UAS Fleet: ${launched} airborne / ${stashed} in reserve (${DRONE_STASH_TOTAL} total)<br>ICS Phase: ${phase.toUpperCase()}</div>`;
-        tt.style.display = 'block';
-        tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-        tt.style.top = Math.max(tmy - 10, 4) + 'px';
+          `<div style="font-size:8px;color:#64748B">UAS Fleet: ${launched} airborne / ${stashed} in reserve (${DRONE_STASH_TOTAL} total)<br>ICS Phase: ${phase.toUpperCase()}</div>`
+        );
+        el.style.cursor = '';
+        s._hoveredMountId = null; s._hoveredMountRow = null; s._hoveredMountCol = null;
         if (onNodeHoverRef.current) onNodeHoverRef.current('ic');
         return;
       }
 
-      // Nothing hovered — clear highlight
+      // Nothing hovered — clear
       tt.style.display = 'none';
+      el.style.cursor = '';
+      s._hoveredMountId = null; s._hoveredMountRow = null; s._hoveredMountCol = null;
       if (onNodeHoverRef.current) onNodeHoverRef.current(null);
     };
 
     mapContainerRef.current?.addEventListener('mousemove', tooltipHandler);
+
+    // Click-to-mount: click a mountable vehicle in 2D → zoom in then switch to 3D + enter FPV
+    let mountZooming = false;
+    const mountClickHandler = (e) => {
+      const s = simRef.current;
+      if (!s || !s._hoveredMountId || mountZooming) return;
+      const vehicleId = s._hoveredMountId;
+      const hovRow = s._hoveredMountRow;
+      const hovCol = s._hoveredMountCol;
+      if (hovRow == null || hovCol == null) {
+        window.postMessage({ type: 'mount_vehicle', vehicleId }, '*');
+        return;
+      }
+      mountZooming = true;
+
+      // Convert row/col to Mercator coords for zoom target
+      const targetLat = LAT_MAX - (hovRow / GRID_ROWS) * (LAT_MAX - LAT_MIN);
+      const targetLng = LNG_MIN + (hovCol / GRID_COLS) * (LNG_MAX - LNG_MIN);
+      const targetX = lng2mercX(targetLng);
+      const targetY = lat2mercY(targetLat);
+
+      // Save starting camera state
+      const startX = camera.position.x;
+      const startY = camera.position.y;
+      const startLeft = camera.left;
+      const startRight = camera.right;
+      const startTop = camera.top;
+      const startBottom = camera.bottom;
+
+      // Target: zoom in very tight (small orthographic frustum)
+      const zoomFactor = 0.02; // zoom to ~2% of original view
+      const endLeft = startLeft * zoomFactor;
+      const endRight = startRight * zoomFactor;
+      const endTop = startTop * zoomFactor;
+      const endBottom = startBottom * zoomFactor;
+
+      const duration = 800; // ms
+      const startTime = performance.now();
+
+      function animateZoom() {
+        const now = performance.now();
+        const t = Math.min((now - startTime) / duration, 1);
+        // Ease-in (accelerating) for a dramatic zoom feel
+        const ease = t * t * t;
+
+        camera.position.x = startX + (targetX - startX) * ease;
+        camera.position.y = startY + (targetY - startY) * ease;
+        camera.left = startLeft + (endLeft - startLeft) * ease;
+        camera.right = startRight + (endRight - startRight) * ease;
+        camera.top = startTop + (endTop - startTop) * ease;
+        camera.bottom = startBottom + (endBottom - startBottom) * ease;
+        camera.updateProjectionMatrix();
+
+        if (t < 1) {
+          requestAnimationFrame(animateZoom);
+        } else {
+          // Zoom complete — switch to 3D FPV
+          mountZooming = false;
+          // Reset camera back to original view for when user returns
+          camera.position.x = startX;
+          camera.position.y = startY;
+          camera.left = startLeft;
+          camera.right = startRight;
+          camera.top = startTop;
+          camera.bottom = startBottom;
+          camera.updateProjectionMatrix();
+          window.postMessage({ type: 'mount_vehicle', vehicleId }, '*');
+        }
+      }
+      requestAnimationFrame(animateZoom);
+    };
+    mapContainerRef.current?.addEventListener('click', mountClickHandler);
 
     // Click-to-ignite is now handled via sim._handleClick from the Three.js click listener
 
@@ -1668,6 +1902,37 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
             sim.events.push({ time: Date.now(), agent: 'overwatch', msg: `${lastBanner.text}: ${lastBanner.detail || ''}`, t: Date.now() });
           }
         }
+      }
+
+      // Push engine state to server for OpenClaw/Telegram status queries (every 300 frames ~5s)
+      if (icsEngine && frame % 300 === 0) {
+        try {
+          const stats = engine.getStats();
+          fetch('/api/engine-state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fireArea: icsEngine.fire.area,
+              fireContainment: icsEngine.fire.containment,
+              fireRos: icsEngine.fire.ros,
+              windDir: icsEngine.getWindDir(),
+              windSpeed: icsEngine.getWindSpeed(),
+              windShifted: icsEngine.fire.windShifted,
+              threatenedStructures: icsEngine.fire.threatenedStructures,
+              spotFires: icsEngine.fire.spots.length,
+              icsPhase: icsEngine.icsPhase,
+              activeAgentCount: icsEngine.litNodes.size,
+              simTime: icsEngine.simTime,
+              agents: Object.fromEntries(
+                Object.entries(icsEngine.agents).map(([id, a]) => [id, {
+                  active: a.active,
+                  state: a.state,
+                  inbox: a.inbox.slice(-3),
+                }])
+              ),
+            }),
+          }).catch(() => {}); // silent fail — server may not be running
+        } catch(e) { /* ignore */ }
       }
 
       // Post fire state to ICS iframe (every 30 frames to avoid spam)
@@ -2340,6 +2605,59 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
 
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
+  // ── Subscribe to strategy changes from OpenClaw/Telegram via SSE ──────────
+  useEffect(() => {
+    let es;
+    try {
+      es = new EventSource('/api/strategy/stream');
+      es.addEventListener('command', (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.strategy && icsEngine) {
+            icsEngine.strategy = data.strategy;
+            const sim = simRef.current;
+            if (sim) {
+              sim.events.push({
+                time: Date.now(), agent: 'overwatch',
+                msg: `[TELEGRAM] Command received: ${data.command}`,
+                t: Date.now(),
+              });
+            }
+            console.log('[OpenClaw] Strategy updated:', data.command);
+          }
+        } catch(e) { /* ignore parse errors */ }
+      });
+      es.addEventListener('reset', () => {
+        if (icsEngine) icsEngine.strategy = undefined;
+      });
+      es.onerror = () => { /* silent — server may not be running */ };
+    } catch(e) { /* SSE not available */ }
+
+    // Also listen for strategy_update postMessages from App.jsx StrategyPanel
+    function onStrategyMsg(ev) {
+      if (ev.data?.type === 'strategy_update' && ev.data.strategy && icsEngine) {
+        icsEngine.strategy = ev.data.strategy;
+        const sim = simRef.current;
+        if (sim) {
+          // Trigger visible agent redistribution
+          const changes = ev.data.changes || {};
+          if (changes.posture || changes.attackMode || changes.airPriority || changes.structMode) {
+            // Reassign unit targets based on new strategy
+            applyStrategyToAgents(sim, ev.data.strategy);
+          }
+          sim.events.push({
+            time: Date.now(), agent: 'IC',
+            msg: `Strategy change: ${Object.entries(changes).map(([k,v]) => `${k}=${v}`).join(', ')}`,
+            t: Date.now(),
+          });
+        }
+        console.log('[Strategy] Updated from panel:', ev.data.changes);
+      }
+    }
+    window.addEventListener('message', onStrategyMsg);
+    return () => { if (es) es.close(); window.removeEventListener('message', onStrategyMsg); };
+  }, [icsEngine]);
+
   const setSpeed = useCallback((s) => { const sim = simRef.current; if (sim) sim.speed = s; setUi(prev => ({ ...prev, speed: s })); }, []);
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2397,14 +2715,19 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         </span>
       </div>
 
-      {/* Tooltip for drones/units/command center */}
+      {/* Info tooltip — bottom-right corner */}
       <div ref={tooltipDivRef} style={{
         position: 'absolute', display: 'none', zIndex: 100,
-        background: 'rgba(17,24,39,.95)', border: '1px solid #1E2636',
-        borderRadius: 6, padding: '10px 14px', fontSize: 10, maxWidth: 320,
-        pointerEvents: 'none', boxShadow: '0 8px 32px rgba(0,0,0,.5)',
-        color: '#E2E8F0',
+        right: 12, bottom: 12,
+        background: 'rgba(8,12,20,0.92)', border: '1px solid rgba(0,229,255,0.25)',
+        borderRadius: 8, padding: '12px 16px', fontSize: 10, maxWidth: 320, minWidth: 180,
+        pointerEvents: 'none',
+        boxShadow: '0 4px 24px rgba(0,0,0,.5), 0 0 8px rgba(0,229,255,0.06)',
+        backdropFilter: 'blur(8px)',
+        color: '#E2E8F0', lineHeight: 1.6,
       }} />
+
+
 
       {/* Map powered by Esri World Imagery + Three.js */}
     </div>

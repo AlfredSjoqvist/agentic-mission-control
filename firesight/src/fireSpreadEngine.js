@@ -15,13 +15,13 @@
 export const GRID_ROWS = 256;
 export const GRID_COLS = 256;
 
-// Map extent (degrees) — expanded to cover the full visible Google Maps viewport
-const LAT_MIN = 33.950;
-const LAT_MAX = 34.130;
-const LNG_MIN = -118.680;
-const LNG_MAX = -118.370;
+// Map extent (degrees) — synced with 3D drone-view fire engine
+const LAT_MIN = 33.70;
+const LAT_MAX = 34.45;
+const LNG_MIN = -119.00;
+const LNG_MAX = -117.90;
 
-const CELL_SIZE_M = 95; // ~95m per cell (expanded grid covers ~24km × 28km)
+const CELL_SIZE_M = 100; // ~100m per cell (synced with 3D engine)
 
 // ─── Cell States ─────────────────────────────────────────────────────────────
 export const UNBURNED = 0;
@@ -124,15 +124,30 @@ export class FireSpreadEngine {
         const noise = fbmNoise(nx * 6, ny * 6, 42.0) * 200;
         this.elevation[idx] = baseElev + ridge + noise;
 
-        // Ocean detection — Palisades coastline
-        // Grid covers 33.950–34.130°N × 118.680–118.370°W (0.18° lat, 0.31° lng)
-        // Real coastline: ~34.01°N at Malibu (west) to ~33.99°N at Santa Monica (east)
-        // ny = 1 - (lat - LAT_MIN)/(LAT_MAX - LAT_MIN)
-        // At 34.01°N: ny = 1 - (34.01-33.95)/0.18 = 1 - 0.333 = 0.667
-        // At 33.99°N: ny = 1 - (33.99-33.95)/0.18 = 1 - 0.222 = 0.778
-        // Coast goes from ny≈0.67 (west) to ny≈0.78 (east)
-        const coastY = 0.67 + nx * 0.11;
-        if (ny > coastY) {
+        // Ocean detection — Southern California coastline
+        // ny = 1 - (lat - LAT_MIN)/(LAT_MAX - LAT_MIN), nx = (lng - LNG_MIN)/(LNG_MAX - LNG_MIN)
+        // Convert lat/lng to grid coords for coastline check
+        const cellLat = LAT_MAX - ny * (LAT_MAX - LAT_MIN);
+        const cellLng = LNG_MIN + nx * (LNG_MAX - LNG_MIN);
+        let coastLat;
+        if (cellLng < -118.95) {
+          coastLat = 34.27;
+        } else if (cellLng < -118.75) {
+          coastLat = 34.27 + (cellLng + 118.95) * 1.15;
+        } else if (cellLng < -118.53) {
+          coastLat = 34.04 + (cellLng + 118.75) * 0.05;
+        } else if (cellLng < -118.49) {
+          coastLat = 34.03 + (cellLng + 118.53) * 0.375;
+        } else if (cellLng < -118.40) {
+          coastLat = 34.015 + (cellLng + 118.49) * 0.61;
+        } else if (cellLng < -118.25) {
+          coastLat = 33.96 + (cellLng + 118.40) * 1.4;
+        } else if (cellLng < -118.10) {
+          coastLat = 33.75 + (cellLng + 118.25) * (-0.27);
+        } else {
+          coastLat = 33.76;
+        }
+        if (cellLat < coastLat) {
           this.fuelType[idx] = 4; // rock_bare (ocean — non-combustible)
           this.elevation[idx] = 0;
           this.fuelMoisture[idx] = 100;
@@ -179,6 +194,8 @@ export class FireSpreadEngine {
         const c = centerCol + dc;
         if (r >= 0 && r < this.rows && c >= 0 && c < this.cols) {
           const idx = r * this.cols + c;
+          // Skip ocean tiles (fuelType 4 with 100% moisture = ocean)
+          if (this.fuelType[idx] === 4 && this.fuelMoisture[idx] >= 100) continue;
           if (this.cells[idx] === UNBURNED) {
             this.cells[idx] = BURNING;
             this.burnTime[idx] = this.timestep;

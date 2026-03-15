@@ -9,10 +9,10 @@ export const GRID_COLS = 500;
 export const CELL_SIZE = 100; // meters
 
 // Expanded bounds: Malibu to Pasadena, coast to mountains
-export const LAT_MIN = 33.85;
-export const LAT_MAX = 34.21;
-export const LNG_MIN = -118.80;
-export const LNG_MAX = -118.25;
+export const LAT_MIN = 33.70;
+export const LAT_MAX = 34.45;
+export const LNG_MIN = -119.00;
+export const LNG_MAX = -117.90;
 
 // Cell states (one-way: UNBURNED → BURNING → BURNED)
 export const UNBURNED = 0;
@@ -83,13 +83,34 @@ export class FireEngine {
         elev += fbm(latNorm * 6, lngNorm * 6, 42) * 70 - 35;
 
         // Ocean cells get negative elevation — noisy coastline for organic shape
-        // Coastline: higher values = more ocean coverage
-        // Malibu (-118.75): coast ~34.04
-        // Palisades (-118.53): coast ~34.03
-        // Santa Monica (-118.49): coast ~34.015
-        // Venice (-118.46): coast ~34.00
-        // Marina/LAX (-118.40): coast ~33.96
-        const coastBase = 34.055 - (lng + 118.75) * 0.22;
+        // Expanded coastline covering Ventura to Long Beach
+        // Approximate Southern California coastline (lat as function of lng)
+        let coastBase;
+        if (lng < -118.95) {
+          // Ventura coast — runs roughly east-west at ~34.27
+          coastBase = 34.27;
+        } else if (lng < -118.75) {
+          // Malibu west — coast curves south from 34.27 to 34.04
+          coastBase = 34.27 + (lng + 118.95) * 1.15;
+        } else if (lng < -118.53) {
+          // Malibu to Palisades — coast ~34.04 to 34.03
+          coastBase = 34.04 + (lng + 118.75) * 0.05;
+        } else if (lng < -118.49) {
+          // Palisades to Santa Monica — 34.03 to 34.015
+          coastBase = 34.03 + (lng + 118.53) * 0.375;
+        } else if (lng < -118.40) {
+          // Santa Monica to Marina/LAX — 34.015 to 33.96
+          coastBase = 34.015 + (lng + 118.49) * 0.61;
+        } else if (lng < -118.25) {
+          // LAX to Palos Verdes — coast dips to ~33.75 then curves
+          coastBase = 33.96 + (lng + 118.40) * 1.4;
+        } else if (lng < -118.10) {
+          // San Pedro / Long Beach — coast ~33.72 to 33.76
+          coastBase = 33.75 + (lng + 118.25) * (-0.27);
+        } else {
+          // East of Long Beach — coast ~33.76
+          coastBase = 33.76;
+        }
         const coastNoise = fbm(lat * 40, lng * 40, 7) * 0.005 - 0.0025;
         if (lat < coastBase + coastNoise) {
           elev = -10;

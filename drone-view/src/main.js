@@ -43,8 +43,11 @@ scene.add(sun);
 // ============================================================
 const tiles = new TilesRenderer();
 tiles.registerPlugin(new GoogleCloudAuthPlugin({ apiToken: GOOGLE_API_KEY }));
-tiles.errorTarget = 6;
+tiles.errorTarget = 8;
 tiles.loadSiblings = false;
+tiles.maxDepth = 20;
+tiles.downloadQueue.maxJobs = 4;
+tiles.parseQueue.maxJobs = 2;
 tiles.setCamera(camera);
 tiles.setResolutionFromRenderer(camera, renderer);
 scene.add(tiles.group);
@@ -52,11 +55,13 @@ scene.add(tiles.group);
 let tilesReady = false;
 
 // ============================================================
-// GLOBE CONTROLS
+// GLOBE CONTROLS (kept for tiles integration — disabled for input)
 // ============================================================
 const controls = new GlobeControls(scene, camera, renderer.domElement, tiles);
 controls.enableDamping = true;
 controls.dampingFactor = 0.15;
+// Immediately disable GlobeControls input — we use our own fly camera
+controls.enabled = false;
 
 const ellipsoid = controls.ellipsoid || new Ellipsoid(6378137, 6378137, 6356752.3);
 
@@ -80,8 +85,148 @@ const vecNorth = new THREE.Vector3();
 const vecUp = new THREE.Vector3();
 ellipsoid.getEastNorthUpAxes(latRad, lngRad, vecEast, vecNorth, vecUp);
 
-camera.up.copy(vecNorth);
+camera.up.copy(vecUp);
 camera.lookAt(lookTarget);
+
+// ============================================================
+// MINECRAFT CREATIVE MODE FLY CAMERA
+// ============================================================
+// Yaw/pitch for free-look in map mode (separate from FPV yaw/pitch)
+let flyCamYaw = 0;
+let flyCamPitch = -0.3; // slight downward tilt initially
+const FLY_SENSITIVITY = 0.002;
+const FLY_PITCH_MAX = Math.PI * 0.45; // ±81°
+
+// Capture initial yaw from camera look direction
+{
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const up = camera.position.clone().normalize();
+  const east = new THREE.Vector3();
+  const north = new THREE.Vector3();
+  const upAxis = new THREE.Vector3();
+  ellipsoid.getEastNorthUpAxes(latRad, lngRad, east, north, upAxis);
+  // Project look dir onto tangent plane
+  const flat = dir.clone().sub(up.clone().multiplyScalar(dir.dot(up)));
+  if (flat.length() > 0.001) {
+    flat.normalize();
+    flyCamYaw = Math.atan2(flat.dot(east), flat.dot(north));
+  }
+  flyCamPitch = Math.asin(Math.max(-1, Math.min(1, dir.dot(up))));
+}
+
+const flyKeys = { w: false, a: false, s: false, d: false, space: false, shift: false };
+const FLY_SPEED = 80;       // meters per frame at normal speed
+const FLY_SPRINT_MULT = 3;  // shift multiplier
+
+// Pointer lock for map mode free-look (click to grab)
+renderer.domElement.addEventListener('click', () => {
+  if (!fpvTarget && !fpvZooming && document.pointerLockElement !== renderer.domElement) {
+    renderer.domElement.requestPointerLock();
+  }
+});
+
+// Mouse look in map mode
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  if (fpvTarget || fpvZooming) return; // FPV has its own mouse handler
+  flyCamYaw += e.movementX * FLY_SENSITIVITY;
+  flyCamPitch = Math.max(-FLY_PITCH_MAX, Math.min(FLY_PITCH_MAX,
+    flyCamPitch - e.movementY * FLY_SENSITIVITY));
+});
+
+// WASD + Space + Shift for fly camera
+window.addEventListener('keydown', (e) => {
+  // Forward tab-switch keys (1/2/3) and Z (strategy panel) to parent
+  if (e.key === '1' || e.key === '2' || e.key === '3') {
+    try { window.parent.postMessage({ type: 'tab_switch', key: e.key }, '*'); } catch(ex) {}
+    if (e.key !== '1') {
+      if (document.pointerLockElement) document.exitPointerLock();
+    }
+    return;
+  }
+  if (e.key.toLowerCase() === 'z' && !fpvTarget) {
+    try { window.parent.postMessage({ type: 'toggle_strategy' }, '*'); } catch(ex) {}
+    return;
+  }
+  if (fpvTarget || fpvZooming) return; // FPV has its own keys
+  const k = e.key.toLowerCase();
+  if (k === 'w') flyKeys.w = true;
+  if (k === 'a') flyKeys.a = true;
+  if (k === 's') flyKeys.s = true;
+  if (k === 'd') flyKeys.d = true;
+  if (k === ' ') { flyKeys.space = true; e.preventDefault(); }
+  if (k === 'shift' || e.shiftKey) flyKeys.shift = true;
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'w') flyKeys.w = false;
+  if (k === 'a') flyKeys.a = false;
+  if (k === 's') flyKeys.s = false;
+  if (k === 'd') flyKeys.d = false;
+  if (k === ' ') flyKeys.space = false;
+  if (k === 'shift') flyKeys.shift = false;
+});
+
+// Pre-allocated vectors for fly camera (avoids GC pressure every frame)
+const _flyCarto = {};
+const _flyEast = new THREE.Vector3();
+const _flyNorth = new THREE.Vector3();
+const _flyUp = new THREE.Vector3();
+const _flyFwd = new THREE.Vector3();
+const _flyRight = new THREE.Vector3();
+const _flyLookDir = new THREE.Vector3();
+const _flyTarget = new THREE.Vector3();
+const _flyMove = new THREE.Vector3();
+const _flyTmp = new THREE.Vector3();
+
+// Pre-allocated vectors for FPV camera follow (avoids GC pressure every frame)
+const _fpvUpOffset = new THREE.Vector3();
+const _fpvRefRight = new THREE.Vector3();
+const _fpvRefFwd2 = new THREE.Vector3();
+const _fpvNegFwd = new THREE.Vector3();
+const _fpvBaseMat = new THREE.Matrix4();
+const _fpvBaseQ = new THREE.Quaternion();
+const _fpvYawQ = new THREE.Quaternion();
+const _fpvPitchQ = new THREE.Quaternion();
+const _yAxis = new THREE.Vector3(0, 1, 0);
+const _xAxis = new THREE.Vector3(1, 0, 0);
+
+function updateFlyCamera() {
+  if (fpvTarget || fpvZooming) return;
+
+  ellipsoid.getPositionToCartographic(camera.position, _flyCarto);
+  ellipsoid.getEastNorthUpAxes(_flyCarto.lat, _flyCarto.lon, _flyEast, _flyNorth, _flyUp);
+
+  // Forward direction on tangent plane from yaw
+  _flyFwd.copy(_flyNorth).multiplyScalar(Math.cos(flyCamYaw))
+    .addScaledVector(_flyEast, Math.sin(flyCamYaw));
+  _flyRight.crossVectors(_flyFwd, _flyUp).normalize();
+
+  // Full look direction including pitch
+  _flyLookDir.copy(_flyFwd).multiplyScalar(Math.cos(flyCamPitch))
+    .addScaledVector(_flyUp, Math.sin(flyCamPitch));
+
+  // Set camera orientation
+  _flyTarget.copy(camera.position).addScaledVector(_flyLookDir, 100);
+  camera.up.copy(_flyUp);
+  camera.lookAt(_flyTarget);
+
+  // Movement — W/S travel in the look direction (including pitch), like Minecraft creative
+  const hasWASD = flyKeys.w || flyKeys.a || flyKeys.s || flyKeys.d;
+  const speed = FLY_SPEED * (flyKeys.shift && hasWASD ? FLY_SPRINT_MULT : 1);
+  _flyMove.set(0, 0, 0);
+  if (flyKeys.w) _flyMove.addScaledVector(_flyLookDir, speed);
+  if (flyKeys.s) _flyMove.addScaledVector(_flyLookDir, -speed);
+  if (flyKeys.d) _flyMove.addScaledVector(_flyRight, speed);
+  if (flyKeys.a) _flyMove.addScaledVector(_flyRight, -speed);
+  if (flyKeys.space) _flyMove.addScaledVector(_flyUp, speed);
+  if (flyKeys.shift && !hasWASD) _flyMove.addScaledVector(_flyUp, -speed);
+
+  if (_flyMove.lengthSq() > 0) {
+    camera.position.add(_flyMove);
+  }
+}
 
 // ============================================================
 // FIRE ENGINE + OVERLAY
@@ -132,7 +277,7 @@ const allUnits = [
 // ============================================================
 // VEHICLE PROXIMITY DETECTION (ray → closest vehicle)
 // ============================================================
-const HIT_RADIUS = 80; // world-unit tolerance around each vehicle
+const HIT_RADIUS_BASE = 35; // base world-unit tolerance (tighter hitbox)
 const _proxyRaycaster = new THREE.Raycaster();
 const _proxyMouse = new THREE.Vector2();
 
@@ -145,46 +290,123 @@ function findVehicleNearRay(clientX, clientY) {
   let closest = null;
   let closestRayDist = Infinity;
 
+  // Check original 3D vehicles
   for (const unit of allUnits) {
     const pos = unit.vehicle.group.position;
-    // Distance from the ray line to the vehicle position
     const v = new THREE.Vector3().subVectors(pos, ray.origin);
     const projLen = v.dot(ray.direction);
-    if (projLen < 0) continue; // behind camera
+    if (projLen < 0) continue;
     const closestOnRay = ray.origin.clone().add(ray.direction.clone().multiplyScalar(projLen));
     const perpDist = closestOnRay.distanceTo(pos);
-
-    if (perpDist < HIT_RADIUS && projLen < closestRayDist) {
+    // Scale hit radius with distance so markers are clickable when zoomed out
+    const dist = camera.position.distanceTo(pos);
+    const hitR = Math.max(HIT_RADIUS_BASE, HIT_RADIUS_BASE * (dist / 600));
+    if (perpDist < hitR && projLen < closestRayDist) {
       closestRayDist = projLen;
       closest = unit;
+    }
+  }
+
+  // Also check bridge agent sprites (primary click target)
+  for (const [id, sprite] of agentSprites) {
+    if (!sprite.group.visible) continue;
+    const pos = sprite.group.position;
+    const v = new THREE.Vector3().subVectors(pos, ray.origin);
+    const projLen = v.dot(ray.direction);
+    if (projLen < 0) continue;
+    const closestOnRay = ray.origin.clone().add(ray.direction.clone().multiplyScalar(projLen));
+    const perpDist = closestOnRay.distanceTo(pos);
+    const dist = camera.position.distanceTo(pos);
+    const hitR = Math.max(HIT_RADIUS_BASE, HIT_RADIUS_BASE * (dist / 600));
+    if (perpDist < hitR && projLen < closestRayDist) {
+      closestRayDist = projLen;
+      closest = {
+        vehicle: { id, group: sprite.group, _droneMesh: sprite.mesh, _mesh: sprite.mesh },
+        type: sprite.type || 'drone',
+        isBridgeSprite: true,
+        bridgeId: id,
+      };
     }
   }
   return closest;
 }
 
 // ============================================================
-// HOVER CURSOR
+// HOVER SYSTEM — world-class marker hover with animated glow
 // ============================================================
 let hoveredUnit = null;
+let _hoveredSpriteId = null;  // id of currently hovered bridge sprite
+let _hoverT = 0;              // animation time for hover pulse (0 = not hovered)
+
+// Type label map for tooltip
+const TYPE_LABELS = {
+  drone: 'DRONE', heli: 'HELICOPTER', air: 'AIR TANKER', seat: 'SEAT', lead: 'LEAD PLANE',
+  engine: 'ENGINE', tender: 'WATER TENDER', dozer: 'DOZER', hotshot: 'HOTSHOT CREW',
+  crew: 'HAND CREW', structeng: 'STRUCTURE ENGINE',
+};
+const DTYPE_LABELS = {
+  scout: 'SCOUT', mapper: 'MAPPER', reaper: 'MQ-9 REAPER', relay: 'COMMS RELAY',
+  safety: 'SAFETY OVERWATCH', ignis: 'AERIAL IGNITION', suppression: 'FIRE SUPPRESSION',
+};
+
+// Mountable types — only aircraft and drones can be entered via FPV
+const MOUNTABLE_TYPES = new Set(['drone', 'heli', 'air', 'seat', 'lead']);
+const MOUNTABLE_DTYPES = new Set(['scout', 'mapper', 'relay', 'safety', 'ignis', 'reaper', 'suppression', 'recon', 'spotter', 'ignition']);
+
+function isMountable(type, dtype) {
+  if (dtype && MOUNTABLE_DTYPES.has(dtype)) return true;
+  if (MOUNTABLE_TYPES.has(type)) return true;
+  return false;
+}
+
 renderer.domElement.addEventListener('mousemove', (e) => {
   if (fpvTarget || fpvZooming) return;
-  const unit = findVehicleNearRay(e.clientX, e.clientY);
+  // When pointer lock is active, cursor is locked — raycast from screen center
+  const hx = document.pointerLockElement ? window.innerWidth / 2 : e.clientX;
+  const hy = document.pointerLockElement ? window.innerHeight / 2 : e.clientY;
+  const unit = findVehicleNearRay(hx, hy);
+  // Clear previous hover
+  const newId = unit?.bridgeId || unit?.vehicle?.id || null;
+  if (_hoveredSpriteId && _hoveredSpriteId !== newId) {
+    const prev = agentSprites.get(_hoveredSpriteId);
+    if (prev) prev._hoverAnim = 0;
+    _hoveredSpriteId = null;
+    _hoverT = 0;
+  }
+
+  const hoverInfo = document.getElementById('hover-info');
+
   if (unit) {
-    renderer.domElement.style.cursor = 'pointer';
-    // Show tooltip
-    const tooltip = document.getElementById('vehicle-tooltip');
-    if (tooltip) {
-      const id = unit.vehicle.id || 'VEHICLE';
-      tooltip.textContent = id + '  [CLICK FOR FPV]';
-      tooltip.style.left = e.clientX + 14 + 'px';
-      tooltip.style.top = e.clientY - 10 + 'px';
-      tooltip.style.display = '';
+    const id = unit.vehicle.id || unit.bridgeId || 'VEHICLE';
+    const spriteEntry = agentSprites.get(id) || agentSprites.get(unit.bridgeId);
+
+    // Set hover animation on the sprite entry
+    if (spriteEntry && _hoveredSpriteId !== id) {
+      spriteEntry._hoverAnim = 1;
+      _hoveredSpriteId = id;
     }
+
+    const typeLabel = DTYPE_LABELS[spriteEntry?.dtype] || TYPE_LABELS[unit.type] || unit.type?.toUpperCase() || 'UNIT';
+    const cssColor = spriteEntry ? getCSSColor(spriteEntry.type, spriteEntry.dtype) : '#00e5ff';
+    const mountable = isMountable(unit.type, spriteEntry?.dtype);
+
+    renderer.domElement.style.cursor = mountable ? 'pointer' : 'default';
+
+    // Cursor tooltip removed per user preference
+
+    // Corner info panel (bottom-right)
+    if (hoverInfo) {
+      const actionLine = mountable ? '<div class="hi-action">CLICK TO ENTER FPV</div>' : '';
+      hoverInfo.innerHTML = `<div class="hi-id"><span class="hi-color" style="background:${cssColor}"></span>${id}</div><div class="hi-type">${typeLabel}</div>${actionLine}`;
+      hoverInfo.style.borderColor = cssColor + '40';
+      hoverInfo.style.display = 'block';
+    }
+
     hoveredUnit = unit;
   } else {
     renderer.domElement.style.cursor = '';
-    const tooltip = document.getElementById('vehicle-tooltip');
-    if (tooltip) tooltip.style.display = 'none';
+    // tooltip removed
+    if (hoverInfo) hoverInfo.style.display = 'none';
     hoveredUnit = null;
   }
 });
@@ -224,9 +446,10 @@ document.addEventListener('mousemove', (e) => {
     fpvPitch - e.movementY * FPV_MOUSE_SENSITIVITY));
 });
 
-// When pointer lock is released (ESC or tab away), exit FPV
+// When pointer lock is released (ESC or tab away), exit FPV if we're in FPV mode
+// In map fly-cam mode, just release the mouse — don't exit anything
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement !== renderer.domElement && (fpvTarget || fpvZooming)) {
+  if (document.pointerLockElement !== renderer.domElement && fpvTarget && !fpvZooming) {
     exitFPV();
   }
 });
@@ -240,13 +463,21 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Compute surface normal at a world position (points away from earth center)
+const _surfaceNormal = new THREE.Vector3();
 function getSurfaceNormal(worldPos) {
-  return worldPos.clone().normalize();
+  return _surfaceNormal.copy(worldPos).normalize();
 }
 
 function enterFPV(unit) {
   const vehicle = unit.vehicle;
   const id = vehicle.id || 'VEHICLE';
+
+  // Track bridge sprite under FPV so position updates are paused
+  if (unit.isBridgeSprite) {
+    fpvBridgeId = unit.bridgeId;
+  } else {
+    fpvBridgeId = null;
+  }
 
   // Save camera state for restore
   fpvSavedPos = camera.position.clone();
@@ -271,9 +502,6 @@ function enterFPV(unit) {
   vehicle.group.traverse((child) => { child.visible = false; });
   vehicle.group.visible = true; // keep group itself visible so position updates work
 
-  // Disable globe controls during animation + FPV
-  controls.enabled = false;
-
   // Show HUD
   const banner = document.getElementById('fpv-banner');
   const exitBtn = document.getElementById('fpv-exit');
@@ -284,13 +512,23 @@ function enterFPV(unit) {
   // Show command panel
   showCmdPanel(unit);
 
+  // Clear hover state so the ring doesn't persist during FPV
+  if (_hoveredSpriteId) {
+    const prev = agentSprites.get(_hoveredSpriteId);
+    if (prev) { prev._hoverAnim = 0; if (prev._hoverRing) prev._hoverRing.visible = false; }
+    _hoveredSpriteId = null;
+    _hoverT = 0;
+  }
+  hoveredUnit = null;
+  renderer.domElement.style.cursor = '';
+
   // Hide normal controls & tooltip
   const ctrl = document.getElementById('controls');
   if (ctrl) ctrl.style.display = 'none';
   const hint = document.getElementById('ignite-hint');
   if (hint) hint.style.display = 'none';
-  const tooltip = document.getElementById('vehicle-tooltip');
-  if (tooltip) tooltip.style.display = 'none';
+  const navHint = document.getElementById('nav-hint');
+  if (navHint) navHint.style.display = 'none';
 
   // ---- Zoom-in animation ----
   fpvZooming = true;
@@ -340,32 +578,42 @@ function enterFPV(unit) {
   zoomAnim();
 }
 
+let _exitingFPV = false;
 function exitFPV() {
+  if (_exitingFPV) return;
   if (!fpvTarget && !fpvZooming) return;
+  _exitingFPV = true;
 
   const exitVehicle = fpvTarget;
   // Clear fpvTarget FIRST so the render loop stops following
   fpvTarget = null;
   fpvZooming = false;
 
-  // Restore vehicle visibility
+  // Clear bridge sprite lock — it will resume receiving position updates from 2D
+  fpvBridgeId = null;
+
+  // Restore vehicle visibility and position camera above the vehicle
   if (exitVehicle) {
     exitVehicle.group.traverse((child) => { child.visible = true; });
     const vPos = exitVehicle.group.position.clone();
     const up = vPos.clone().normalize();
-    // Pull camera back and up from vehicle position
-    camera.position.copy(vPos).add(up.clone().multiplyScalar(300));
-    camera.up.copy(up);
-    camera.lookAt(vPos);
-    // Set controls target to the vehicle's ground position
-    controls.target.copy(vPos);
+    // Pull camera back and up from vehicle — slightly behind and above
+    camera.position.copy(vPos).add(up.clone().multiplyScalar(200));
+    // Restore fly camera yaw/pitch to a nice overview angle
+    const carto = {};
+    ellipsoid.getPositionToCartographic(vPos, carto);
+    const east = new THREE.Vector3(), north = new THREE.Vector3(), upAxis = new THREE.Vector3();
+    ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, east, north, upAxis);
+    camera.up.copy(upAxis);
+    // Set fly camera to look slightly downward toward the vehicle
+    flyCamPitch = -0.25;
+    // Keep current yaw (direction we were looking)
   } else if (fpvSavedPos) {
     camera.position.copy(fpvSavedPos);
     if (fpvSavedUp) camera.up.copy(fpvSavedUp);
     if (fpvSavedLookAt) camera.lookAt(fpvSavedLookAt);
   }
 
-  controls.enabled = true;
   fpvSavedPos = null;
   fpvSavedUp = null;
   fpvSavedLookAt = null;
@@ -373,8 +621,12 @@ function exitFPV() {
   fpvPitch = 0;
   fpvManualMode = false;
   manualKeys.w = manualKeys.a = manualKeys.s = manualKeys.d = manualKeys.shift = manualKeys.ctrl = false;
-  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
   renderer.domElement.style.cursor = '';
+
+  // Exit pointer lock if still active
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock();
+  }
 
   const banner = document.getElementById('fpv-banner');
   const exitBtn = document.getElementById('fpv-exit');
@@ -386,8 +638,12 @@ function exitFPV() {
 
   const ctrl = document.getElementById('controls');
   if (ctrl) ctrl.style.display = '';
+  const navHintEl = document.getElementById('nav-hint');
+  if (navHintEl) navHintEl.style.display = '';
 
   console.log('[FPV] Exited first-person view');
+  // Clear re-entrancy guard immediately — it only prevents double-calls within the same event
+  _exitingFPV = false;
 }
 
 document.getElementById('fpv-exit')?.addEventListener('click', () => exitFPV());
@@ -408,10 +664,12 @@ let manualHeading = 0;        // radians, accumulated yaw
 let manualLat = 0;
 let manualLng = 0;
 let manualAlt = 0;
+const _manualNewPos = new THREE.Vector3();
 
 window.addEventListener('keydown', (e) => {
   // Q toggles agentic/manual mode while in FPV
   if (e.key.toLowerCase() === 'q' && fpvTarget) {
+    console.log('[MODE] Q pressed → switching to', fpvManualMode ? 'AGENTIC' : 'MANUAL', '| bridgeId:', fpvBridgeId);
     setControlMode(!fpvManualMode);
     return;
   }
@@ -452,7 +710,11 @@ const cmdSpeedBar = document.getElementById('cmd-speed-bar');
 const cmdSpeedFill = document.getElementById('cmd-speed-fill');
 
 function getVehicleTypeName(type) {
-  return { drone: 'SURVEILLANCE DRONE', heli: 'FIREHAWK HELICOPTER', tanker: 'AIR TANKER' }[type] || 'VEHICLE';
+  const names = {
+    drone: 'SURVEILLANCE DRONE', heli: 'FIREHAWK HELICOPTER', tanker: 'AIR TANKER',
+    air: 'DC-10 VLAT', seat: 'AT-802 AIR TRACTOR', lead: 'OV-10A LEAD PLANE',
+  };
+  return names[type] || type?.toUpperCase() || 'VEHICLE';
 }
 
 function showCmdPanel(unit) {
@@ -468,18 +730,17 @@ function showCmdPanel(unit) {
   cmdPanel.style.display = 'block';
 
   // Initialize manual position from vehicle's current lat/lng
-  if (type === 'drone') {
+  if (v._homeLatLng) {
     manualLat = v._homeLatLng.lat;
     manualLng = v._homeLatLng.lng;
-    manualAlt = 80;
-  } else if (type === 'heli') {
-    manualLat = v._homeLatLng.lat;
-    manualLng = v._homeLatLng.lng;
-    manualAlt = 150;
-  } else if (type === 'tanker') {
-    manualLat = v._homeLatLng.lat;
-    manualLng = v._homeLatLng.lng;
-    manualAlt = 350;
+    manualAlt = type === 'heli' ? 150 : type === 'tanker' ? 350 : 80;
+  } else {
+    // Bridge sprite — derive lat/lng from current ECEF position
+    const carto = {};
+    ellipsoid.getPositionToCartographic(v.group.position, carto);
+    manualLat = THREE.MathUtils.radToDeg(carto.latitude || 0);
+    manualLng = THREE.MathUtils.radToDeg(carto.longitude || 0);
+    manualAlt = carto.height || 80;
   }
   manualSpeed = 0;
   manualHeading = 0;
@@ -492,15 +753,27 @@ function hideCmdPanel() {
   fpvUnitType = null;
 }
 
+// Vehicle types that use plane-style controls
+const PLANE_TYPES = new Set(['tanker', 'air', 'seat', 'lead']);
+
 function setControlMode(manual) {
   fpvManualMode = manual;
+  const isPlane = PLANE_TYPES.has(fpvUnitType);
+
+  // Update panel header text
+  const cmdTitle = document.querySelector('.cmd-card-title');
+  if (cmdTitle) {
+    cmdTitle.textContent = manual ? 'COMMANDING' : 'SPECTATING';
+    cmdTitle.style.color = manual ? '#ff8800' : '#00e5ff';
+  }
+
   if (manual) {
     if (cmdBtnManual) cmdBtnManual.classList.add('selected', 'manual');
     if (cmdBtnAgentic) cmdBtnAgentic.classList.remove('selected');
     if (cmdModeLabel) { cmdModeLabel.textContent = 'MANUAL'; cmdModeLabel.className = 'cmd-stat-value warning'; }
     if (cmdSpeedBar) cmdSpeedBar.style.display = '';
     // Show appropriate hint based on vehicle type
-    if (fpvUnitType === 'tanker') {
+    if (isPlane) {
       if (cmdHintHover) cmdHintHover.style.display = 'none';
       if (cmdHintPlane) cmdHintPlane.style.display = '';
     } else {
@@ -513,12 +786,18 @@ function setControlMode(manual) {
       ellipsoid.getPositionToCartographic(fpvTarget.group.position, carto);
       manualLat = THREE.MathUtils.radToDeg(carto.lat);
       manualLng = THREE.MathUtils.radToDeg(carto.lon);
-      manualAlt = carto.height || (fpvUnitType === 'tanker' ? 350 : fpvUnitType === 'heli' ? 150 : 80);
+      manualAlt = carto.height || (isPlane ? 350 : fpvUnitType === 'heli' ? 150 : 80);
       // Start at cruising speed matching agentic movement so vehicle doesn't stall
-      if (manualSpeed === 0) {
-        manualSpeed = fpvUnitType === 'tanker' ? 0.6 : 0.5;
-      }
+      manualSpeed = isPlane ? 0.8 : 0.7;
       manualBankAngle = 0;
+      // Initialize ghost position to current agentic position (will be updated by incoming messages)
+      if (fpvBridgeId) {
+        const spriteEntry = agentSprites.get(fpvBridgeId);
+        if (spriteEntry) {
+          spriteEntry._ghostLat = spriteEntry.targetLat;
+          spriteEntry._ghostLng = spriteEntry.targetLng;
+        }
+      }
     }
   } else {
     if (cmdBtnAgentic) cmdBtnAgentic.classList.add('selected');
@@ -527,36 +806,77 @@ function setControlMode(manual) {
     if (cmdHintHover) cmdHintHover.style.display = 'none';
     if (cmdHintPlane) cmdHintPlane.style.display = 'none';
     if (cmdSpeedBar) cmdSpeedBar.style.display = 'none';
+    // Resume agentic movement: apply ghost position if available, otherwise
+    // just let the next position update from 2D move it naturally via lerp
+    if (fpvBridgeId) {
+      const spriteEntry = agentSprites.get(fpvBridgeId);
+      if (spriteEntry) {
+        if (spriteEntry._ghostLat != null) {
+          // Ghost exists — teleport targetPos to where the agent "would have been"
+          const ghostType = spriteEntry.type;
+          let ghostAlt = 250;
+          if (GROUND_TYPES.has(ghostType)) ghostAlt = getTerrainHeight(spriteEntry._ghostLat, spriteEntry._ghostLng) + 10;
+          else if (ghostType === 'heli') ghostAlt = getTerrainHeight(spriteEntry._ghostLat, spriteEntry._ghostLng) + 350;
+          else if (ghostType === 'air') ghostAlt = 600;
+          else if (ghostType === 'seat') ghostAlt = 500;
+          else if (ghostType === 'lead') ghostAlt = 550;
+          ellipsoid.getCartographicToPosition(
+            THREE.MathUtils.degToRad(spriteEntry._ghostLat),
+            THREE.MathUtils.degToRad(spriteEntry._ghostLng),
+            ghostAlt, _tmpPos
+          );
+          spriteEntry.targetPos.copy(_tmpPos);
+          spriteEntry.targetLat = spriteEntry._ghostLat;
+          spriteEntry.targetLng = spriteEntry._ghostLng;
+          spriteEntry._ghostLat = null;
+          spriteEntry._ghostLng = null;
+          console.log('[MODE] Agentic resumed → ghost target applied, vehicle will lerp there');
+        } else {
+          console.log('[MODE] Agentic resumed → no ghost, waiting for next 2D position update');
+        }
+      }
+    }
   }
 }
 
 if (cmdBtnAgentic) cmdBtnAgentic.addEventListener('click', () => setControlMode(false));
 if (cmdBtnManual) cmdBtnManual.addEventListener('click', () => setControlMode(true));
 
+// Pre-allocated for getCameraLookNE (called every frame in manual mode)
+const _lookCamDir = new THREE.Vector3();
+const _lookUp = new THREE.Vector3();
+const _lookProjected = new THREE.Vector3();
+const _lookCarto = {};
+const _lookE = new THREE.Vector3();
+const _lookN = new THREE.Vector3();
+const _lookU = new THREE.Vector3();
+const _lookResult = { north: 0, east: 0 };
+
 // Get camera look direction projected onto local tangent plane as north/east
 function getCameraLookNE() {
-  const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  _lookCamDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
   const vPos = fpvTarget.group.position;
-  const up = vPos.clone().normalize();
+  _lookUp.copy(vPos).normalize();
   // Remove radial component to project onto tangent plane
-  const projected = camDir.clone().sub(up.clone().multiplyScalar(camDir.dot(up)));
-  const len = projected.length();
-  if (len < 0.0001) return { north: 0, east: 0 };
-  projected.divideScalar(len);
+  const dot = _lookCamDir.dot(_lookUp);
+  _lookProjected.copy(_lookCamDir).addScaledVector(_lookUp, -dot);
+  const len = _lookProjected.length();
+  if (len < 0.0001) { _lookResult.north = 0; _lookResult.east = 0; return _lookResult; }
+  _lookProjected.divideScalar(len);
   // Decompose into local east/north
-  const carto = {};
-  ellipsoid.getPositionToCartographic(vPos, carto);
-  const e = new THREE.Vector3(), n = new THREE.Vector3(), u = new THREE.Vector3();
-  ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, e, n, u);
-  return { north: projected.dot(n), east: projected.dot(e) };
+  ellipsoid.getPositionToCartographic(vPos, _lookCarto);
+  ellipsoid.getEastNorthUpAxes(_lookCarto.lat, _lookCarto.lon, _lookE, _lookN, _lookU);
+  _lookResult.north = _lookProjected.dot(_lookN);
+  _lookResult.east = _lookProjected.dot(_lookE);
+  return _lookResult;
 }
 
 // Update manual vehicle position each frame
 function updateManualControl(dt) {
   if (!fpvTarget || !fpvManualMode) return;
 
-  const isPlane = fpvUnitType === 'tanker';
-  const isHover = fpvUnitType === 'drone' || fpvUnitType === 'heli';
+  const isPlane = PLANE_TYPES.has(fpvUnitType);
+  const isHover = !isPlane; // drones, helis — anything not a fixed-wing
 
   // Camera look direction as north/east on tangent plane
   const look = getCameraLookNE();
@@ -581,19 +901,18 @@ function updateManualControl(dt) {
       ? Math.max(-0.4, Math.min(1, manualSpeed + fwdInput * accel))
       : manualSpeed * 0.94;
 
-    // ~2x agentic speed
-    const maxSpeed = 0.0001;
+    // ~4x agentic speed
+    const maxSpeed = 0.00018;
     const moveN = look.north * manualSpeed * maxSpeed + strafeN * sideInput * 0.3 * maxSpeed;
     const moveE = look.east * manualSpeed * maxSpeed + strafeE * sideInput * 0.3 * maxSpeed;
 
     manualLat += moveN;
     manualLng += moveE / cosLat;
 
-    const newPos = new THREE.Vector3();
     ellipsoid.getCartographicToPosition(
-      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, newPos
+      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, _manualNewPos
     );
-    fpvTarget.group.position.copy(newPos);
+    fpvTarget.group.position.copy(_manualNewPos);
 
   } else if (isPlane) {
     if (manualKeys.shift) manualSpeed = Math.min(1, manualSpeed + 0.01);
@@ -607,16 +926,15 @@ function updateManualControl(dt) {
     if (manualKeys.w) manualAlt = Math.max(100, manualAlt - 2);
     if (manualKeys.s) manualAlt = Math.min(600, manualAlt + 2);
 
-    // Fly in camera look direction, ~2x agentic speed
-    const maxSpeed = 0.00018;
+    // Fly in camera look direction, ~4x agentic speed
+    const maxSpeed = 0.00032;
     manualLat += look.north * manualSpeed * maxSpeed;
     manualLng += look.east * manualSpeed * maxSpeed / cosLat;
 
-    const newPos = new THREE.Vector3();
     ellipsoid.getCartographicToPosition(
-      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, newPos
+      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, _manualNewPos
     );
-    fpvTarget.group.position.copy(newPos);
+    fpvTarget.group.position.copy(_manualNewPos);
   }
 
   // Update speed display
@@ -648,9 +966,14 @@ renderer.domElement.addEventListener('click', (e) => {
   if (clickTimer) clearTimeout(clickTimer);
   clickTimer = setTimeout(() => {
     clickTimer = null;
-    const unit = findVehicleNearRay(e.clientX, e.clientY);
-    if (unit) enterFPV(unit);
-  }, 280);
+    const cx = document.pointerLockElement ? window.innerWidth / 2 : e.clientX;
+    const cy = document.pointerLockElement ? window.innerHeight / 2 : e.clientY;
+    const unit = findVehicleNearRay(cx, cy);
+    if (unit) {
+      const sprite = agentSprites.get(unit.bridgeId || unit.vehicle?.id);
+      if (isMountable(unit.type, sprite?.dtype)) enterFPV(unit);
+    }
+  }, 180);
 });
 
 renderer.domElement.addEventListener('dblclick', () => {
@@ -775,8 +1098,20 @@ function flyTo(lat, lng, alt, duration = 1500) {
     camera.position.lerpVectors(startP, target, ease);
     camera.up.copy(startUp).lerp(n, ease).normalize();
     camera.lookAt(ground);
-    if (t < 1) flyAnim = requestAnimationFrame(anim);
-    else flyAnim = null;
+    if (t < 1) {
+      flyAnim = requestAnimationFrame(anim);
+    } else {
+      flyAnim = null;
+      // Sync fly camera yaw/pitch from final camera orientation
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const flat = dir.clone().sub(u.clone().multiplyScalar(dir.dot(u)));
+      if (flat.length() > 0.001) {
+        flat.normalize();
+        flyCamYaw = Math.atan2(flat.dot(e), flat.dot(n));
+      }
+      flyCamPitch = Math.asin(Math.max(-1, Math.min(1, dir.dot(u))));
+    }
   }
   anim();
 }
@@ -855,17 +1190,16 @@ window.addEventListener('resize', () => {
 // ============================================================
 // RENDER LOOP
 // ============================================================
+let _frameCount = 0;
 renderer.setAnimationLoop((time) => {
+  _frameCount++;
   camera.updateMatrixWorld();
   tiles.update();
-  controls.update();
-  updateHUD();
+  updateFlyCamera();
+  if (_frameCount % 4 === 0) updateHUD(); // throttle DOM updates
 
-  // Fire simulation ticks now run via setInterval (see bottom of file)
-  // so they continue even when the iframe is hidden/rAF is throttled
-
-  // Always update fire overlay (for animation even when paused)
-  fireOverlay.update(fireEngine, camera, tiles);
+  // Fire overlay — update every other frame for performance
+  if (_frameCount % 2 === 0) fireOverlay.update(fireEngine, camera, tiles);
 
   // Update all drones (skip manual-controlled one)
   drones.forEach(d => {
@@ -885,35 +1219,26 @@ renderer.setAnimationLoop((time) => {
   // ---- FPV camera follow ----
   if (fpvTarget) {
     const vPos = fpvTarget.group.position;
-
-    // Surface normal = always-upright "up"
     const up = getSurfaceNormal(vPos);
 
     // Snap camera position directly to vehicle (no lerp = no lag)
-    const aboveOffset = 5;
-    camera.position.copy(vPos).add(up.clone().multiplyScalar(aboveOffset));
+    _fpvUpOffset.copy(up).multiplyScalar(5);
+    camera.position.copy(vPos).add(_fpvUpOffset);
 
-    // Build camera orientation purely from mouse yaw/pitch — completely ignores vehicle heading
-    // Start from a basis aligned to surface normal (up) and reference forward
-    const refRight = new THREE.Vector3().crossVectors(fpvRefFwd, up).normalize();
-    const refFwd = new THREE.Vector3().crossVectors(up, refRight).normalize();
+    // Build camera orientation from mouse yaw/pitch
+    _fpvRefRight.crossVectors(fpvRefFwd, up).normalize();
+    _fpvRefFwd2.crossVectors(up, _fpvRefRight).normalize();
 
     // Base quaternion: orient camera so -Z looks along refFwd, +Y is up
-    const baseMat = new THREE.Matrix4().makeBasis(
-      refRight,                 // +X = right
-      up,                       // +Y = up
-      refFwd.clone().negate()   // +Z = behind (camera looks down -Z)
-    );
-    const baseQ = new THREE.Quaternion().setFromRotationMatrix(baseMat);
+    _fpvNegFwd.copy(_fpvRefFwd2).negate();
+    _fpvBaseMat.makeBasis(_fpvRefRight, up, _fpvNegFwd);
+    _fpvBaseQ.setFromRotationMatrix(_fpvBaseMat);
 
-    // Yaw and pitch use LOCAL camera axes (post-multiplied onto base)
-    // Local Y = up in camera space → yaw (left/right)
-    // Local X = right in camera space → pitch (up/down)
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), fpvYaw);
-    const pitchQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), fpvPitch);
+    // Yaw and pitch (local camera axes)
+    _fpvYawQ.setFromAxisAngle(_yAxis, fpvYaw);
+    _fpvPitchQ.setFromAxisAngle(_xAxis, fpvPitch);
 
-    // Combined: base * yaw * pitch (all in local space)
-    camera.quaternion.copy(baseQ).multiply(yawQ).multiply(pitchQ);
+    camera.quaternion.copy(_fpvBaseQ).multiply(_fpvYawQ).multiply(_fpvPitchQ);
   }
 
   renderer.render(scene, camera);
@@ -952,8 +1277,8 @@ function getColor(type, dtype) {
 
 function buildQuadcopterMesh(color, s = 3) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1c2a36, roughness: 0.6, metalness: 0.4 });
-  const accentMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
+  const accentMat = new THREE.MeshBasicMaterial({ color });
   // Body
   g.add(new THREE.Mesh(new THREE.BoxGeometry(0.5*s, 0.12*s, 0.35*s), bodyMat));
   // 4 arms + rotors
@@ -975,7 +1300,9 @@ function buildQuadcopterMesh(color, s = 3) {
     g.add(disc);
     allRotors.push({ mesh: disc, speed: 12 + Math.random() * 4 });
     // Motor
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(0.04*s, 0.04*s, 0.06*s, 8), accentMat), { position: new THREE.Vector3(ax, 0.04*s, az) }));
+    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.04*s, 0.04*s, 0.06*s, 8), accentMat);
+    motor.position.set(ax, 0.04*s, az);
+    g.add(motor);
   }
   // LED
   const led = new THREE.Mesh(new THREE.SphereGeometry(0.03*s, 6, 4), new THREE.MeshBasicMaterial({ color }));
@@ -994,8 +1321,8 @@ function buildQuadcopterMesh(color, s = 3) {
 
 function buildHelicopterMesh(color, s = 4) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1c2a36, roughness: 0.6, metalness: 0.4 });
-  const accentMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
+  const accentMat = new THREE.MeshBasicMaterial({ color });
   // Fuselage
   g.add(new THREE.Mesh(new THREE.BoxGeometry(0.7*s, 0.22*s, 0.3*s), bodyMat));
   // Tail boom
@@ -1038,10 +1365,10 @@ function buildHelicopterMesh(color, s = 4) {
 
 function buildPlaneMesh(color, s = 5) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1c2a36, roughness: 0.6, metalness: 0.4 });
-  const accentMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
+  const accentMat = new THREE.MeshBasicMaterial({ color });
   // Fuselage
-  g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.08*s, 0.06*s, 1.0*s, 8), Object.assign(bodyMat.clone(), {})));
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.08*s, 0.06*s, 1.0*s, 8), bodyMat));
   g.children[0].rotation.z = Math.PI / 2;
   // Wings
   const wing = new THREE.Mesh(new THREE.BoxGeometry(0.15*s, 0.02*s, 1.2*s), accentMat);
@@ -1065,8 +1392,8 @@ function buildPlaneMesh(color, s = 5) {
 
 function buildGroundVehicleMesh(color, s = 3) {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.3 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x111518, roughness: 0.4, metalness: 0.6 });
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const darkMat = new THREE.MeshBasicMaterial({ color: 0x1a2028 });
   // Body
   g.add(new THREE.Mesh(new THREE.BoxGeometry(0.5*s, 0.2*s, 0.25*s), mat));
   // Cab (slightly raised front)
@@ -1115,38 +1442,284 @@ function buildLabelSprite(id, color) {
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85, depthTest: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(60, 15, 1);
-  sprite.position.set(0, 15, 0);
+  sprite.scale.set(20, 5, 1);
+  sprite.position.set(0, 5, 0);
+  return sprite;
+}
+
+// ---- 2D-style marker icon sprite (matches the map view shapes) ----
+function getMarkerShape(type, dtype) {
+  // Match the 2D TerrainScene shapes exactly
+  if (type === 'heli') return 'heli_cross';  // rotating cross
+  if (type === 'air') return 'plane';         // plane silhouette
+  if (type === 'seat' || type === 'lead') return 'plane_small';
+  if (type === 'dozer') return 'dozer';       // tracked vehicle
+  if (type === 'hotshot' || type === 'crew') return 'crew_ring';
+  if (type === 'tender') return 'tank';       // tank rectangle
+  if (type === 'engine') return 'engine';     // cab + body
+  if (type === 'structeng') return 'house';   // house shape
+  if (type === 'drone') {
+    if (dtype === 'reaper') return 'reaper';
+    if (dtype === 'mapper' || dtype === 'spotter') return 'plane_small';
+    if (dtype === 'ignis' || dtype === 'ignition') return 'ignis';
+    if (dtype === 'suppression') return 'suppression';
+    return 'dot';  // scout, relay, safety — standard dot
+  }
+  return 'dot';
+}
+
+// Exact 2D color map (CSS strings) — must match TerrainScene.jsx DTYPE_COLORS and UTYPE
+const CSS_DTYPE_COLORS = { scout:'#22D3EE', mapper:'#60A5FA', relay:'#A78BFA', safety:'#34D399', ignis:'#F97316', reaper:'#E2E8F0', suppression:'#F472B6' };
+const CSS_UTYPE_COLORS = { engine:'#FBBF24', tender:'#F59E0B', hotshot:'#F97316', crew:'#FB923C', dozer:'#A3E635', air:'#F472B6', seat:'#E879F9', heli:'#EC4899', lead:'#D946EF', structeng:'#38BDF8' };
+
+function getCSSColor(type, dtype) {
+  if (dtype && CSS_DTYPE_COLORS[dtype]) return CSS_DTYPE_COLORS[dtype];
+  if (CSS_UTYPE_COLORS[type]) return CSS_UTYPE_COLORS[type];
+  return '#94A3B8';
+}
+
+// Dashed yellow ring sprite — matches 2D hover highlight
+function buildHoverRingSprite() {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const cx = size / 2, cy = size / 2, r = 48;
+  ctx.strokeStyle = '#FBBF24';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([10, 6]);
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({
+    map: tex, transparent: true, opacity: 0.9,
+    depthTest: false, depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.renderOrder = 1350;
+  sprite.visible = false;
+  return sprite;
+}
+
+function buildMarkerSprite(type, dtype, colorHex) {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const cx = size / 2, cy = size / 2;
+  const r = 38;
+  const c = getCSSColor(type, dtype);
+  const shape = getMarkerShape(type, dtype);
+
+  // Dark backdrop disc so icons pop against sky/terrain
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.beginPath(); ctx.arc(cx, cy, r + 6, 0, Math.PI * 2); ctx.fill();
+
+  // 2D-style: dark fill with visible stroke
+  const fillAlpha = '30'; // dark like 2D (~0.19 opacity)
+  const strokeAlpha = '90'; // solid stroke like 2D
+  ctx.lineWidth = 3;
+
+  if (shape === 'dot') {
+    // Circle — scouts, relays, safety drones
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    // Inner solid dot
+    ctx.fillStyle = c + 'AA';
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.3, 0, Math.PI * 2); ctx.fill();
+
+  } else if (shape === 'heli_cross') {
+    // Circle + cross (helicopter rotor) — matches 2D
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = c + '80';
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.8, cy); ctx.lineTo(cx + r * 0.8, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - r * 0.8); ctx.lineTo(cx, cy + r * 0.8); ctx.stroke();
+
+  } else if (shape === 'plane' || shape === 'plane_small') {
+    // Plane — wings + fuselage + tail
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.lineWidth = shape === 'plane' ? 3.5 : 2.5;
+    ctx.strokeStyle = c + 'AA';
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.9, cy); ctx.lineTo(cx + r * 0.9, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - r * 0.5); ctx.lineTo(cx, cy + r * 0.6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.3, cy - r * 0.5); ctx.lineTo(cx + r * 0.3, cy - r * 0.5); ctx.stroke();
+
+  } else if (shape === 'reaper') {
+    // MQ-9 reaper
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = c + 'AA';
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.8, cy); ctx.lineTo(cx + r * 0.8, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - r * 0.5); ctx.lineTo(cx, cy + r * 0.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.25, cy - r * 0.5); ctx.lineTo(cx + r * 0.25, cy - r * 0.5); ctx.stroke();
+
+  } else if (shape === 'ignis') {
+    // Ignis drone — fire icon
+    ctx.fillStyle = '#F97316' + '25';
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#F97316' + '80'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#F97316';
+    ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🔥', cx, cy);
+
+  } else if (shape === 'suppression') {
+    // Suppression drone — circle + water bar
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.fillStyle = '#22D3EE50';
+    ctx.fillRect(cx - r * 0.5, cy + r * 0.2, r, r * 0.3);
+
+  } else if (shape === 'dozer') {
+    // Dozer — rectangle + tracks
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = c + '70';
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.6, cy + r * 0.3); ctx.lineTo(cx + r * 0.6, cy + r * 0.3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.6, cy - r * 0.2); ctx.lineTo(cx + r * 0.6, cy - r * 0.2); ctx.stroke();
+    ctx.fillStyle = c + '25';
+    ctx.fillRect(cx - r * 0.7, cy + r * 0.3, r * 1.4, r * 0.15);
+
+  } else if (shape === 'crew_ring') {
+    // Crew — outer ring + inner dots (like 2D group supervisors)
+    ctx.fillStyle = c + '20';
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    const crewColor = type === 'hotshot' ? '#F97316' : '#FB923C';
+    ctx.fillStyle = crewColor + 'AA';
+    for (let ci = 0; ci < 6; ci++) {
+      const ang = (ci / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(ang) * r * 0.5, cy + Math.sin(ang) * r * 0.5, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+  } else if (shape === 'tank') {
+    // Water tender — circle + inner rectangle
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.strokeStyle = c + '60'; ctx.lineWidth = 2;
+    ctx.strokeRect(cx - r * 0.5, cy - r * 0.3, r, r * 0.6);
+    ctx.fillStyle = c + '20'; ctx.fillRect(cx - r * 0.45, cy - r * 0.1, r * 0.9, r * 0.3);
+
+  } else if (shape === 'engine') {
+    // Fire engine — circle + cab
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.fillStyle = c + '40';
+    ctx.fillRect(cx - r * 0.6, cy - r * 0.3, r * 1.2, r * 0.6);
+    ctx.fillStyle = c + '60';
+    ctx.fillRect(cx + r * 0.15, cy - r * 0.45, r * 0.4, r * 0.3);
+
+  } else if (shape === 'house') {
+    // Structure engine — house icon
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+    ctx.strokeStyle = c + '80'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r * 0.5);
+    ctx.lineTo(cx + r * 0.5, cy);
+    ctx.lineTo(cx + r * 0.5, cy + r * 0.4);
+    ctx.lineTo(cx - r * 0.5, cy + r * 0.4);
+    ctx.lineTo(cx - r * 0.5, cy);
+    ctx.closePath(); ctx.stroke();
+
+  } else {
+    // Fallback — plain dark circle
+    ctx.fillStyle = c + fillAlpha;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = c + strokeAlpha; ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.renderOrder = 1300;
+  sprite.scale.set(8, 8, 1);
+  sprite.position.set(0, 8, 0);
   return sprite;
 }
 
 // ---- Sprite creation ----
+function buildFallbackSphere(color, s = 5) {
+  const g = new THREE.Group();
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3 * s, 10, 8),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  g.add(sphere);
+  // Pulsing ring
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.35 * s, 0.5 * s, 16),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+  );
+  g.add(ring);
+  return g;
+}
+
 function createAgentSprite(id, type, dtype) {
   const color = getColor(type, dtype);
   let mesh;
-  if (type === 'drone' || (!GROUND_TYPES.has(type) && !AIR_TYPES.has(type))) {
-    // Drones — quadcopter (or fixed-wing for mapper)
-    mesh = (dtype === 'mapper' || dtype === 'reaper')
-      ? buildPlaneMesh(color, dtype === 'reaper' ? 6 : 3)
-      : buildQuadcopterMesh(color, 3);
-  } else if (type === 'heli') {
-    mesh = buildHelicopterMesh(color, 4);
-  } else if (AIR_TYPES.has(type)) {
-    // air (VLAT), seat, lead → plane
-    mesh = buildPlaneMesh(color, type === 'air' ? 6 : 4);
-  } else if (type === 'hotshot' || type === 'crew') {
-    mesh = buildCrewMesh(color, 2.5);
-  } else {
-    // engine, tender, dozer, structeng → ground vehicle
-    mesh = buildGroundVehicleMesh(color, type === 'dozer' ? 4 : 3);
+  try {
+    if (type === 'drone' || (!GROUND_TYPES.has(type) && !AIR_TYPES.has(type))) {
+      mesh = (dtype === 'mapper' || dtype === 'reaper')
+        ? buildPlaneMesh(color, dtype === 'reaper' ? 8 : 5)
+        : buildQuadcopterMesh(color, 5);
+    } else if (type === 'heli') {
+      mesh = buildHelicopterMesh(color, 6);
+    } else if (AIR_TYPES.has(type)) {
+      mesh = buildPlaneMesh(color, type === 'air' ? 8 : 6);
+    } else if (type === 'hotshot' || type === 'crew') {
+      mesh = buildCrewMesh(color, 4);
+    } else {
+      mesh = buildGroundVehicleMesh(color, type === 'dozer' ? 6 : 5);
+    }
+  } catch (e) {
+    console.warn('[BRIDGE] Mesh build failed for', id, type, dtype, e.message);
+    mesh = buildFallbackSphere(color, 5);
   }
 
+  if (!mesh) mesh = buildFallbackSphere(color, 5);
+
+  // Disable depth test on all materials so sprites render above 3D tiles
+  mesh.traverse((child) => {
+    if (child.material) {
+      child.material.depthTest = false;
+      child.material.depthWrite = false;
+    }
+  });
+
   const group = new THREE.Group();
+  group.renderOrder = 1200; // above fire sprites (1001) and 3D tiles
+
+  // Physical mesh — fixed small scale, not visible from far away
+  mesh.scale.setScalar(15);
   group.add(mesh);
-  group.add(buildLabelSprite(id, color));
+
+  // Marker icon + label — these scale with distance to stay visible from afar
+  const marker = buildMarkerSprite(type, dtype, color);
+  const label = buildLabelSprite(id, color);
+  group.add(marker);
+  group.add(label);
   scene.add(group);
 
-  const entry = { group, mesh, type, dtype, lastUpdate: performance.now(), targetLat: 0, targetLng: 0 };
+  console.log('[BRIDGE] Created sprite:', id, type, dtype);
+  const entry = { group, mesh, marker, label, type, dtype, lastUpdate: performance.now(), targetLat: 0, targetLng: 0, targetPos: new THREE.Vector3() };
   agentSprites.set(id, entry);
   return entry;
 }
@@ -1154,39 +1727,48 @@ function createAgentSprite(id, type, dtype) {
 // ---- Terrain height raycasting ----
 const _terrainRay = new THREE.Raycaster();
 const _terrainDown = new THREE.Vector3();
+const _terrainOrigin = new THREE.Vector3();
+const _terrainCarto = {};
 const terrainHeightCache = new Map(); // 'lat,lng' → {height, time}
 
 function getTerrainHeight(lat, lng) {
-  const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
   const cached = terrainHeightCache.get(key);
-  if (cached && performance.now() - cached.time < 5000) return cached.height;
+  if (cached && performance.now() - cached.time < 10000) return cached.height;
 
   // Raycast from 2000m above straight down
-  const origin = new THREE.Vector3();
-  ellipsoid.getCartographicToPosition(THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lng), 2000, origin);
-  _terrainDown.copy(origin).normalize().negate();
-  _terrainRay.set(origin, _terrainDown);
+  ellipsoid.getCartographicToPosition(THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lng), 2000, _terrainOrigin);
+  _terrainDown.copy(_terrainOrigin).normalize().negate();
+  _terrainRay.set(_terrainOrigin, _terrainDown);
   _terrainRay.far = 3000;
+  _terrainRay.firstHitOnly = true;
   const hits = _terrainRay.intersectObjects(tiles.group.children, true);
-  let h = 150; // default fallback for Palisades area
+  let h = 500;
   if (hits.length > 0) {
-    const carto = {};
-    ellipsoid.getPositionToCartographic(hits[0].point, carto);
-    h = Math.max(0, carto.height || 0);
+    ellipsoid.getPositionToCartographic(hits[0].point, _terrainCarto);
+    h = Math.max(0, _terrainCarto.height || 0);
   }
   terrainHeightCache.set(key, { height: h, time: performance.now() });
-  if (terrainHeightCache.size > 500) {
-    // Evict oldest entries
-    const oldest = [...terrainHeightCache.entries()].sort((a, b) => a[1].time - b[1].time).slice(0, 200);
-    for (const [k] of oldest) terrainHeightCache.delete(k);
-  }
+  // Simple eviction: just clear when too large (O(1) instead of O(n log n) sort)
+  if (terrainHeightCache.size > 1000) terrainHeightCache.clear();
   return h;
 }
 
 // ---- Position update ----
 function updateAgentPosition(id, type, dtype, lat, lng, launched) {
-  // Skip if this sprite is under FPV manual control
-  if (fpvBridgeId === id) return;
+  // When in manual mode, track the "ghost" agentic position so we can resume there
+  if (fpvBridgeId === id && fpvManualMode) {
+    let sprite = agentSprites.get(id);
+    if (sprite) {
+      sprite._ghostLat = lat;
+      sprite._ghostLng = lng;
+    }
+    return;
+  }
+  // When fpvBridgeId matches but NOT in manual mode, this is a live agentic update
+  if (fpvBridgeId === id) {
+    console.log('[MODE] Live agentic position update for FPV vehicle:', id, 'lat:', lat.toFixed(4), 'lng:', lng.toFixed(4));
+  }
 
   let sprite = agentSprites.get(id);
   if (!sprite) sprite = createAgentSprite(id, type, dtype);
@@ -1194,33 +1776,204 @@ function updateAgentPosition(id, type, dtype, lat, lng, launched) {
   sprite.targetLat = lat;
   sprite.targetLng = lng;
 
-  if (launched === false) { sprite.group.visible = false; return; }
-  sprite.group.visible = true;
+  // Show all agents — dim unlaunched ones instead of hiding
+  if (launched === false) {
+    sprite.group.visible = true;
+    if (sprite.marker.material) sprite.marker.material.opacity = 0.3;
+    if (sprite.label.material) sprite.label.material.opacity = 0.3;
+    sprite.mesh.visible = false;
+  } else {
+    sprite.group.visible = true;
+    if (sprite.marker.material) sprite.marker.material.opacity = 0.9;
+    if (sprite.label.material) sprite.label.material.opacity = 0.9;
+    sprite.mesh.visible = true;
+  }
 
   // Determine altitude
+  // Altitudes — aircraft fly ABOVE smoke/fire (which tops out ~200m above terrain)
   let alt;
   if (GROUND_TYPES.has(type)) {
-    alt = getTerrainHeight(lat, lng) + 3; // sit on terrain
+    alt = getTerrainHeight(lat, lng) + 10; // sit on terrain
   } else if (type === 'heli') {
-    alt = getTerrainHeight(lat, lng) + 150;
+    alt = getTerrainHeight(lat, lng) + 350; // above smoke plumes
   } else if (type === 'air') {
-    alt = 350;
+    alt = 600; // well above fire
   } else if (type === 'seat') {
-    alt = 250;
+    alt = 500;
   } else if (type === 'lead') {
-    alt = 280;
+    alt = 550;
   } else {
-    // Drones
-    alt = dtype === 'reaper' ? 500 : dtype === 'mapper' ? 150 : getTerrainHeight(lat, lng) + 80;
+    // Drones — above smoke
+    alt = dtype === 'reaper' ? 700 : dtype === 'mapper' ? 300 : getTerrainHeight(lat, lng) + 250;
   }
 
   ellipsoid.getCartographicToPosition(THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lng), alt, _tmpPos);
-  sprite.group.position.lerp(_tmpPos, 0.12);
+  sprite.targetPos.copy(_tmpPos);
+  // Snap on first placement (position near origin means never placed)
+  if (sprite.group.position.lengthSq() < 1000) {
+    sprite.group.position.copy(_tmpPos);
+    // Orient immediately
+    _spriteUp.copy(sprite.group.position).normalize();
+    sprite.mesh.quaternion.setFromUnitVectors(_localUp, _spriteUp);
+  }
+}
 
-  // Orient mesh so local Y points away from earth center
-  const up = sprite.group.position.clone().normalize();
-  const localUp = new THREE.Vector3(0, 1, 0);
-  sprite.mesh.quaternion.setFromUnitVectors(localUp, up);
+const _localUp = new THREE.Vector3(0, 1, 0);
+
+// ---- Per-frame smooth sprite movement ----
+const MARKER_BASE = 14;      // marker sprite base scale
+const MARKER_REF_DIST = 500; // distance at which marker is at base scale
+const LABEL_BASE_X = 20;     // label sprite base scale X
+const LABEL_BASE_Y = 5;      // label sprite base scale Y
+
+const _spriteUp = new THREE.Vector3();
+function lerpSpritesFrame() {
+  const now = performance.now();
+  for (const [id, sprite] of agentSprites) {
+    if (!sprite.group.visible || sprite.targetPos.lengthSq() < 1000) continue;
+    // Skip lerp for sprite under manual FPV control — updateManualControl handles it
+    if (fpvManualMode && fpvBridgeId === id) continue;
+    sprite.group.position.lerp(sprite.targetPos, 0.08);
+    // Orient mesh so local Y points away from earth center
+    _spriteUp.copy(sprite.group.position).normalize();
+    sprite.mesh.quaternion.setFromUnitVectors(_localUp, _spriteUp);
+
+    // Distance-based scaling for marker + label only (mesh stays fixed)
+    const dist = camera.position.distanceTo(sprite.group.position);
+    let mScale = Math.max(MARKER_BASE, MARKER_BASE * (dist / MARKER_REF_DIST));
+
+    // Hover animation — enlarged dot + dashed yellow ring (matches 2D)
+    const hovered = sprite._hoverAnim === 1;
+    if (hovered) {
+      mScale *= 1.5; // enlarge dot on hover
+      if (sprite.marker.material) sprite.marker.material.opacity = 1.0;
+      // Show hover ring
+      if (!sprite._hoverRing) {
+        sprite._hoverRing = buildHoverRingSprite();
+        sprite.group.add(sprite._hoverRing);
+      }
+      sprite._hoverRing.visible = true;
+      const ringScale = mScale * 1.6;
+      // Rotate the ring slowly for a dashed-line animation feel
+      sprite._hoverRing.material.rotation = now * 0.002;
+      sprite._hoverRing.scale.set(ringScale, ringScale, 1);
+      sprite._hoverRing.position.set(0, mScale * 0.9, 0);
+    } else {
+      if (sprite.marker.material) sprite.marker.material.opacity = 1.0;
+      if (sprite._hoverRing) sprite._hoverRing.visible = false;
+    }
+
+    sprite.marker.scale.set(mScale, mScale, 1);
+    sprite.marker.position.set(0, mScale * 0.9, 0);
+
+    // Label — show brighter on hover
+    const lScale = Math.max(1, dist / MARKER_REF_DIST);
+    sprite.label.scale.set(LABEL_BASE_X * lScale, LABEL_BASE_Y * lScale, 1);
+    sprite.label.position.set(0, mScale * 0.9 + LABEL_BASE_Y * lScale * 0.6, 0);
+    if (sprite.label.material) sprite.label.material.opacity = hovered ? 1.0 : 0.8;
+  }
+
+  // Scale static markers (ICP, field entities) with distance — same size as agent markers
+  for (const [, entry] of staticMarkers) {
+    const dist = camera.position.distanceTo(entry.sprite.position);
+    const s = Math.max(MARKER_BASE, MARKER_BASE * (dist / MARKER_REF_DIST));
+    entry.sprite.scale.set(s, s, 1);
+  }
+}
+
+// ---- Static markers (ICP personnel, field entities) ----
+const staticMarkers = new Map();
+const _staticMarkerPos = new THREE.Vector3();
+
+let _staticRenderOrder = 1350;
+function buildStaticMarkerSprite(label, colorCSS, category) {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const cx = size / 2, cy = size / 2, r = 70;
+  const pad = 8; // shadow padding
+
+  // Helper: draw shadow behind the exact same path
+  function shapeShadow(drawPath) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.lineWidth = pad * 2;
+    ctx.lineJoin = 'round';
+    drawPath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.strokeStyle = colorCSS;
+  ctx.lineWidth = 5;
+
+  if (category === 'ai') {
+    const hexPath = () => { ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2 - Math.PI / 2; i === 0 ? ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r) : ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); } ctx.closePath(); };
+    shapeShadow(hexPath);
+    hexPath(); ctx.fillStyle = colorCSS + '60'; ctx.fill(); ctx.stroke();
+  } else if (category === 'sensor') {
+    const diaPath = () => { ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy); ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy); ctx.closePath(); };
+    shapeShadow(diaPath);
+    diaPath(); ctx.fillStyle = colorCSS + '55'; ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = colorCSS + '80'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.arc(cx, cy, r + 14, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  } else if (category === 'drone_ctrl') {
+    const triPath = () => { ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy + r * 0.6); ctx.lineTo(cx - r, cy + r * 0.6); ctx.closePath(); };
+    shapeShadow(triPath);
+    triPath(); ctx.fillStyle = colorCSS + '55'; ctx.fill(); ctx.stroke();
+  } else if (category === 'group') {
+    const cirPath = () => { ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); };
+    shapeShadow(cirPath);
+    cirPath(); ctx.fillStyle = colorCSS + '50'; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = colorCSS + 'EE'; ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
+  } else if (category === 'icp') {
+    const icpPath = () => { ctx.beginPath(); ctx.arc(cx, cy, r * 0.7, 0, Math.PI * 2); };
+    shapeShadow(icpPath);
+    icpPath(); ctx.fillStyle = colorCSS + '80'; ctx.fill(); ctx.strokeStyle = colorCSS; ctx.stroke();
+  } else if (category === 'airborne') {
+    const airPath = () => { ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); };
+    shapeShadow(airPath);
+    airPath(); ctx.fillStyle = colorCSS + '45'; ctx.fill(); ctx.stroke();
+    ctx.lineWidth = 4; ctx.strokeStyle = colorCSS + 'BB';
+    ctx.beginPath(); ctx.moveTo(cx - r * 1.2, cy); ctx.lineTo(cx + r * 1.2, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - r * 0.5); ctx.lineTo(cx, cy + r * 0.5); ctx.stroke();
+  } else {
+    const h = r * 0.85;
+    const sqPath = () => { ctx.beginPath(); ctx.rect(cx - h, cy - h, h * 2, h * 2); };
+    shapeShadow(sqPath);
+    sqPath(); ctx.fillStyle = colorCSS + '55'; ctx.fill(); ctx.strokeStyle = colorCSS; ctx.stroke();
+  }
+
+  // Label text with shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.font = 'bold 24px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx + 1, cy + r + 25);
+  ctx.fillStyle = colorCSS;
+  ctx.fillText(label, cx, cy + r + 24);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 1.0, depthTest: false, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.renderOrder = _staticRenderOrder++; // unique per sprite — prevents z-fighting
+  return sprite;
+}
+
+function updateStaticMarker(id, label, name, colorCSS, category, lat, lng) {
+  let entry = staticMarkers.get(id);
+  if (!entry) {
+    const sprite = buildStaticMarkerSprite(label, colorCSS, category);
+    scene.add(sprite);
+    entry = { sprite, label, name, colorCSS, category, lastUpdate: 0 };
+    staticMarkers.set(id, entry);
+  }
+  entry.lastUpdate = performance.now();
+
+  // Position on globe — well above terrain to prevent z-fighting flicker
+  const alt = category === 'airborne' ? 500 : category === 'ai' ? 250 : 200;
+  ellipsoid.getCartographicToPosition(THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lng), alt, _staticMarkerPos);
+  entry.sprite.position.copy(_staticMarkerPos);
 }
 
 // ---- Stale sprite cleanup ----
@@ -1252,10 +2005,21 @@ function updateRotors(dt) {
 // ============================================================
 window.addEventListener('message', (ev) => {
   if (!ev.data) return;
+  if (ev.data.type === 'unit_positions') {
+    console.log('[BRIDGE] Got unit_positions:', (ev.data.drones||[]).length, 'drones,', (ev.data.units||[]).length, 'units');
+  }
+
+  // Auto pointer-lock when switching to 3D tab
+  if (ev.data.type === 'request_pointer_lock') {
+    if (!fpvTarget && !fpvZooming && document.pointerLockElement !== renderer.domElement) {
+      renderer.domElement.requestPointerLock().catch(() => {});
+    }
+  }
 
   // Fire ignition from 2D view
-  if (ev.data.type === 'fire_ignite' && ev.data.lat && ev.data.lng) {
-    const { lat, lng } = ev.data;
+  if (ev.data.type === 'fire_ignite' && ev.data.lat != null && ev.data.lng != null) {
+    const lat = ev.data.lat, lng = ev.data.lng;
+    console.log('[BRIDGE] fire_ignite received, lat:', lat, 'lng:', lng, 'bounds:', LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX);
     if (lat >= LAT_MIN && lat <= LAT_MAX && lng >= LNG_MIN && lng <= LNG_MAX) {
       fireEngine.igniteAtLatLng(lat, lng, 3);
       fireRunning = true;
@@ -1263,12 +2027,18 @@ window.addEventListener('message', (ev) => {
       const hint = document.getElementById('ignite-hint');
       if (hint) hint.style.display = 'none';
       console.log('[BRIDGE] Fire ignited from 2D at', lat.toFixed(4), lng.toFixed(4));
+    } else {
+      console.warn('[BRIDGE] fire_ignite OUT OF BOUNDS:', lat, lng);
     }
   }
 
   // Unit positions from 2D view — create/update all agent sprites
   if (ev.data.type === 'unit_positions') {
-    if (!bridgeActive) { bridgeActive = true; hideOriginalVehicles(); }
+    if (!bridgeActive) {
+      bridgeActive = true;
+      hideOriginalVehicles();
+      console.log('[BRIDGE] First unit_positions received — bridge activated');
+    }
     const { drones: droneData, units: unitData } = ev.data;
     if (droneData) {
       for (const d of droneData) {
@@ -1277,9 +2047,38 @@ window.addEventListener('message', (ev) => {
     }
     if (unitData) {
       for (const u of unitData) {
-        if (u.atHome) continue;
+        // Never skip the FPV vehicle — it needs position updates for agentic mode
+        if (u.atHome && u.id !== fpvBridgeId) continue;
         updateAgentPosition(u.id, u.type, null, u.lat, u.lng, true);
       }
+    }
+    // ICP personnel (incident commander, safety, chiefs, etc.)
+    if (ev.data.icpUnits) {
+      for (const p of ev.data.icpUnits) {
+        updateStaticMarker(p.id, p.label, p.name, p.color, p.category, p.lat, p.lng);
+      }
+    }
+    // Field entities (branch directors, sensors, AI agents, groups)
+    if (ev.data.fieldUnits) {
+      for (const fe of ev.data.fieldUnits) {
+        updateStaticMarker(fe.id, fe.label, fe.name, fe.color, fe.category, fe.lat, fe.lng);
+      }
+    }
+  }
+
+  // Remote FPV enter from 2D map click
+  if (ev.data.type === 'enter_fpv' && ev.data.vehicleId) {
+    const id = ev.data.vehicleId;
+    console.log('[BRIDGE] enter_fpv requested for', id);
+    const sprite = agentSprites.get(id);
+    if (sprite && !fpvTarget && !fpvZooming) {
+      const fakeUnit = {
+        vehicle: { id, group: sprite.group, _droneMesh: sprite.mesh, _mesh: sprite.mesh },
+        type: sprite.type || 'drone',
+        isBridgeSprite: true,
+        bridgeId: id,
+      };
+      enterFPV(fakeUnit);
     }
   }
 });
@@ -1307,5 +2106,6 @@ const _origLoop = renderer.getAnimationLoop && renderer.getAnimationLoop();
   const dt = Math.min((now - (_lastRotorTime || now)) / 1000, 0.1);
   _lastRotorTime = now;
   updateRotors(dt);
+  lerpSpritesFrame();
   requestAnimationFrame(spinRotors);
 })();

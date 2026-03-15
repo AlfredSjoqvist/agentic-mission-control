@@ -1,0 +1,31 @@
+# OpenClaw configuration for FireSight Field Commander
+# Docs: https://docs.openclaw.ai/gateway/configuration
+
+channels:
+  telegram:
+    enabled: true
+    # Create bot with @BotFather, paste token here
+    token: "${TELEGRAM_BOT_TOKEN}"
+    # Your Telegram user ID (get from @userinfobot)
+    allowFrom:
+      - "${TELEGRAM_USER_ID}"
+
+agents:
+  defaults:
+    model: gemini/gemini-2.0-flash
+    workspace: ./workspace
+
+  field-commander:
+    name: "FireSight Field Commander"
+    model: gemini/gemini-2.0-flash
+    workspace: ./workspace
+    skills:
+      - ./skills/firesight-command
+
+models:
+  providers:
+    gemini:
+      apiKey: "${GEMINI_API_KEY}"
+
+env:
+  FIRESIGHT_API_URL: "http://localhost:3001"
