@@ -115,102 +115,170 @@ function setUnitTarget(unit, tr, tc) {
   else{unit._path=null;}
 }
 
-// ── Apply strategy changes to agents — immediate visible redistribution ──────
+// ── Apply strategy changes to agents — immediate effect on behaviour ──
 function applyStrategyToAgents(sim, strategy) {
-  if (!sim || !sim.units || !sim.drones) return;
-  const engine = sim.engine;
-  if (!engine) return;
-  const GRID_ROWS = engine.rows, GRID_COLS = engine.cols;
+  if (!sim) return;
+  sim.strategy = strategy;
 
-  // Find fire center from burning cells
-  let cR = GRID_ROWS / 2, cC = GRID_COLS / 2, count = 0;
-  for (let r = 0; r < GRID_ROWS; r += 4) {
-    for (let c = 0; c < GRID_COLS; c += 4) {
-      if (engine.cells[r * GRID_COLS + c] === BURNING) { cR += r; cC += c; count++; }
+  // ── SAFETY STOP: all units & drones return to home/base immediately ──
+  if (strategy.safetyStop === 'all') {
+    if (sim.units) sim.units.forEach(u => {
+      u.trow = u.homeRow; u.tcol = u.homeCol; u._path = null; u._pi = 0;
+      u._safetyStopped = true;
+    });
+    if (sim.drones) sim.drones.forEach(d => {
+      if (d.launched) {
+        d.trow = d.homeRow; d.tcol = d.homeCol;
+        d._safetyStopped = true;
+      }
+    });
+    return; // no further logic when safety stop active
+  }
+
+  // ── RESUME from safety stop ──
+  if (strategy.safetyStop === 'none') {
+    if (sim.units) sim.units.forEach(u => { u._safetyStopped = false; });
+    if (sim.drones) sim.drones.forEach(d => { d._safetyStopped = false; });
+    // Force immediate agent re-evaluation
+    sim._lastAgentTick = 0;
+    sim.ag.lastDroneAssign = 0;
+    sim.ag.lastEngineRepos = 0;
+  }
+
+  if (!sim.fireDetected) return;
+
+  const { engine, drones, units, ag } = sim;
+  const activeFronts = engine.getActiveFronts();
+  if (activeFronts.length === 0) return;
+  const windRad = ((engine.windDirection + 180) % 360) * Math.PI / 180;
+  let cR = 0, cC = 0;
+  for (const f of activeFronts) { cR += f.row; cC += f.col; }
+  cR /= activeFronts.length; cC /= activeFronts.length;
+
+  function edgePt(frac) {
+    const idx = Math.min(Math.floor(frac * activeFronts.length), activeFronts.length - 1);
+    const f = activeFronts[idx];
+    const dr = f.row - cR, dc = f.col - cC, len = Math.sqrt(dr*dr + dc*dc) || 1;
+    return { row: f.row + (dr/len)*6, col: f.col + (dc/len)*6 };
+  }
+  function edgeDir(dirR, dirC) {
+    let best = activeFronts[0], bestDot = -Infinity;
+    const len = Math.sqrt(dirR*dirR + dirC*dirC) || 1;
+    const nr = dirR/len, nc = dirC/len;
+    for (const f of activeFronts) { const dot = (f.row - cR)*nr + (f.col - cC)*nc; if (dot > bestDot) { bestDot = dot; best = f; } }
+    return { row: best.row + nr*8, col: best.col + nc*8 };
+  }
+  function nearRoadStaging(tr, tc) {
+    let bR = tr, bC = tc, bD = Infinity;
+    for (const rn of ROAD_NODES) { const d = (rn.row-tr)**2 + (rn.col-tc)**2; if (d < bD) { bD = d; bR = rn.row; bC = rn.col; } }
+    return { row: bR, col: bC };
+  }
+
+  // ── POSTURE: affects unit positioning (offensive=close, defensive=buffer, confine=hold) ──
+  const posBuffer = strategy.posture === 'offensive' ? 4 : strategy.posture === 'defensive' ? 15 : strategy.posture === 'confine' ? 25 : 10;
+
+  // ── ATTACK MODE: reposition ground units ──
+  const engines = units.filter(u => u.type === 'engine' || u.type === 'structeng');
+  const crews = units.filter(u => u.type === 'crew' || u.type === 'hotshot');
+  if (strategy.attackMode === 'direct') {
+    // Direct: units right at fire edge
+    engines.forEach((u, i) => {
+      const ep = edgePt(i / Math.max(1, engines.length));
+      const s = nearRoadStaging(ep.row, ep.col);
+      setUnitTarget(u, s.row, s.col);
+    });
+    crews.forEach((u, i) => {
+      const side = i % 2 === 0 ? 1 : -1;
+      const pt = edgeDir(Math.sin(windRad + side * Math.PI/3), Math.cos(windRad + side * Math.PI/3));
+      const s = nearRoadStaging(pt.row, pt.col);
+      setUnitTarget(u, s.row, s.col);
+    });
+  } else if (strategy.attackMode === 'parallel') {
+    // Parallel: line close to but offset from edge
+    engines.forEach((u, i) => {
+      const ep = edgePt(i / Math.max(1, engines.length));
+      const s = nearRoadStaging(ep.row + posBuffer * 0.6, ep.col + posBuffer * 0.6);
+      setUnitTarget(u, s.row, s.col);
+    });
+  } else if (strategy.attackMode === 'indirect') {
+    // Indirect: line far ahead of fire
+    const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
+    engines.forEach((u, i) => {
+      const off = 20 + posBuffer;
+      const perpR = Math.sin(windRad) * (i - engines.length/2) * 12;
+      const perpC = Math.cos(windRad) * (i - engines.length/2) * 12;
+      const s = nearRoadStaging(cR + dwR * off + perpR, cC + dwC * off + perpC);
+      setUnitTarget(u, s.row, s.col);
+    });
+    crews.forEach((u, i) => {
+      const off = 25 + posBuffer;
+      const perpR = Math.sin(windRad) * (i - crews.length/2) * 15;
+      const perpC = Math.cos(windRad) * (i - crews.length/2) * 15;
+      const s = nearRoadStaging(cR + dwR * off + perpR, cC + dwC * off + perpC);
+      setUnitTarget(u, s.row, s.col);
+    });
+  }
+
+  // ── AIR PRIORITY: reposition aircraft ──
+  const heli = units.find(u => u.type === 'heli');
+  const seat = units.find(u => u.type === 'seat');
+  const airTanker = units.find(u => u.type === 'air');
+  if (strategy.airPriority === 'head') {
+    const lead = edgeDir(-Math.cos(windRad), Math.sin(windRad));
+    if (heli) { heli.trow = lead.row; heli.tcol = lead.col; }
+    if (seat) { seat.trow = lead.row + 5; seat.tcol = lead.col + 5; }
+  } else if (strategy.airPriority === 'structures') {
+    const nearestZone = sim.zoneStates.reduce((b, z) => {
+      const d = Math.sqrt((z.row - cR)**2 + (z.col - cC)**2);
+      return d < b.d ? { z, d } : b;
+    }, { z: sim.zoneStates[0], d: 999 });
+    if (heli) { heli.trow = nearestZone.z.row; heli.tcol = nearestZone.z.col; }
+    if (seat) { seat.trow = nearestZone.z.row + 8; seat.tcol = nearestZone.z.col + 8; }
+  } else if (strategy.airPriority === 'flanks') {
+    const leftFlank = edgeDir(Math.sin(windRad + Math.PI/2), Math.cos(windRad + Math.PI/2));
+    const rightFlank = edgeDir(Math.sin(windRad - Math.PI/2), Math.cos(windRad - Math.PI/2));
+    if (heli) { heli.trow = leftFlank.row; heli.tcol = leftFlank.col; }
+    if (seat) { seat.trow = rightFlank.row; seat.tcol = rightFlank.col; }
+  } else if (strategy.airPriority === 'hold') {
+    // RTB — send aircraft home
+    if (heli) { heli.trow = heli.homeRow; heli.tcol = heli.homeCol; heli._path = null; }
+    if (seat) { seat.trow = seat.homeRow; seat.tcol = seat.homeCol; seat._path = null; }
+    if (airTanker) { airTanker.trow = airTanker.homeRow; airTanker.tcol = airTanker.homeCol; airTanker._path = null; }
+  }
+
+  // ── STRUCTURE PROTECTION MODE ──
+  const structEng = units.find(u => u.type === 'structeng');
+  if (structEng) {
+    if (strategy.structMode === 'protect') {
+      const nearestZone = sim.zoneStates.reduce((b, z) => {
+        const d = Math.sqrt((z.row - cR)**2 + (z.col - cC)**2);
+        return d < b.d ? { z, d } : b;
+      }, { z: sim.zoneStates[0], d: 999 });
+      const s = nearRoadStaging(nearestZone.z.row, nearestZone.z.col);
+      setUnitTarget(structEng, s.row, s.col);
+    } else if (strategy.structMode === 'abandon') {
+      setUnitTarget(structEng, structEng.homeRow, structEng.homeCol);
     }
   }
-  if (count > 0) { cR /= (count + 1); cC /= (count + 1); }
 
-  const units = sim.units;
-  const drones = sim.drones;
-  const windRad = (engine.windDirection || 0) * Math.PI / 180;
-
-  // Strategy: posture changes move ground units
-  if (strategy.posture === 'defensive') {
-    // Pull units back from fire edge, form perimeter ring
-    units.forEach((u, i) => {
-      if (IS_GROUND.has(u.type)) {
-        const ang = (i / units.length) * Math.PI * 2;
-        const dist = 40; // further from fire
-        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
-      }
-    });
-  } else if (strategy.posture === 'offensive') {
-    // Push units toward fire edge
-    units.forEach((u, i) => {
-      if (IS_GROUND.has(u.type)) {
-        const ang = (i / units.length) * Math.PI * 2;
-        const dist = 15; // close to fire
-        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
-      }
-    });
-  } else if (strategy.posture === 'confine') {
-    // Units to natural barriers / roads around fire
-    units.forEach((u, i) => {
-      if (IS_GROUND.has(u.type)) {
-        const ang = (i / units.length) * Math.PI * 2;
-        const dist = 55;
-        setUnitTarget(u, cR + Math.cos(ang) * dist, cC + Math.sin(ang) * dist);
-      }
-    });
-  }
-
-  // Air priority changes move aircraft
-  if (strategy.airPriority === 'head') {
-    // Aircraft toward fire head (downwind)
-    const headR = cR - Math.cos(windRad) * 20, headC = cC + Math.sin(windRad) * 20;
-    units.filter(u => u.type === 'heli' || u.type === 'air' || u.type === 'lead').forEach(u => {
-      u.trow = headR + (Math.random() - 0.5) * 10;
-      u.tcol = headC + (Math.random() - 0.5) * 10;
-    });
-  } else if (strategy.airPriority === 'flanks') {
-    units.filter(u => u.type === 'heli' || u.type === 'air').forEach((u, i) => {
-      const side = i % 2 === 0 ? 1 : -1;
-      u.trow = cR + Math.sin(windRad) * 25 * side;
-      u.tcol = cC + Math.cos(windRad) * 25 * side;
-    });
-  } else if (strategy.airPriority === 'hold') {
-    // Aircraft return toward command center
-    units.filter(u => u.type === 'heli' || u.type === 'air' || u.type === 'lead').forEach(u => {
-      u.trow = u.homeRow; u.tcol = u.homeCol;
-    });
-  }
-
-  // Drone mode changes
+  // ── DRONE MODE ──
+  const launchedDrones = drones.filter(d => d.launched);
   if (strategy.droneMode === 'safety') {
-    // Drones cluster near ground crews instead of fire perimeter
-    const groundUnits = units.filter(u => IS_GROUND.has(u.type) && (Math.abs(u.row - u.homeRow) > 5 || Math.abs(u.col - u.homeCol) > 5));
-    drones.filter(d => d.launched).forEach((d, i) => {
-      if (groundUnits.length > 0) {
-        const gu = groundUnits[i % groundUnits.length];
-        d.trow = gu.row + (Math.random() - 0.5) * 8;
-        d.tcol = gu.col + (Math.random() - 0.5) * 8;
+    // Safety watch: drones hover near crew positions
+    const crewUnits = units.filter(u => ['hotshot','crew','engine','structeng'].includes(u.type));
+    launchedDrones.forEach((d, i) => {
+      if (crewUnits.length > 0) {
+        const crew = crewUnits[i % crewUnits.length];
+        d.trow = crew.row + (Math.random() - 0.5) * 10;
+        d.tcol = crew.col + (Math.random() - 0.5) * 10;
       }
     });
-  } else if (strategy.droneMode === 'recon') {
-    // Spread drones around fire perimeter
-    drones.filter(d => d.launched).forEach((d, i) => {
-      const ang = (i / Math.max(1, drones.filter(x => x.launched).length)) * Math.PI * 2;
-      d.trow = cR + Math.cos(ang) * 30;
-      d.tcol = cC + Math.sin(ang) * 30;
-    });
   }
+  // 'recon' mode keeps default agentTick behavior (fire-edge clustering)
 
-  // Safety stop — all units halt in place
-  if (strategy.safetyStop === 'all') {
-    units.forEach(u => { u.trow = u.row; u.tcol = u.col; u._path = null; });
-    drones.filter(d => d.launched).forEach(d => { d.trow = d.row; d.tcol = d.col; });
-  }
+  // Force re-evaluation of agent tick immediately
+  sim._lastAgentTick = 0;
+  ag.lastDroneAssign = 0;
 }
 
 // ── Evacuation Routes (lat/lng points) ──────────────────────────────────────
@@ -454,7 +522,7 @@ const ICS_TO_MAP = {
 const MAP_TO_ICS = {};
 for (const [ics, map] of Object.entries(ICS_TO_MAP)) MAP_TO_ICS[map] = ics;
 
-export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive, fireData, icsEngine, onLiveData, highlightedNode, onNodeHover }) {
+export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive, fireData, icsEngine, onLiveData, highlightedNode, onNodeHover, strategy: strategyProp }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const simRef = useRef(null);
@@ -464,6 +532,11 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
   const onNodeHoverRef = useRef(null);
   highlightRef.current = highlightedNode;
   onNodeHoverRef.current = onNodeHover;
+  // Keep sim.strategy in sync with prop
+  useEffect(() => {
+    const sim = simRef.current;
+    if (sim && strategyProp) sim.strategy = strategyProp;
+  }, [strategyProp]);
   const [mapStatus, setMapStatus] = useState('initializing');
   const [fogOfWar, setFogOfWar] = useState(false);
   const fogRef = useRef(false);
@@ -492,7 +565,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
 
     // ── Three.js scene ──
     const container = mapContainerRef.current;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(container.offsetWidth, container.offsetHeight);
     renderer.setClearColor(0x0a0e16);
@@ -780,11 +853,31 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
 
     // ── Render loop ──
     let rafId;
+    let _mmSnapFrame = 0;
+    const _mmSnapCanvas = document.createElement('canvas');
+    _mmSnapCanvas.width = 280;
+    _mmSnapCanvas.height = 280;
+    const _mmSnapCtx = _mmSnapCanvas.getContext('2d');
+
     function renderLoop() {
       if (destroyed) return;
       rafId = requestAnimationFrame(renderLoop);
       if (needTileUpdate) { updateTiles(); needTileUpdate = false; }
       renderer.render(scene, camera);
+
+      // Capture minimap snapshot every ~60 frames (~1/sec) and send to parent for 3D view
+      _mmSnapFrame++;
+      if (_mmSnapFrame % 60 === 0) {
+        try {
+          // Also composite the fire overlay canvas on top
+          _mmSnapCtx.drawImage(renderer.domElement, 0, 0, 280, 280);
+          if (overlayCanvas && overlayCanvas.width > 0) {
+            _mmSnapCtx.drawImage(overlayCanvas, 0, 0, 280, 280);
+          }
+          const dataUrl = _mmSnapCanvas.toDataURL('image/jpeg', 0.6);
+          window.postMessage({ type: 'minimap_snapshot', dataUrl }, '*');
+        } catch(e) { /* canvas tainted — ignore */ }
+      }
     }
     updateTiles();
     renderLoop();
@@ -828,6 +921,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       drones, units,
       fireOps: { hoseLines:[], dozerLines:[], handLines:[], retardantDrops:[], waterDrops:[], backfireLines:[], structProtect:[] },
       routeStates: {}, zoneStates: POP_ZONES.map(z => ({ ...z, status:'clear', evacPct:0 })),
+      strategy: null,  // current strategy from StrategyPanel
       speed: 1, frame: 0,
       fireStepAccum: 0, fireStepsPerFrame: 0.05,  // balanced: spreads but agents can contain it
       fireActive: false,       // user has placed fire
@@ -838,7 +932,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       simTimeSec: 0,           // accumulated simulation time in seconds
       ag: { dronesDeployed:0, lastDroneAssign:0, logged:new Set(), actions:0,
             retardantReq:false, crewWithdrawn:false, routesActive:false, escalated:false,
-            lastWaterDrop:0 },
+            lastWaterDrop:0, _lastSeatDrop:0, lastEngineRepos:0 },
       events: [], lastUi: 0,
       canvas: null, ctx: null, gw: 0, gh: 0,
       tooltipTarget: null,     // { type, id, x, y } for hover tooltips
@@ -1364,6 +1458,8 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
   // DRONE PATROL — autonomous scan patterns before fire detection
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   function updateDronePatrol(sim) {
+    // Safety stop: drones head home, don't patrol
+    if (sim.strategy?.safetyStop === 'all') return;
     const { drones } = sim;
     for (const d of drones) {
       if (!d.launched) continue;  // still in stash at command center
@@ -1467,11 +1563,14 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   function agentTick(sim) {
     if (!sim.fireDetected) return;
+    // Safety stop: no agent AI runs, everything halted
+    if (sim.strategy?.safetyStop === 'all') return;
     const now = Date.now();
     if (now - (sim._lastAgentTick || 0) < 1500) return;
     sim._lastAgentTick = now;
 
     const { engine, drones, units, fireOps, ag } = sim;
+    const strat = sim.strategy;
     const stats = engine.getStats();
     if (!stats || stats.totalAffected === 0) return;
 
@@ -1484,24 +1583,24 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     const secSinceDetection = (now - sim.fireDetectedAt) / 1000;
     const level = getResponseLevel(acres, ros, fronts, spots, engine.windSpeed);
 
+    // Strategy flags
+    const airHold = strat?.airPriority === 'hold';
+    const isConfine = strat?.posture === 'confine';
+    const isDefensive = strat?.posture === 'defensive';
+
     // Fire centroid (center of active fronts — IN THE ASH, only for direction calc)
     let cR = 0, cC = 0;
     if (activeFronts.length > 0) { for (const f of activeFronts) { cR += f.row; cC += f.col; } cR /= activeFronts.length; cC /= activeFronts.length; }
     // Leading edge: the frontmost burning cell in the wind direction
     function leadingEdge() { let b = activeFronts[0], bs = -Infinity; for (const f of activeFronts) { const s = -Math.cos(windRad)*f.row + Math.sin(windRad)*f.col; if (s > bs) { bs=s; b=f; } } return b; }
-    // Helper: get a fire-edge point offset outward from fire center
-    // Used to place ground units AT the fire edge, not in the ash
     function edgePoint(angleFraction) {
-      // Pick a front cell at the given fraction (0-1) of the sorted perimeter
       if (activeFronts.length === 0) return { row: 128, col: 128 };
       const idx = Math.min(Math.floor(angleFraction * activeFronts.length), activeFronts.length - 1);
       const f = activeFronts[idx];
-      // Offset outward from fire center
       const dr = f.row - cR, dc = f.col - cC;
       const len = Math.sqrt(dr*dr + dc*dc) || 1;
       return { row: f.row + (dr/len)*6, col: f.col + (dc/len)*6 };
     }
-    // Helper: get the fire-edge point closest to a given direction from center
     function edgeInDirection(dirRow, dirCol) {
       if (activeFronts.length === 0) return { row: 128, col: 128 };
       let best = activeFronts[0], bestDot = -Infinity;
@@ -1515,22 +1614,32 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
     }
     const addEvent = (agent, msg) => {
       sim.events.push({ time: now, agent, msg, t: now });
-      // Forward to comms log via postMessage (same window — App.jsx listens)
       const agentLabels = { swarm:'DRONE SWARM', predict:'AI PREDICT', deploy:'DEPLOY', evac:'AI EVAC', overwatch:'OVERWATCH', system:'SYSTEM' };
       window.postMessage({ type: 'map_event', from: agentLabels[agent]||agent.toUpperCase(), msg, msgType: agent==='evac'?'safety':agent==='deploy'?'command':'ai' }, '*');
     };
+    function nearestRoadStaging(targetRow, targetCol) {
+      let bestR = targetRow, bestC = targetCol, bestDist = Infinity;
+      for (const rn of ROAD_NODES) {
+        const d = (rn.row - targetRow) ** 2 + (rn.col - targetCol) ** 2;
+        if (d < bestDist) { bestDist = d; bestR = rn.row; bestC = rn.col; }
+      }
+      return { row: bestR, col: bestC };
+    }
 
-    // ── SWARM: launch drones from command center stash based on fire size ──
+    // ── POSTURE BUFFER: how far from fire edge units position ──
+    const posBuffer = strat?.posture === 'offensive' ? 2 : isDefensive ? 15 : isConfine ? 35 : 8;
+
+    // ── SWARM: launch drones (skip if confine — limit drone usage) ──
     const launchedDrones = drones.filter(d => d.launched);
     const stashedDrones = drones.filter(d => !d.launched);
-    const desiredLaunched = Math.min(DRONE_STASH_TOTAL, Math.max(INITIAL_PATROL, INITIAL_PATROL + Math.ceil(acres / 15) + Math.ceil(fronts / 25) + spots * 2));
+    const droneScale = isConfine ? 0.3 : 1;
+    const desiredLaunched = Math.min(DRONE_STASH_TOTAL, Math.max(INITIAL_PATROL, Math.floor((INITIAL_PATROL + Math.ceil(acres / 15) + Math.ceil(fronts / 25) + spots * 2) * droneScale)));
 
     if (launchedDrones.length < desiredLaunched && stashedDrones.length > 0) {
       const toLaunch = Math.min(desiredLaunched - launchedDrones.length, stashedDrones.length);
       for (let i = 0; i < toLaunch; i++) {
         const d = stashedDrones[i];
         d.launched = true;
-        // Send new drones to the fire edge, not the ash center
         const ep = edgePoint(i / Math.max(1, toLaunch));
         d.trow = Math.round(ep.row + (Math.random() - 0.5) * 8);
         d.tcol = Math.round(ep.col + (Math.random() - 0.5) * 8);
@@ -1544,32 +1653,44 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       }
     }
 
-    // Reassign all launched drones to fire edge clusters
+    // ── DRONE reassignment — RESPECTS drone mode strategy ──
     if (now - ag.lastDroneAssign > 4000) {
       ag.lastDroneAssign = now;
-      const active = drones.filter(d => d.launched);
-      const clusters = clusterFronts(activeFronts, Math.min(active.length, Math.max(3, Math.ceil(active.length / 3))));
-      let di = 0;
-      for (let ci = 0; ci < clusters.length && di < active.length; ci++) {
-        const cl = clusters[ci];
-        // Offset cluster center outward from fire center so drones hover over the edge, not the ash
-        const dr = cl.row - cR, dc = cl.col - cC;
-        const len = Math.sqrt(dr*dr + dc*dc) || 1;
-        const oRow = cl.row + (dr/len)*5, oCol = cl.col + (dc/len)*5;
-        const dronesFor = Math.min(4, Math.max(1, Math.round(cl.size / Math.max(1, fronts) * active.length)));
-        for (let d = 0; d < dronesFor && di < active.length; d++) {
-          active[di].trow = oRow + (d - dronesFor / 2) * 3;
-          active[di].tcol = oCol + (d - dronesFor / 2) * 2;
+      const active = drones.filter(d => d.launched && !d._safetyStopped);
+
+      if (strat?.droneMode === 'safety') {
+        // SAFETY WATCH: drones hover near ground crew positions
+        const crewUnits = units.filter(u => ['hotshot','crew','engine','structeng'].includes(u.type) && (Math.abs(u.row - u.homeRow) > 3 || Math.abs(u.col - u.homeCol) > 3));
+        active.forEach((d, i) => {
+          if (crewUnits.length > 0) {
+            const crew = crewUnits[i % crewUnits.length];
+            d.trow = crew.row + (Math.sin(i * 1.5) * 8);
+            d.tcol = crew.col + (Math.cos(i * 1.5) * 8);
+          }
+        });
+      } else {
+        // RECON (default): cluster around fire edge
+        const clusters = clusterFronts(activeFronts, Math.min(active.length, Math.max(3, Math.ceil(active.length / 3))));
+        let di = 0;
+        for (let ci = 0; ci < clusters.length && di < active.length; ci++) {
+          const cl = clusters[ci];
+          const dr = cl.row - cR, dc = cl.col - cC;
+          const len = Math.sqrt(dr*dr + dc*dc) || 1;
+          const oRow = cl.row + (dr/len)*5, oCol = cl.col + (dc/len)*5;
+          const dronesFor = Math.min(4, Math.max(1, Math.round(cl.size / Math.max(1, fronts) * active.length)));
+          for (let d = 0; d < dronesFor && di < active.length; d++) {
+            active[di].trow = oRow + (d - dronesFor / 2) * 3;
+            active[di].tcol = oCol + (d - dronesFor / 2) * 2;
+            di++;
+          }
+        }
+        while (di < active.length) {
+          const frac = di / active.length;
+          const ep = edgePoint(frac);
+          active[di].trow = ep.row;
+          active[di].tcol = ep.col;
           di++;
         }
-      }
-      // Remaining drones orbit the fire perimeter
-      while (di < active.length) {
-        const frac = di / active.length;
-        const ep = edgePoint(frac);
-        active[di].trow = ep.row;
-        active[di].tcol = ep.col;
-        di++;
       }
       ag.dronesDeployed = active.length;
     }
@@ -1586,30 +1707,17 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       addEvent('predict', `FORECAST: 1h projection ${est1h} acres (50-scenario ensemble). Confidence ${ros>2?'58':'72'}%. ${ros>2?'Extreme ROS — recommend aerial suppression.':'Recommend direct attack.'}`);
       ag.actions++;
     }
-    // Periodic updates as fire grows
     if (acres > 20 && !ag.logged.has('predict_update_'+Math.floor(acres/30)*30)) {
       ag.logged.add('predict_update_'+Math.floor(acres/30)*30);
       addEvent('predict', `UPDATE: Fire now ${acres} acres, ROS ${ros.toFixed(1)} ch/hr. Threat Level ${level}/5. ${spots>0?`${spots} spot fires active.`:''} Containment ${engine.windSpeed>20?'unlikely':'possible'} with current resources.`);
       ag.actions++;
     }
 
-    // ── DEPLOY: CONDITION-DRIVEN dispatch ──
-    // Units are dispatched ONCE to a road-accessible staging point near the fire.
-    // After arriving, they hold position and only reposition every 30 seconds (real time).
-
-    // Helper: find nearest road node to a point (for staging on roads, not in brush)
-    function nearestRoadStaging(targetRow, targetCol) {
-      let bestR = targetRow, bestC = targetCol, bestDist = Infinity;
-      for (const rn of ROAD_NODES) {
-        const d = (rn.row - targetRow) ** 2 + (rn.col - targetCol) ** 2;
-        if (d < bestDist) { bestDist = d; bestR = rn.row; bestC = rn.col; }
-      }
-      return { row: bestR, col: bestC };
-    }
+    // ── DEPLOY: STRATEGY-AWARE dispatch ──
+    // Confine: units stay back, only monitor. Defensive: protect perimeter. Offensive: push to fire edge.
 
     const engines = units.filter(u => u.type === 'engine');
-    if (level >= 2 && acres >= 2 && activeFronts.length > 0) {
-      // Dispatch engines ONCE, then only reposition every 30s
+    if (level >= 2 && acres >= 2 && activeFronts.length > 0 && !isConfine) {
       if (!ag.logged.has('engine_attack')) {
         ag.logged.add('engine_attack');
         const defPos = getDefensePos(activeFronts, engines.length, engine);
@@ -1619,170 +1727,246 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
             setUnitTarget(engines[ei], staging.row, staging.col);
           }
         }
-        addEvent('deploy',`DECISION: Fire confirmed ${acres} acres, ROS ${ros.toFixed(1)} ch/hr → dispatching ${engines.length} engines. E-69A/B (Palisades), E-23 (Brentwood). ETA 8-12 min.`);
+        addEvent('deploy',`DECISION: Fire confirmed ${acres} acres, ROS ${ros.toFixed(1)} ch/hr → dispatching ${engines.length} engines.`);
         ag.actions += 2;
         ag.lastEngineRepos = now;
       }
-      // Reposition engines every 30s to follow the fire's advance
-      if (ag.lastEngineRepos && now - ag.lastEngineRepos > 30000) {
+      // Reposition every 10s based on attack mode
+      if (ag.lastEngineRepos && now - ag.lastEngineRepos > 10000) {
         ag.lastEngineRepos = now;
-        const defPos = getDefensePos(activeFronts, engines.length, engine);
-        for (let ei = 0; ei < engines.length; ei++) {
-          if (ei < defPos.length) {
-            // Only move if fire has shifted significantly (>15 cells from current position)
-            const dr = defPos[ei].row - engines[ei].row, dc = defPos[ei].col - engines[ei].col;
-            if (Math.sqrt(dr * dr + dc * dc) > 15) {
-              const staging = nearestRoadStaging(defPos[ei].row, defPos[ei].col);
-              setUnitTarget(engines[ei], staging.row, staging.col);
+        if (strat?.attackMode === 'indirect') {
+          // Indirect: engines way ahead of fire (downwind)
+          const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
+          engines.forEach((u, i) => {
+            const off = 20 + posBuffer;
+            const perpR = Math.sin(windRad) * (i - engines.length/2) * 12;
+            const perpC = Math.cos(windRad) * (i - engines.length/2) * 12;
+            const s = nearestRoadStaging(cR + dwR * off + perpR, cC + dwC * off + perpC);
+            setUnitTarget(u, s.row, s.col);
+          });
+        } else if (strat?.attackMode === 'parallel') {
+          // Parallel: offset from fire edge
+          engines.forEach((u, i) => {
+            const ep = edgePoint(i / Math.max(1, engines.length));
+            const dr = ep.row - cR, dc = ep.col - cC;
+            const len = Math.sqrt(dr*dr + dc*dc) || 1;
+            const s = nearestRoadStaging(ep.row + (dr/len) * posBuffer, ep.col + (dc/len) * posBuffer);
+            setUnitTarget(u, s.row, s.col);
+          });
+        } else {
+          // Direct: right at fire edge (default)
+          const defPos = getDefensePos(activeFronts, engines.length, engine);
+          for (let ei = 0; ei < engines.length; ei++) {
+            if (ei < defPos.length) {
+              const dr = defPos[ei].row - engines[ei].row, dc = defPos[ei].col - engines[ei].col;
+              if (Math.sqrt(dr * dr + dc * dc) > 10) {
+                const staging = nearestRoadStaging(defPos[ei].row, defPos[ei].col);
+                setUnitTarget(engines[ei], staging.row, staging.col);
+              }
             }
           }
         }
       }
     }
+    // CONFINE posture: pull engines back to safe distance, only observe
+    if (isConfine && ag.logged.has('engine_attack')) {
+      engines.forEach((u, i) => {
+        const dwR = Math.cos(windRad), dwC = -Math.sin(windRad); // upwind
+        const s = nearestRoadStaging(cR + dwR * 40 + i * 5, cC + dwC * 40 + i * 5);
+        if (Math.sqrt((u.trow - s.row)**2 + (u.tcol - s.col)**2) > 10) setUnitTarget(u, s.row, s.col);
+      });
+    }
 
-    // Level 2+: Water tender behind fire line (upwind, on road)
+    // Water tender
     const tender = units.find(u => u.type === 'tender');
-    if (tender && level >= 2 && acres >= 5) {
+    if (tender && level >= 2 && acres >= 5 && !isConfine) {
       if (!ag.logged.has('tender')) {
         ag.logged.add('tender');
         const upwindPt = edgeInDirection(Math.cos(windRad), -Math.sin(windRad));
         const staging = nearestRoadStaging(upwindPt.row, upwindPt.col);
         setUnitTarget(tender, staging.row, staging.col);
-        addEvent('deploy',`DECISION: ${acres} acres requires sustained water → WT-71 (4,000gal) from LACoFD Stn 71 via Malibu Canyon Rd.`);
+        addEvent('deploy',`DECISION: ${acres} acres requires sustained water → WT-71 (4,000gal) dispatched.`);
         ag.actions++;
       }
     }
 
-    // Level 2+: Helicopter orbits the fire EDGE, not the center
+    // ── AIRCRAFT: fully controlled by airPriority strategy ──
     const heli = units.find(u => u.type==='heli');
-    if (heli && level >= 2 && (acres >= 8 || fronts > 20 || ros > 2.0)) {
-      // Orbit along the active fire perimeter
-      const orbitFrac = ((now * 0.0001) % 1);
-      const ep = edgePoint(orbitFrac);
-      heli.trow = ep.row; heli.tcol = ep.col;
-      if (!ag.lastWaterDrop || now-ag.lastWaterDrop > 3000/sim.speed) {
-        ag.lastWaterDrop=now; const lead=leadingEdge();
-        if (lead) { fireOps.waterDrops.push({row:heli.trow,col:heli.tcol,startTime:now,duration:2000}); for (let dr=-2;dr<=2;dr++) for (let dc=-2;dc<=2;dc++) { const rr=Math.round(lead.row+dr),cc=Math.round(lead.col+dc); if(rr>=0&&rr<GRID_ROWS&&cc>=0&&cc<GRID_COLS&&engine.cells[rr*GRID_COLS+cc]===BURNING) engine.cells[rr*GRID_COLS+cc]=BURNED; } }
-        if (!ag.logged.has('heli_drop')) { ag.logged.add('heli_drop'); addEvent('deploy',`DECISION: ${fronts} active fronts, ROS ${ros.toFixed(1)} → aerial attack needed. H-1 Chinook from SMO (157mph), 2,600gal Bambi Bucket.`); ag.actions++; }
-      }
-    }
-
-    // Level 3+: Lead plane orbits just ahead of the fire edge
-    const leadPlane = units.find(u => u.type==='lead');
-    if (leadPlane && level >= 3 && acres >= 15) {
-      const lpFrac = ((now * 0.00012 + 0.3) % 1);
-      const lpPt = edgePoint(lpFrac);
-      leadPlane.trow = lpPt.row; leadPlane.tcol = lpPt.col;
-      if (!ag.logged.has('lead')) { ag.logged.add('lead'); addEvent('deploy',`DECISION: Multiple aircraft on scene → LP-1 Bronco lead plane for drop zone coordination.`); ag.actions++; }
-    }
-
-    // Level 3+: Hand crews on fire flanks (perpendicular to wind, staged on nearest road)
-    const handCrews = units.filter(u => u.type==='crew');
-    if (handCrews.length>0 && level >= 3 && fronts > 30 && !ag.logged.has('crew_line')) {
-      ag.logged.add('crew_line');
-      for (let ci=0; ci<handCrews.length; ci++) {
-        const side = ci % 2 === 0 ? 1 : -1;
-        const flankDir = { row: Math.sin(windRad + side * Math.PI/2), col: Math.cos(windRad + side * Math.PI/2) };
-        const pt = edgeInDirection(flankDir.row, flankDir.col);
-        const staging = nearestRoadStaging(pt.row, pt.col);
-        setUnitTarget(handCrews[ci], staging.row, staging.col);
-      }
-      addEvent('deploy',`DECISION: ${fronts} fronts need containment → ${handCrews.length} hand crews (20 each) to flanks for fireline construction.`); ag.actions++;
-    }
-
-    // Level 3+: SEAT when flanks need retardant — orbits fire edge
     const seat = units.find(u => u.type==='seat');
-    if (seat && level >= 3 && acres >= 20) {
-      const seatFrac = ((now * 0.00015 + 0.6) % 1);
-      const seatPt = edgePoint(seatFrac);
-      seat.trow = seatPt.row; seat.tcol = seatPt.col;
-      if (!ag.logged.has('seat_drop') && acres>25 && activeFronts.length>0) { ag.logged.add('seat_drop'); const flank=activeFronts[Math.floor(activeFronts.length*0.3)]; if (flank) { fireOps.retardantDrops.push({r1:flank.row,c1:flank.col,r2:flank.row+8,c2:flank.col+8,startTime:now,duration:15000}); engine.applyRetardant(flank.row+4,flank.col+4,5,30); } addEvent('deploy',`DECISION: Flanks spreading → SE-1 SEAT (800gal retardant) on southern flank.`); ag.actions++; }
+    const leadPlane = units.find(u => u.type==='lead');
+    const airTanker = units.find(u => u.type==='air');
+
+    if (airHold) {
+      // HOLD / RTB: send ALL aircraft home
+      [heli, seat, leadPlane, airTanker].forEach(a => {
+        if (a) { a.trow = a.homeRow; a.tcol = a.homeCol; a._path = null; }
+      });
+    } else if (strat?.airPriority === 'structures') {
+      // STRUCTURES: aircraft orbit nearest threatened population zone
+      const nearestZone = sim.zoneStates.reduce((b, z) => {
+        const d = Math.sqrt((z.row - cR)**2 + (z.col - cC)**2);
+        return d < b.d ? { z, d } : b;
+      }, { z: sim.zoneStates[0], d: 999 });
+      if (heli && level >= 2) { heli.trow = nearestZone.z.row + Math.sin(now*0.0001)*10; heli.tcol = nearestZone.z.col + Math.cos(now*0.0001)*10; }
+      if (seat && level >= 3 && acres >= 20) { seat.trow = nearestZone.z.row + Math.sin(now*0.00015+2)*12; seat.tcol = nearestZone.z.col + Math.cos(now*0.00015+2)*12; }
+      if (leadPlane && level >= 3 && acres >= 15) { leadPlane.trow = nearestZone.z.row + 15; leadPlane.tcol = nearestZone.z.col + 15; }
+    } else if (strat?.airPriority === 'flanks') {
+      // FLANKS: aircraft split to left and right flanks
+      const leftFlank = edgeInDirection(Math.sin(windRad + Math.PI/2), Math.cos(windRad + Math.PI/2));
+      const rightFlank = edgeInDirection(Math.sin(windRad - Math.PI/2), Math.cos(windRad - Math.PI/2));
+      if (heli && level >= 2) { heli.trow = leftFlank.row; heli.tcol = leftFlank.col; }
+      if (seat && level >= 3 && acres >= 20) { seat.trow = rightFlank.row; seat.tcol = rightFlank.col; }
+      if (leadPlane && level >= 3 && acres >= 15) { const ep = edgePoint(0.5); leadPlane.trow = ep.row; leadPlane.tcol = ep.col; }
+    } else {
+      // HEAD (default): all air on fire head
+      if (heli && level >= 2 && (acres >= 8 || fronts > 20)) {
+        const orbitFrac = ((now * 0.0001) % 1);
+        const ep = edgePoint(orbitFrac);
+        heli.trow = ep.row; heli.tcol = ep.col;
+      }
+      if (seat && level >= 3 && acres >= 20) {
+        const seatFrac = ((now * 0.00015 + 0.6) % 1);
+        const seatPt = edgePoint(seatFrac);
+        seat.trow = seatPt.row; seat.tcol = seatPt.col;
+      }
+      if (leadPlane && level >= 3 && acres >= 15) {
+        const lpFrac = ((now * 0.00012 + 0.3) % 1);
+        const lpPt = edgePoint(lpFrac);
+        leadPlane.trow = lpPt.row; leadPlane.tcol = lpPt.col;
+      }
+    }
+    // Log initial aircraft deployment once
+    if (heli && level >= 2 && !ag.logged.has('heli_drop')) { ag.logged.add('heli_drop'); addEvent('deploy',`DECISION: ${fronts} active fronts → H-1 Chinook deployed. Air priority: ${strat?.airPriority || 'head'}.`); ag.actions++; }
+    if (leadPlane && level >= 3 && acres >= 15 && !ag.logged.has('lead')) { ag.logged.add('lead'); addEvent('deploy',`DECISION: Multiple aircraft → LP-1 lead plane for coordination.`); ag.actions++; }
+    if (seat && level >= 3 && acres >= 20 && !ag.logged.has('seat_drop')) { ag.logged.add('seat_drop'); addEvent('deploy',`DECISION: SE-1 SEAT (800gal retardant) deployed. Target: ${strat?.airPriority || 'flanks'}.`); ag.actions++; }
+
+    // Hand crews — respect attack mode
+    const handCrews = units.filter(u => u.type==='crew');
+    if (handCrews.length > 0 && level >= 3 && fronts > 30 && !isConfine) {
+      // Reposition crews periodically based on strategy
+      if (!ag.logged.has('crew_line') || (now - (ag._lastCrewRepos || 0) > 12000)) {
+        ag._lastCrewRepos = now;
+        if (!ag.logged.has('crew_line')) {
+          ag.logged.add('crew_line');
+          addEvent('deploy',`DECISION: ${handCrews.length} hand crews to ${strat?.attackMode || 'direct'} attack positions.`);
+          ag.actions++;
+        }
+        for (let ci = 0; ci < handCrews.length; ci++) {
+          const side = ci % 2 === 0 ? 1 : -1;
+          if (strat?.attackMode === 'indirect') {
+            const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
+            const off = 25 + posBuffer;
+            const s = nearestRoadStaging(cR + dwR * off + side * 15, cC + dwC * off + side * 15);
+            setUnitTarget(handCrews[ci], s.row, s.col);
+          } else {
+            const flankDir = { row: Math.sin(windRad + side * Math.PI/2), col: Math.cos(windRad + side * Math.PI/2) };
+            const pt = edgeInDirection(flankDir.row, flankDir.col);
+            const s = nearestRoadStaging(pt.row + (isDefensive ? side * 10 : 0), pt.col + (isDefensive ? side * 10 : 0));
+            setUnitTarget(handCrews[ci], s.row, s.col);
+          }
+        }
+      }
     }
 
-    // Level 3+: Dozer ahead of fire (downwind edge, on nearest road)
+    // Dozer
     const dozer = units.find(u => u.type==='dozer');
-    if (dozer && level >= 3 && acres >= 25 && engine.windSpeed > 12 && !ag.logged.has('dozer_break') && activeFronts.length>0) {
+    if (dozer && level >= 3 && acres >= 25 && engine.windSpeed > 12 && !isConfine && !ag.logged.has('dozer_break') && activeFronts.length > 0) {
       ag.logged.add('dozer_break');
       const lead = leadingEdge();
       if (lead) {
         const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
-        const aR = lead.row + dwR * 15, aC = lead.col + dwC * 15;
+        const aR = lead.row + dwR * (15 + posBuffer), aC = lead.col + dwC * (15 + posBuffer);
         const staging = nearestRoadStaging(aR, aC);
         setUnitTarget(dozer, staging.row, staging.col);
       }
-      addEvent('deploy',`DECISION: Wind ${engine.windSpeed}mph driving spread → DZ-1 Cat D8T cutting 15ft firebreak ahead of fire.`); ag.actions+=2;
+      addEvent('deploy',`DECISION: DZ-1 Cat D8T cutting firebreak ${posBuffer + 15} cells ahead.`); ag.actions += 2;
     }
 
-    // Level 3+: Hotshot burnout at the downwind flank (staged on nearest road)
+    // Hotshot
     const hotshot = units.find(u => u.type==='hotshot');
-    if (hotshot && level >= 3 && acres >= 30 && ros > 1.0 && !ag.crewWithdrawn && !ag.logged.has('backfire') && activeFronts.length>0) {
+    if (hotshot && level >= 3 && acres >= 30 && ros > 1.0 && !ag.crewWithdrawn && !isConfine && !ag.logged.has('backfire') && activeFronts.length > 0) {
       ag.logged.add('backfire');
       const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
       const pt = edgeInDirection(dwR, dwC);
       const staging = nearestRoadStaging(pt.row, pt.col);
       setUnitTarget(hotshot, staging.row, staging.col);
-      addEvent('deploy',`DECISION: ROS ${ros.toFixed(1)} ch/hr, direct attack failing → IHC-8 Hotshots for indirect burnout ops.`); ag.actions+=3;
+      addEvent('deploy',`DECISION: IHC-8 Hotshots for ${strat?.attackMode === 'indirect' ? 'indirect burnout' : 'direct attack'} ops.`); ag.actions += 3;
     }
 
-    // Level 4+: VLAT — now gated by AI_OVERWATCH decision queue (Iteration 2)
-    // Direct dispatch removed; VLAT is proposed via proposeDecision('ai_overwatch', 'request_vlat', ...)
-
-    // Level 4+: Structure protection when population zones threatened
+    // Structure protection — respects structMode strategy
     const structEng = units.find(u => u.type==='structeng');
-    if (structEng && level >= 4 && !ag.logged.has('struct_protect')) {
-      const nearest = sim.zoneStates.reduce((best,z) => { const d=fireDist(z,engine); return d<best.d?{z,d}:best; },{z:sim.zoneStates[0],d:999});
-      if (nearest.d<40) { ag.logged.add('struct_protect'); const staging = nearestRoadStaging(nearest.z.row, nearest.z.col); setUnitTarget(structEng, staging.row, staging.col); addEvent('deploy',`DECISION: Fire ${Math.round(nearest.d)} cells from ${nearest.z.name} (${nearest.z.pop} residents) → SP-19 for structure triage.`); ag.actions+=2; }
+    if (structEng && level >= 3) {
+      if (strat?.structMode === 'protect') {
+        // Protect all: go to nearest threatened zone
+        const nearest = sim.zoneStates.reduce((b, z) => { const d = fireDist(z, engine); return d < b.d ? { z, d } : b; }, { z: sim.zoneStates[0], d: 999 });
+        if (nearest.d < 50) {
+          const s = nearestRoadStaging(nearest.z.row, nearest.z.col);
+          if (Math.sqrt((structEng.trow - s.row)**2 + (structEng.tcol - s.col)**2) > 8) setUnitTarget(structEng, s.row, s.col);
+        }
+      } else if (strat?.structMode === 'abandon') {
+        setUnitTarget(structEng, structEng.homeRow, structEng.homeCol);
+      } else if (strat?.structMode === 'bump-and-run') {
+        // Cycle between zones
+        const zoneIdx = Math.floor((now * 0.0001) % sim.zoneStates.length);
+        const z = sim.zoneStates[zoneIdx];
+        const s = nearestRoadStaging(z.row, z.col);
+        if (Math.sqrt((structEng.trow - s.row)**2 + (structEng.tcol - s.col)**2) > 10) setUnitTarget(structEng, s.row, s.col);
+      } else {
+        // Triage (default): only go if very close
+        if (!ag.logged.has('struct_protect') && level >= 4) {
+          const nearest = sim.zoneStates.reduce((best,z) => { const d=fireDist(z,engine); return d<best.d?{z,d}:best; },{z:sim.zoneStates[0],d:999});
+          if (nearest.d<40) { ag.logged.add('struct_protect'); const staging = nearestRoadStaging(nearest.z.row, nearest.z.col); setUnitTarget(structEng, staging.row, staging.col); addEvent('deploy',`DECISION: Fire ${Math.round(nearest.d)} cells from ${nearest.z.name} → SP-19 for structure triage.`); ag.actions+=2; }
+        }
+      }
     }
 
     // Safety: Crew withdrawal when overrun risk detected
     if (!ag.crewWithdrawn && acres>100 && hotshot) {
       let nearFire=false; for (const f of activeFronts) { if (Math.abs(f.row-hotshot.row)<10 && Math.abs(f.col-hotshot.col)<10) { nearFire=true; break; } }
-      if (nearFire) { ag.crewWithdrawn=true; setUnitTarget(hotshot, 170, 90); addEvent('deploy','SAFETY OVERRIDE: IHC-8 WITHDRAWING — fire overrun risk. LCES compromised. All crew accounted for.'); ag.actions+=2; }
+      if (nearFire) { ag.crewWithdrawn=true; setUnitTarget(hotshot, 170, 90); addEvent('deploy','SAFETY OVERRIDE: IHC-8 WITHDRAWING — fire overrun risk.'); ag.actions+=2; }
     }
 
-    // ── EVAC: zone threat assessment (AI_EVAC driven) ──
+    // ── EVAC: zone threat assessment ──
     for (const zone of sim.zoneStates) {
       const dist = fireDist(zone, engine);
-      if (zone.status==='clear' && dist<50) { zone.status='advisory'; addEvent('evac',`AI_EVAC ANALYSIS: Fire ${Math.round(dist)} cells from ${zone.id} (${zone.name}, ${zone.pop} residents) → ADVISORY issued.`); ag.actions++; }
-      else if (zone.status==='advisory' && dist<35) { zone.status='warning'; addEvent('evac',`AI_EVAC: ${zone.id} fire ETA ~${Math.round(dist*95/1000*60/(ros*22+1))}min → WARNING. Prepare to evacuate.`); ag.actions++; if (!ag.routesActive) { ag.routesActive=true; ROUTES.forEach(r=>sim.routeStates[r.id]='clear'); addEvent('evac','3 evacuation routes activated. AI_EVAC optimizing flow.'); } }
-      else if (zone.status==='warning' && dist<20) { zone.status='order'; addEvent('evac',`MANDATORY EVACUATION: ${zone.id}. ${zone.pop} residents. Genasys WEA + reverse-911 sent.`); ag.actions+=2; }
+      if (zone.status==='clear' && dist<50) { zone.status='advisory'; addEvent('evac',`AI_EVAC: Fire ${Math.round(dist)} cells from ${zone.id} (${zone.name}) → ADVISORY.`); ag.actions++; }
+      else if (zone.status==='advisory' && dist<35) { zone.status='warning'; addEvent('evac',`AI_EVAC: ${zone.id} → WARNING. Prepare to evacuate.`); ag.actions++; if (!ag.routesActive) { ag.routesActive=true; ROUTES.forEach(r=>sim.routeStates[r.id]='clear'); addEvent('evac','3 evacuation routes activated.'); } }
+      else if (zone.status==='warning' && dist<20) { zone.status='order'; addEvent('evac',`MANDATORY EVACUATION: ${zone.id}. ${zone.pop} residents.`); ag.actions+=2; }
       if (zone.status==='warning'||zone.status==='order') zone.evacPct=Math.min(98,(zone.evacPct||0)+(zone.status==='order'?1.5:0.5));
-      if (dist<15 && zone.id==='C1' && sim.routeStates['R3']!=='blocked') { sim.routeStates['R3']='blocked'; addEvent('evac','AI_EVAC: R3 Topanga Canyon BLOCKED by fire. Rerouting to R1 Sunset.'); }
-      if (dist<25 && zone.id==='B3' && sim.routeStates['R2']==='clear') { sim.routeStates['R2']='congested'; addEvent('evac','AI_EVAC: R2 PCH congested → recommending contraflow for single-exit zones.'); }
+      if (dist<15 && zone.id==='C1' && sim.routeStates['R3']!=='blocked') { sim.routeStates['R3']='blocked'; addEvent('evac','R3 Topanga Canyon BLOCKED. Rerouting.'); }
+      if (dist<25 && zone.id==='B3' && sim.routeStates['R2']==='clear') { sim.routeStates['R2']='congested'; addEvent('evac','R2 PCH congested → contraflow recommended.'); }
     }
 
-    // ── AI DECISION PROPOSALS — now handled by ICS graph iframe via postMessage ──
-    // Old icsEngine.proposeDecision() calls removed; IC decisions come from ics-graph.html
+    // Escalation
+    if (!ag.escalated && level >= 5) { ag.escalated=true; addEvent('overwatch',`ESCALATED to Type 1 Incident. ${acres} acres.`); ag.actions+=3; }
 
-    // ── Escalation (driven by response level) ──
-    if (!ag.escalated && level >= 5) { ag.escalated=true; addEvent('overwatch',`ESCALATED to Type 1 Incident. ${acres} acres, Level ${level} threat. Requesting mutual aid via IROC.`); ag.actions+=3; }
-
-    // ── Dynamic reinforcements (mutual aid, condition-driven) ──
-    const desiredEngines = Math.max(3, Math.min(8, 3 + Math.floor(acres / 40)));
-    const currentEngines = units.filter(u => u.type === 'engine').length;
-    if (desiredEngines > currentEngines && level >= 3) {
-      for (let i = currentEngines; i < desiredEngines; i++) {
-        const u = { id:`E-MA${i+1}`, type:'engine', homeRow:COMMAND_CENTER.row, homeCol:COMMAND_CENTER.col, row:COMMAND_CENTER.row, col:COMMAND_CENTER.col, trow:COMMAND_CENTER.row, tcol:COMMAND_CENTER.col, station:'Mutual Aid', crew:3, vehicle:'Pierce Type 3', _path:null, _pi:0 };
-        units.push(u);
-        setUnitTarget(u, Math.round(cR + (Math.random()-0.5)*20), Math.round(cC + (Math.random()-0.5)*20));
+    // Dynamic reinforcements (skip if confine — we're not fighting it)
+    if (!isConfine) {
+      const desiredEngines = Math.max(3, Math.min(8, 3 + Math.floor(acres / 40)));
+      const currentEngines = units.filter(u => u.type === 'engine').length;
+      if (desiredEngines > currentEngines && level >= 3) {
+        for (let i = currentEngines; i < desiredEngines; i++) {
+          const u = { id:`E-MA${i+1}`, type:'engine', homeRow:COMMAND_CENTER.row, homeCol:COMMAND_CENTER.col, row:COMMAND_CENTER.row, col:COMMAND_CENTER.col, trow:COMMAND_CENTER.row, tcol:COMMAND_CENTER.col, station:'Mutual Aid', crew:3, vehicle:'Pierce Type 3', _path:null, _pi:0 };
+          units.push(u);
+          setUnitTarget(u, Math.round(cR + (Math.random()-0.5)*20), Math.round(cC + (Math.random()-0.5)*20));
+        }
+        addEvent('deploy', `DECISION: ${desiredEngines - currentEngines} mutual aid engines requested.`);
+        ag.actions++;
       }
-      addEvent('deploy', `DECISION: Level ${level} threat, ${acres} acres → ${desiredEngines - currentEngines} mutual aid engines requested. Total: ${desiredEngines}.`);
-      ag.actions++;
-    }
-
-    const desiredHelis = Math.max(1, Math.min(4, 1 + Math.floor(acres / 80)));
-    const currentHelis = units.filter(u => u.type === 'heli').length;
-    if (desiredHelis > currentHelis && level >= 3) {
-      for (let i = currentHelis; i < desiredHelis; i++) {
-        const u = { id:`H-MA${i+1}`, type:'heli', homeRow:COMMAND_CENTER.row, homeCol:COMMAND_CENTER.col, row:COMMAND_CENTER.row, col:COMMAND_CENTER.col, trow:Math.round(cR), tcol:Math.round(cC), station:'Mutual Aid', crew:4, vehicle:'CH-47D Chinook', _path:null, _pi:0 };
-        units.push(u);
+      const desiredHelis = Math.max(1, Math.min(4, 1 + Math.floor(acres / 80)));
+      const currentHelis = units.filter(u => u.type === 'heli').length;
+      if (desiredHelis > currentHelis && level >= 3 && !airHold) {
+        for (let i = currentHelis; i < desiredHelis; i++) {
+          const u = { id:`H-MA${i+1}`, type:'heli', homeRow:COMMAND_CENTER.row, homeCol:COMMAND_CENTER.col, row:COMMAND_CENTER.row, col:COMMAND_CENTER.col, trow:Math.round(cR), tcol:Math.round(cC), station:'Mutual Aid', crew:4, vehicle:'CH-47D Chinook', _path:null, _pi:0 };
+          units.push(u);
+        }
+        addEvent('deploy', `DECISION: ${desiredHelis - currentHelis} additional heli scrambled.`);
+        ag.actions++;
       }
-      addEvent('deploy', `DECISION: ${acres} acres exceeds rotary-wing capacity → ${desiredHelis - currentHelis} additional heli${desiredHelis-currentHelis>1?'s':''} scrambled. Total: ${desiredHelis}.`);
-      ag.actions++;
     }
 
-    // ── Spot fires ──
-    if (spots>(sim._lastSpots||0) && spots>0) { const n=spots-(sim._lastSpots||0); if (n>0 && !ag.logged.has('spot_'+spots)) { ag.logged.add('spot_'+spots); addEvent('swarm',`IR CONFIRMED: ${n} new spot fire${n>1?'s':''}! Total: ${spots}. Vectoring scout drones.`); ag.actions+=2; } }
+    // Spot fires
+    if (spots>(sim._lastSpots||0) && spots>0) { const n=spots-(sim._lastSpots||0); if (n>0 && !ag.logged.has('spot_'+spots)) { ag.logged.add('spot_'+spots); addEvent('swarm',`IR CONFIRMED: ${n} new spot fire${n>1?'s':''}! Total: ${spots}.`); ag.actions+=2; } }
     sim._lastSpots = spots;
   }
 
@@ -2094,7 +2278,7 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           sim.icsStarted = false;
           sim.ag = { dronesDeployed:0, lastDroneAssign:0, logged:new Set(), actions:0,
                      retardantReq:false, crewWithdrawn:false, routesActive:false, escalated:false,
-                     lastWaterDrop:0 };
+                     lastWaterDrop:0, _lastSeatDrop:0, lastEngineRepos:0 };
           sim.fireOps = { hoseLines:[], dozerLines:[], handLines:[], retardantDrops:[], waterDrops:[], backfireLines:[], structProtect:[] };
           sim.zoneStates = POP_ZONES.map(z => ({ ...z, status:'clear', evacPct:0 }));
           sim.routeStates = {};
@@ -2107,52 +2291,89 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         if (!d.launched) continue;
         const spd = SPEED[d.dtype] || 40;
         moveAtSpeed(d, spd, sim.speed);
+        // Safety stop: land drones when they reach home base
+        if (d._safetyStopped && Math.abs(d.row - d.homeRow) < 3 && Math.abs(d.col - d.homeCol) < 3) {
+          d.launched = false;
+          d.row = d.homeRow; d.col = d.homeCol;
+        }
       }
       for (const u of units) {
         const spd = SPEED[u.type] || 20;
         moveAtSpeed(u, spd, sim.speed);
       }
 
-      // ── SUPPRESSION TICK — units near fire suppress it (every 10 frames) ──
-      if (sim.fireDetected && frame % 10 === 0) {
+      // ── SUPPRESSION TICK — units near fire suppress it (every 5 frames for more impact) ──
+      if (sim.fireDetected && sim.strategy?.safetyStop !== 'all' && frame % 5 === 0) {
         const suppStats = engine.getStats();
-        const suppRos = Math.max(0.3, 1 / (1 + (suppStats?.rosChainPerHour || 0) * 0.15));
+        const suppRos = Math.max(0.4, 1 / (1 + (suppStats?.rosChainPerHour || 0) * 0.1));
+        // Strategy posture multiplier: offensive = more suppression, defensive = less
+        const postureMult = sim.strategy?.posture === 'offensive' ? 1.8 : sim.strategy?.posture === 'defensive' ? 1.0 : sim.strategy?.posture === 'confine' ? 0.3 : 1.2;
         for (const u of units) {
+          if (u._safetyStopped) continue;
           // Only suppress if unit has actually been dispatched (not still at home)
           if (Math.abs(u.row - u.homeRow) < 2 && Math.abs(u.col - u.homeCol) < 2) continue;
           const ur = Math.round(u.row), uc = Math.round(u.col);
           if (u.type === 'engine' || u.type === 'structeng') {
-            // Engines suppress multiple burning cells within 5-cell radius
+            // Engines suppress burning cells within 6-cell radius — up to 6 per tick
             let suppressed = 0;
-            for (let dr = -5; dr <= 5 && suppressed < 3; dr++) for (let dc = -5; dc <= 5 && suppressed < 3; dc++) {
+            const maxSupp = Math.round(6 * postureMult);
+            for (let dr = -6; dr <= 6 && suppressed < maxSupp; dr++) for (let dc = -6; dc <= 6 && suppressed < maxSupp; dc++) {
               const cr = ur + dr, cc = uc + dc;
               if (cr >= 0 && cr < GRID_ROWS && cc >= 0 && cc < GRID_COLS && engine.cells[cr * GRID_COLS + cc] === BURNING) {
-                if (Math.random() < 0.6 * suppRos) { engine.suppressCell(cr, cc, 0); suppressed++; }
+                if (Math.random() < 0.7 * suppRos * postureMult) { engine.suppressCell(cr, cc, 0); suppressed++; }
               }
             }
           }
           if (u.type === 'crew' || u.type === 'hotshot') {
             // Hand crews build fireline perpendicular to wind AND suppress nearby cells
             const windRad2 = ((engine.windDirection + 180) % 360) * Math.PI / 180;
-            const perpR = Math.round(ur + Math.sin(windRad2) * 4), perpC = Math.round(uc + Math.cos(windRad2) * 4);
-            if (Math.random() < 0.5 * suppRos) {
-              engine.buildFireline(ur, uc, perpR, perpC, u.type === 'hotshot' ? 1 : 0, 60);
+            const perpR = Math.round(ur + Math.sin(windRad2) * 5), perpC = Math.round(uc + Math.cos(windRad2) * 5);
+            if (Math.random() < 0.6 * suppRos * postureMult) {
+              engine.buildFireline(ur, uc, perpR, perpC, u.type === 'hotshot' ? 1 : 0, 80);
             }
-            // Also directly suppress nearby burning cells
-            for (let dr = -3; dr <= 3; dr++) for (let dc = -3; dc <= 3; dc++) {
+            // Suppress nearby burning cells — more effective
+            let suppressed = 0;
+            const maxSupp = Math.round(4 * postureMult);
+            for (let dr = -4; dr <= 4 && suppressed < maxSupp; dr++) for (let dc = -4; dc <= 4 && suppressed < maxSupp; dc++) {
               const cr = ur + dr, cc = uc + dc;
               if (cr >= 0 && cr < GRID_ROWS && cc >= 0 && cc < GRID_COLS && engine.cells[cr * GRID_COLS + cc] === BURNING) {
-                if (Math.random() < 0.4 * suppRos) engine.suppressCell(cr, cc, 0);
+                if (Math.random() < 0.55 * suppRos * postureMult) { engine.suppressCell(cr, cc, 0); suppressed++; }
               }
             }
           }
           if (u.type === 'dozer') {
-            // Dozer cuts wide firebreak (width 2) more reliably
+            // Dozer cuts wide firebreak (width 3) more reliably
             const windRad2 = ((engine.windDirection + 180) % 360) * Math.PI / 180;
-            const perpR = Math.round(ur + Math.sin(windRad2) * 6), perpC = Math.round(uc + Math.cos(windRad2) * 6);
-            if (Math.random() < 0.4 * suppRos) {
-              engine.buildFireline(ur, uc, perpR, perpC, 2, 90);
+            const perpR = Math.round(ur + Math.sin(windRad2) * 7), perpC = Math.round(uc + Math.cos(windRad2) * 7);
+            if (Math.random() < 0.6 * suppRos * postureMult) {
+              engine.buildFireline(ur, uc, perpR, perpC, 3, 120);
             }
+          }
+        }
+        // ── Helicopter water drops — now more frequent and effective ──
+        const heli = units.find(u => u.type === 'heli');
+        if (heli && !heli._safetyStopped && Math.abs(heli.row - heli.homeRow) > 5 && sim.strategy?.airPriority !== 'hold') {
+          if (!sim.ag.lastWaterDrop || (Date.now() - sim.ag.lastWaterDrop > 2000 / sim.speed)) {
+            sim.ag.lastWaterDrop = Date.now();
+            const hr = Math.round(heli.row), hc = Math.round(heli.col);
+            const dropR = Math.round(3 * postureMult);
+            sim.fireOps.waterDrops.push({ row: hr, col: hc, startTime: Date.now(), duration: 2000 });
+            for (let dr = -dropR; dr <= dropR; dr++) for (let dc = -dropR; dc <= dropR; dc++) {
+              const cr = hr + dr, cc = hc + dc;
+              if (cr >= 0 && cr < GRID_ROWS && cc >= 0 && cc < GRID_COLS && engine.cells[cr * GRID_COLS + cc] === BURNING) {
+                if (Math.random() < 0.65 * postureMult) engine.suppressCell(cr, cc, 0);
+              }
+            }
+          }
+        }
+        // ── SEAT retardant drops ──
+        const seat = units.find(u => u.type === 'seat');
+        if (seat && !seat._safetyStopped && Math.abs(seat.row - seat.homeRow) > 5 && sim.strategy?.airPriority !== 'hold') {
+          if (!sim.ag._lastSeatDrop || (Date.now() - sim.ag._lastSeatDrop > 5000 / sim.speed)) {
+            sim.ag._lastSeatDrop = Date.now();
+            const sr = Math.round(seat.row), sc = Math.round(seat.col);
+            engine.applyRetardant(sr, sc, Math.round(6 * postureMult), 50);
+            sim.fireOps.retardantDrops.push({ r1: sr - 4, c1: sc - 4, r2: sr + 4, c2: sc + 4, startTime: Date.now(), duration: 10000 });
           }
         }
       }
@@ -2252,13 +2473,13 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       for (const p of ICP_PERSONNEL) {
         const px = g2px(COMMAND_CENTER.row + p.offsetR, COMMAND_CENTER.col + p.offsetC, gw, gh);
         const isHL = hl === p.id || hlMapId === p.id;
-        const sz = isHL ? 6 : 4;
+        const sz = isHL ? 9 : 7;
         // Person dot
         ctx.beginPath(); ctx.arc(px.x, px.y, sz, 0, Math.PI * 2);
-        ctx.fillStyle = p.color + (isHL ? '80' : '40');
+        ctx.fillStyle = p.color + (isHL ? 'B0' : '80');
         ctx.fill();
-        ctx.strokeStyle = p.color + (isHL ? 'FF' : '80');
-        ctx.lineWidth = isHL ? 1.5 : 0.8; ctx.stroke();
+        ctx.strokeStyle = p.color + (isHL ? 'FF' : 'CC');
+        ctx.lineWidth = isHL ? 2.5 : 1.5; ctx.stroke();
         // Highlight ring
         if (isHL) {
           ctx.beginPath(); ctx.arc(px.x, px.y, sz + 5, 0, Math.PI * 2);
@@ -2266,16 +2487,16 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]);
         }
         // Label
-        ctx.fillStyle = p.color + (isHL ? 'FF' : '90');
-        ctx.font = (isHL ? 'bold ' : '') + '5px monospace'; ctx.textAlign = 'center';
-        ctx.fillText(p.label, px.x, px.y - sz - 2);
+        ctx.fillStyle = p.color + (isHL ? 'FF' : 'DD');
+        ctx.font = (isHL ? 'bold ' : '') + '8px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(p.label, px.x, px.y - sz - 3);
       }
 
       // ── FIELD ENTITIES — branch directors, sensors, AI agents ──
       for (const fe of FIELD_ENTITIES) {
         const fePx = g2px(fe.row, fe.col, gw, gh);
         const isFeHL = hl === fe.id || hlMapId === fe.id;
-        const feSz = isFeHL ? 6 : 3.5;
+        const feSz = isFeHL ? 9 : 6;
 
         if (fe.category === 'ai') {
           // AI agents: pulsing hexagon
@@ -2288,20 +2509,20 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
                      : ctx.lineTo(fePx.x + Math.cos(a) * r, fePx.y + Math.sin(a) * r);
           }
           ctx.closePath();
-          ctx.fillStyle = fe.color + (isFeHL ? '60' : Math.round(pulse * 40).toString(16).padStart(2, '0'));
+          ctx.fillStyle = fe.color + (isFeHL ? '90' : Math.round(pulse * 80 + 40).toString(16).padStart(2, '0'));
           ctx.fill();
-          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
-          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'CC');
+          ctx.lineWidth = isFeHL ? 2.5 : 1.5; ctx.stroke();
         } else if (fe.category === 'sensor') {
           // Sensors: diamond shape
           ctx.beginPath();
           ctx.moveTo(fePx.x, fePx.y - feSz); ctx.lineTo(fePx.x + feSz, fePx.y);
           ctx.lineTo(fePx.x, fePx.y + feSz); ctx.lineTo(fePx.x - feSz, fePx.y);
           ctx.closePath();
-          ctx.fillStyle = fe.color + (isFeHL ? '60' : '25');
+          ctx.fillStyle = fe.color + (isFeHL ? '90' : '60');
           ctx.fill();
-          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '70');
-          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'BB');
+          ctx.lineWidth = isFeHL ? 2.5 : 1.5; ctx.stroke();
           // Pulse ring for active sensors
           if (sim.fireDetected) {
             const sp = 0.3 + Math.sin(frame * 0.03 + fe.col) * 0.2;
@@ -2314,23 +2535,23 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           const orbitAng = frame * 0.008 + fe.row;
           const ox = fePx.x + Math.cos(orbitAng) * 8, oy = fePx.y + Math.sin(orbitAng) * 4;
           ctx.save(); ctx.translate(ox, oy); ctx.rotate(orbitAng + Math.PI / 2);
-          ctx.strokeStyle = fe.color + (isFeHL ? 'CC' : '60'); ctx.lineWidth = 1;
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'AA'); ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(0, 3); ctx.stroke();
           ctx.restore();
           // Orbit path
           ctx.beginPath(); ctx.ellipse(fePx.x, fePx.y, 10, 5, 0, 0, Math.PI * 2);
-          ctx.strokeStyle = fe.color + '15'; ctx.lineWidth = 0.5; ctx.setLineDash([2, 3]); ctx.stroke(); ctx.setLineDash([]);
+          ctx.strokeStyle = fe.color + '40'; ctx.lineWidth = 0.8; ctx.setLineDash([2, 3]); ctx.stroke(); ctx.setLineDash([]);
         } else if (fe.category === 'group') {
           // Unit group supervisors: circle with inner ring (commander badge)
           ctx.beginPath(); ctx.arc(fePx.x, fePx.y, feSz + 1, 0, Math.PI * 2);
-          ctx.fillStyle = fe.color + (isFeHL ? '50' : '20');
+          ctx.fillStyle = fe.color + (isFeHL ? '80' : '50');
           ctx.fill();
-          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
-          ctx.lineWidth = isFeHL ? 1.5 : 1; ctx.stroke();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'CC');
+          ctx.lineWidth = isFeHL ? 2.5 : 1.5; ctx.stroke();
           // Inner dot
-          ctx.beginPath(); ctx.arc(fePx.x, fePx.y, 2, 0, Math.PI * 2);
-          ctx.fillStyle = fe.color + (isFeHL ? 'FF' : '90');
+          ctx.beginPath(); ctx.arc(fePx.x, fePx.y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = fe.color + (isFeHL ? 'FF' : 'DD');
           ctx.fill();
         } else if (fe.category === 'drone_ctrl') {
           // Drone controllers: triangle (antenna/control icon)
@@ -2340,17 +2561,17 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           ctx.lineTo(fePx.x + sz, fePx.y + sz * 0.6);
           ctx.lineTo(fePx.x - sz, fePx.y + sz * 0.6);
           ctx.closePath();
-          ctx.fillStyle = fe.color + (isFeHL ? '50' : '20');
+          ctx.fillStyle = fe.color + (isFeHL ? '80' : '50');
           ctx.fill();
-          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '80');
-          ctx.lineWidth = isFeHL ? 1.5 : 0.8; ctx.stroke();
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'CC');
+          ctx.lineWidth = isFeHL ? 2.5 : 1.5; ctx.stroke();
         } else {
           // Branch directors: small square
           const half = feSz;
-          ctx.fillStyle = fe.color + (isFeHL ? '60' : '25');
+          ctx.fillStyle = fe.color + (isFeHL ? '90' : '60');
           ctx.fillRect(fePx.x - half, fePx.y - half, half * 2, half * 2);
-          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : '70');
-          ctx.lineWidth = isFeHL ? 1.5 : 0.8;
+          ctx.strokeStyle = fe.color + (isFeHL ? 'FF' : 'BB');
+          ctx.lineWidth = isFeHL ? 2.5 : 1.5;
           ctx.strokeRect(fePx.x - half, fePx.y - half, half * 2, half * 2);
         }
 
@@ -2361,9 +2582,9 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           ctx.setLineDash([3, 2]); ctx.stroke(); ctx.setLineDash([]);
         }
         // Label
-        ctx.fillStyle = fe.color + (isFeHL ? 'FF' : '80');
-        ctx.font = (isFeHL ? 'bold ' : '') + '5px monospace'; ctx.textAlign = 'center';
-        ctx.fillText(fe.label, fePx.x, fePx.y - feSz - 3);
+        ctx.fillStyle = fe.color + (isFeHL ? 'FF' : 'CC');
+        ctx.font = (isFeHL ? 'bold ' : '') + '8px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(fe.label, fePx.x, fePx.y - feSz - 4);
       }
 
       // ── DRONES with type-specific rendering ──
@@ -2395,47 +2616,47 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         if (d.dtype==='reaper') {
           // MQ-9: large fixed-wing silhouette at high altitude
           ctx.save(); ctx.translate(dx,dy); ctx.rotate(frame*0.002);
-          ctx.strokeStyle=dc+'60'; ctx.lineWidth=1;
-          ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(10,0); ctx.stroke(); // wings
-          ctx.beginPath(); ctx.moveTo(0,-5); ctx.lineTo(0,5); ctx.stroke(); // fuselage
-          ctx.beginPath(); ctx.moveTo(-3,-5); ctx.lineTo(3,-5); ctx.stroke(); // tail
+          ctx.strokeStyle=dc+'BB'; ctx.lineWidth=1.5;
+          ctx.beginPath(); ctx.moveTo(-12,0); ctx.lineTo(12,0); ctx.stroke(); // wings
+          ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(0,6); ctx.stroke(); // fuselage
+          ctx.beginPath(); ctx.moveTo(-4,-6); ctx.lineTo(4,-6); ctx.stroke(); // tail
           ctx.restore();
           // High altitude indicator
-          ctx.fillStyle=dc+'30'; ctx.font='5px monospace'; ctx.textAlign='center';
-          ctx.fillText('25kft',dx,dy-8);
+          ctx.fillStyle=dc+'80'; ctx.font='7px monospace'; ctx.textAlign='center';
+          ctx.fillText('25kft',dx,dy-10);
         } else if (d.dtype==='mapper' || d.dtype==='spotter') {
           // Fixed-wing: small plane shape
           ctx.save(); ctx.translate(dx,dy);
           const heading = Math.atan2(d.trow-d.row, d.tcol-d.col) || frame*0.01;
           ctx.rotate(heading);
-          ctx.strokeStyle=dc+'70'; ctx.lineWidth=0.8;
-          ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(6,0); ctx.stroke(); // wings
-          ctx.beginPath(); ctx.moveTo(0,-3); ctx.lineTo(0,4); ctx.stroke(); // body
+          ctx.strokeStyle=dc+'BB'; ctx.lineWidth=1.2;
+          ctx.beginPath(); ctx.moveTo(-8,0); ctx.lineTo(8,0); ctx.stroke(); // wings
+          ctx.beginPath(); ctx.moveTo(0,-4); ctx.lineTo(0,5); ctx.stroke(); // body
           ctx.restore();
         } else if (d.dtype==='ignis' || d.dtype==='ignition') {
           // IGNIS: drone with orange glow for dragon eggs
-          ctx.beginPath(); ctx.arc(dx,dy,4,0,Math.PI*2); ctx.fillStyle='#F97316'+'30'; ctx.fill();
-          ctx.strokeStyle='#F97316'+'80'; ctx.lineWidth=1; ctx.stroke();
+          ctx.beginPath(); ctx.arc(dx,dy,6,0,Math.PI*2); ctx.fillStyle='#F97316'+'60'; ctx.fill();
+          ctx.strokeStyle='#F97316'+'CC'; ctx.lineWidth=1.5; ctx.stroke();
           // Dragon egg indicator
-          ctx.fillStyle='#F97316'+'50'; ctx.font='5px monospace'; ctx.textAlign='center';
-          ctx.fillText('IGNIS',dx,dy-7);
+          ctx.fillStyle='#F97316'+'AA'; ctx.font='7px monospace'; ctx.textAlign='center';
+          ctx.fillText('IGNIS',dx,dy-9);
         } else if (d.dtype==='suppression') {
           // Heavy-lift: larger drone with payload indicator
-          ctx.beginPath(); ctx.arc(dx,dy,5,0,Math.PI*2); ctx.fillStyle=dc+'20'; ctx.fill();
-          ctx.strokeStyle=dc+'80'; ctx.lineWidth=1.5; ctx.stroke();
-          ctx.fillStyle='#22D3EE50'; ctx.fillRect(dx-3,dy+2,6,3); // water payload
+          ctx.beginPath(); ctx.arc(dx,dy,7,0,Math.PI*2); ctx.fillStyle=dc+'50'; ctx.fill();
+          ctx.strokeStyle=dc+'CC'; ctx.lineWidth=2; ctx.stroke();
+          ctx.fillStyle='#22D3EE90'; ctx.fillRect(dx-4,dy+3,8,4); // water payload
         } else {
           // Scout/relay/safety: standard quadcopter
-          ctx.beginPath(); ctx.arc(dx,dy,3,0,Math.PI*2); ctx.fillStyle=dc; ctx.fill();
+          ctx.beginPath(); ctx.arc(dx,dy,5,0,Math.PI*2); ctx.fillStyle=dc; ctx.fill();
           // Scan beam for scouts
           if (d.dtype==='scout'||d.dtype==='recon') {
             const scanAng=frame*0.03+d.row*0.2;
-            ctx.beginPath(); ctx.moveTo(dx,dy); ctx.lineTo(dx+Math.cos(scanAng)*12,dy+Math.sin(scanAng)*12);
-            ctx.strokeStyle=dc+'30'; ctx.lineWidth=1; ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(dx,dy); ctx.lineTo(dx+Math.cos(scanAng)*16,dy+Math.sin(scanAng)*16);
+            ctx.strokeStyle=dc+'60'; ctx.lineWidth=1.5; ctx.stroke();
           }
         }
 
-        ctx.fillStyle=dc+'70'; ctx.font='6px monospace'; ctx.textAlign='center'; ctx.fillText(d.id,dx,dy+10);
+        ctx.fillStyle=dc+'CC'; ctx.font='8px monospace'; ctx.textAlign='center'; ctx.fillText(d.id,dx,dy+13);
       }
 
       // (Road network overlay removed for cleaner map)
@@ -2451,30 +2672,30 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
           ctx.strokeStyle = '#FBBF24'; ctx.lineWidth = 2;
           ctx.setLineDash([4, 2]); ctx.stroke(); ctx.setLineDash([]);
         }
-        ctx.beginPath(); ctx.arc(ux,uy,6,0,Math.PI*2); ctx.fillStyle=uc+(unitHL?'40':'18'); ctx.fill(); ctx.strokeStyle=uc+(sim.fireDetected||unitHL?'90':'30'); ctx.lineWidth=unitHL?1.5:1; ctx.stroke();
+        ctx.beginPath(); ctx.arc(ux,uy,9,0,Math.PI*2); ctx.fillStyle=uc+(unitHL?'70':'40'); ctx.fill(); ctx.strokeStyle=uc+(sim.fireDetected||unitHL?'DD':'80'); ctx.lineWidth=unitHL?2.5:1.5; ctx.stroke();
 
         // Type-specific vehicle/crew rendering
         if (u.type==='heli') {
           const ra=frame*0.15; ctx.save(); ctx.translate(ux,uy); ctx.rotate(ra);
-          ctx.strokeStyle=uc+'60'; ctx.lineWidth=1;
-          ctx.beginPath(); ctx.moveTo(-9,0); ctx.lineTo(9,0); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(0,9); ctx.stroke();
+          ctx.strokeStyle=uc+'BB'; ctx.lineWidth=1.5;
+          ctx.beginPath(); ctx.moveTo(-12,0); ctx.lineTo(12,0); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(0,12); ctx.stroke();
           ctx.restore();
         }
         if (u.type==='air') {
           ctx.save(); ctx.translate(ux,uy); ctx.rotate(Math.sin(frame*0.005)*0.1);
-          ctx.strokeStyle=uc+'80'; ctx.lineWidth=1.5;
-          ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(14,0); ctx.stroke(); // wings
-          ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(0,8); ctx.stroke(); // fuselage
-          ctx.beginPath(); ctx.moveTo(-5,-6); ctx.lineTo(5,-6); ctx.stroke(); // tail
+          ctx.strokeStyle=uc+'CC'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.moveTo(-16,0); ctx.lineTo(16,0); ctx.stroke(); // wings
+          ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(0,10); ctx.stroke(); // fuselage
+          ctx.beginPath(); ctx.moveTo(-6,-8); ctx.lineTo(6,-8); ctx.stroke(); // tail
           ctx.restore();
         }
         if (u.type==='dozer') {
           // Tracked vehicle with blade
-          ctx.strokeStyle=uc+'60'; ctx.lineWidth=2;
-          ctx.beginPath(); ctx.moveTo(ux-7,uy+4); ctx.lineTo(ux+7,uy+4); ctx.stroke(); // tracks
-          ctx.beginPath(); ctx.moveTo(ux-7,uy-2); ctx.lineTo(ux+7,uy-2); ctx.stroke(); // tracks
-          ctx.fillStyle=uc+'30'; ctx.fillRect(ux-8,uy+4,16,2); // blade
+          ctx.strokeStyle=uc+'AA'; ctx.lineWidth=2.5;
+          ctx.beginPath(); ctx.moveTo(ux-9,uy+5); ctx.lineTo(ux+9,uy+5); ctx.stroke(); // tracks
+          ctx.beginPath(); ctx.moveTo(ux-9,uy-3); ctx.lineTo(ux+9,uy-3); ctx.stroke(); // tracks
+          ctx.fillStyle=uc+'60'; ctx.fillRect(ux-10,uy+5,20,3); // blade
         }
         if (u.type==='seat') {
           ctx.save(); ctx.translate(ux,uy);
@@ -2520,15 +2741,14 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         }
         if (u.type==='engine') {
           // Fire engine shape (cab + body)
-          ctx.fillStyle=uc+'20'; ctx.fillRect(ux-5,uy-3,10,6);
-          ctx.strokeStyle=uc+'60'; ctx.lineWidth=0.8; ctx.strokeRect(ux-5,uy-3,10,6);
-          // Crew count
-          ctx.fillStyle=uc+'70'; ctx.font='bold 4px monospace'; ctx.textAlign='center';
-          ctx.fillText('3',ux,uy+1.5);
+          ctx.fillStyle=uc+'50'; ctx.fillRect(ux-7,uy-4,14,8);
+          ctx.strokeStyle=uc+'AA'; ctx.lineWidth=1.2; ctx.strokeRect(ux-7,uy-4,14,8);
+          ctx.fillStyle=uc+'CC'; ctx.font='bold 6px monospace'; ctx.textAlign='center';
+          ctx.fillText('3',ux,uy+2);
         }
 
         // Unit ID label
-        ctx.fillStyle=uc+idleAlpha; ctx.font='bold 6px monospace'; ctx.textAlign='center'; ctx.fillText(u.id,ux,uy+16);
+        ctx.fillStyle=uc+(sim.fireDetected||unitHL?'DD':'80'); ctx.font='bold 8px monospace'; ctx.textAlign='center'; ctx.fillText(u.id,ux,uy+18);
 
         // Show road path for ground units (faint line)
         if (u._path && u._path.length > 0 && u._pi !== undefined && u._pi < u._path.length) {
@@ -2639,12 +2859,9 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
         icsEngine.strategy = ev.data.strategy;
         const sim = simRef.current;
         if (sim) {
-          // Trigger visible agent redistribution
+          // Apply strategy immediately — ALL changes trigger redistribution
+          applyStrategyToAgents(sim, ev.data.strategy);
           const changes = ev.data.changes || {};
-          if (changes.posture || changes.attackMode || changes.airPriority || changes.structMode) {
-            // Reassign unit targets based on new strategy
-            applyStrategyToAgents(sim, ev.data.strategy);
-          }
           sim.events.push({
             time: Date.now(), agent: 'IC',
             msg: `Strategy change: ${Object.entries(changes).map(([k,v]) => `${k}=${v}`).join(', ')}`,
@@ -2668,16 +2885,13 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
       <div ref={mapContainerRef} style={{ position:'absolute', inset:0, zIndex:1 }} />
 
       {/* Speed Slider + Fog of War */}
+      {/* Speed slider — top left, compact */}
       <div style={{ position:'absolute', top:8, left:8, zIndex:10, display:'flex', gap:6, alignItems:'center' }}>
         <div style={{ display:'flex', alignItems:'center', gap:4, background:'rgba(20,26,36,0.85)', border:'1px solid rgba(30,38,54,0.6)', padding:'4px 10px', borderRadius:6, backdropFilter:'blur(8px)' }}>
           <span style={{ fontSize:8, fontWeight:700, color:'#8896AB', fontFamily:'-apple-system,sans-serif', letterSpacing:'0.04em', minWidth:28 }}>{ui.speed}x</span>
           <input type="range" min={1} max={100} value={ui.speed} onChange={e => setSpeed(Number(e.target.value))}
             style={{ width:90, height:4, accentColor:'#EF4444', cursor:'pointer' }} />
         </div>
-        <label style={{ display:'flex', alignItems:'center', gap:4, cursor:'pointer', background:'rgba(20,26,36,0.85)', border:'1px solid rgba(30,38,54,0.6)', padding:'4px 8px', borderRadius:6, backdropFilter:'blur(8px)' }}>
-          <input type="checkbox" checked={fogOfWar} onChange={e => { setFogOfWar(e.target.checked); fogRef.current = e.target.checked; }} style={{ accentColor:'#22D3EE', width:12, height:12, cursor:'pointer' }} />
-          <span style={{ fontSize:9, fontWeight:700, color: fogOfWar ? '#22D3EE' : '#8896AB', fontFamily:'-apple-system,sans-serif', letterSpacing:'0.04em', transition:'color .15s' }}>FOG OF WAR</span>
-        </label>
       </div>
 
       {/* Status Badge */}

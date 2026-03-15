@@ -166,6 +166,7 @@ export default function DroneHUD({ droneIndex, onExit }) {
             transition: 'all 0.15s ease',
             backdropFilter: 'blur(4px)',
             WebkitBackdropFilter: 'blur(4px)',
+            pointerEvents: 'auto',
           }}
           onMouseEnter={e => {
             e.currentTarget.style.background = 'rgba(91,155,213,0.25)';

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useLayoutEffect, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import TerrainScene from './components/TerrainScene.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import StrategyPanel from './components/StrategyPanel.jsx';
@@ -6,6 +6,7 @@ import { colors, typography, radii } from './styles/designTokens.js';
 import { createPalisadesScenario } from './fireSpreadEngine.js';
 import { ICSEngine } from './icsEngine.js';
 import { DEFAULT_STRATEGY } from './strategyBehaviors.js';
+import { useVoiceControl, VoiceHint, VoiceToast } from './components/VoiceControl.jsx';
 
 const TW = 1440;
 const TH = 900;
@@ -18,8 +19,6 @@ const TYPE_COLORS = {
 export default function App() {
   const [tab, setTab] = useState('map');
   const [contextMenu, setContextMenu] = useState(null);
-  const [scale, setScale] = useState(1);
-  const scaleRef = useRef(1);
   const [simulationMode, setSimulationMode] = useState(false);
   const [commsLog, setCommsLog] = useState([]);
   const logIdRef = useRef(0);
@@ -27,6 +26,14 @@ export default function App() {
   const droneViewRef = useRef(null);
   const [strategy, setStrategy] = useState({ ...DEFAULT_STRATEGY });
   const [showStrategy, setShowStrategy] = useState(true);
+
+  // Voice control — hold V to talk
+  const handleStrategyChangeRef = useRef(null);
+  const { status: voiceStatus, toast: voiceToast } = useVoiceControl({
+    onStrategyChange: useCallback((changes) => {
+      handleStrategyChangeRef.current?.(changes);
+    }, []),
+  });
 
   const handleStrategyChange = useCallback((changes) => {
     setStrategy(prev => {
@@ -49,6 +56,7 @@ export default function App() {
       return next;
     });
   }, []);
+  handleStrategyChangeRef.current = handleStrategyChange;
 
   // Listen for ALL messages from ICS graph iframe, drone-view iframe, and TerrainScene
   useEffect(() => {
@@ -97,6 +105,10 @@ export default function App() {
       if (ev.data.type === 'manual_position_update') {
         window.postMessage(ev.data, '*');
       }
+      // === Toggle strategy panel from 3D iframe ===
+      if (ev.data.type === 'toggle_strategy') {
+        setShowStrategy(s => !s);
+      }
       // === Tab switch from 3D iframe ===
       if (ev.data.type === 'tab_switch' && ev.data.key) {
         if (ev.data.key === '1') setTab('3d');
@@ -127,6 +139,13 @@ export default function App() {
             iframe.contentWindow.postMessage({ type: 'enter_fpv', vehicleId: ev.data.vehicleId }, '*');
           }
         }, 300);
+      }
+      // === BRIDGE: minimap snapshot from TerrainScene → forward to 3D iframe ===
+      if (ev.data.type === 'minimap_snapshot' && ev.source === window) {
+        const iframe = droneViewRef.current;
+        if (iframe?.contentWindow) {
+          try { iframe.contentWindow.postMessage(ev.data, '*'); } catch(e) {}
+        }
       }
       // === BRIDGE: unit_positions from TerrainScene → forward to 3D iframe ===
       if (ev.data.type === 'unit_positions' && ev.source === window) {
@@ -165,21 +184,9 @@ export default function App() {
   const timeSlot = 0;
   const currentFireData = useMemo(() => projections?.now || null, [projections]);
 
-  useLayoutEffect(() => {
-    function update() {
-      const s = Math.min(window.innerWidth / TW, window.innerHeight / TH);
-      scaleRef.current = s;
-      setScale(s);
-    }
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
   const handleTerrainClick = useCallback((info) => {
     if (info) {
-      const s = scaleRef.current;
-      setContextMenu({ ...info, screenX: info.screenX / s, screenY: info.screenY / s });
+      setContextMenu({ ...info, screenX: info.screenX, screenY: info.screenY });
     }
   }, []);
   const closeMenu = useCallback(() => setContextMenu(null), []);
@@ -198,7 +205,7 @@ export default function App() {
       else if (ev.key === '1') { setTab('3d'); setTimeout(() => { const iframe = droneViewRef.current; if (iframe) { iframe.focus(); iframe.contentWindow?.postMessage({ type: 'request_pointer_lock' }, '*'); } }, 50); }
       else if (ev.key === '2') setTab('map');
       else if (ev.key === '3') setTab('command');
-      else if (ev.key.toLowerCase() === 'z') setShowStrategy(s => !s);
+      else if (ev.key.toLowerCase() === 'z') setShowStrategy(s => !s); // Z still toggles via keyboard
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -208,67 +215,28 @@ export default function App() {
   const isCmd = tab === 'command';
   const is3d = tab === '3d';
 
-  const mapStyle = isMap ? {
-    position: 'absolute', top: 0, left: 0, width: TW, height: TH,
-  } : {
-    position: 'absolute', top: 0,
-    left: Math.round(TW * 2 / 3),
-    width: Math.round(TW / 3),
-    height: Math.round(TH / 2),
-  };
+  const PANEL_W = 240;
+  const panelVisible = (isMap || is3d) && showStrategy;
 
   return (
-    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: colors.bg }}>
-      <div style={{
-        width: TW, height: TH, transformOrigin: 'top left',
-        transform: `scale(${scale})`, position: 'relative', background: colors.bg,
-      }}>
+    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: colors.bg, display: 'flex' }}>
+      {/* Main content area — fills everything left of the strategy panel */}
+      <div style={{ flex: 1, position: 'relative', height: '100vh', overflow: 'hidden' }}>
 
-        {/* Tab Switcher — always on top */}
-        <div style={{
+        {/* Tab Switcher — always on top, centered in content area */}
+        <div enable-xr="" style={{
           position: 'absolute', top: 8,
-          left: isMap || is3d ? '50%' : 12,
-          transform: isMap || is3d ? 'translateX(-50%)' : 'none',
+          left: '50%',
+          transform: 'translateX(-50%) translateZ(40px)',
           zIndex: 300, display: 'flex', gap: 2,
           background: 'rgba(10,14,22,0.85)', borderRadius: 6,
           border: `1px solid ${colors.border}`, padding: 2,
           backdropFilter: 'blur(12px)',
-          transition: 'left 0.3s, transform 0.3s',
         }}>
           <TabBtn active={is3d} onClick={() => { setTab('3d'); setTimeout(() => { const iframe = droneViewRef.current; if (iframe) { iframe.focus(); iframe.contentWindow?.postMessage({ type: 'request_pointer_lock' }, '*'); } }, 50); }} label="3D VIEW" shortcut="1" />
           <TabBtn active={isMap} onClick={() => setTab('map')} label="MAP" shortcut="2" />
           <TabBtn active={isCmd} onClick={() => setTab('command')} label="COMMAND" shortcut="3" />
         </div>
-
-        {/* Strategy Panel Toggle */}
-        {(isMap || is3d) && (
-          <button
-            onClick={() => setShowStrategy(s => !s)}
-            style={{
-              position: 'absolute', top: 8, left: showStrategy ? 248 : 8,
-              zIndex: 310, background: 'rgba(10,14,22,0.85)',
-              border: `1px solid ${colors.border}`, borderRadius: 4,
-              padding: '4px 8px', cursor: 'pointer',
-              color: showStrategy ? '#A78BFA' : '#64748B',
-              fontFamily: typography.monoFamily, fontSize: 8, fontWeight: 700,
-              letterSpacing: 1, transition: 'left 0.25s',
-              backdropFilter: 'blur(12px)',
-            }}
-          >{showStrategy ? '◀ HIDE' : '▶ ACTIONS'}</button>
-        )}
-
-        {/* Strategy Panel — left sidebar */}
-        {(isMap || is3d) && showStrategy && (
-          <div style={{
-            position: 'absolute', top: 0, left: 0, width: 240, height: TH,
-            zIndex: 250, transition: 'transform 0.25s',
-          }}>
-            <StrategyPanel
-              strategy={strategy}
-              onStrategyChange={handleStrategyChange}
-            />
-          </div>
-        )}
 
         {/* === 3D VIEW: drone-view iframe (always mounted, visibility toggled) === */}
         <iframe
@@ -276,7 +244,7 @@ export default function App() {
           src={DRONE_VIEW_URL}
           title="3D Drone View"
           style={{
-            position: 'absolute', top: 0, left: 0, width: TW, height: TH,
+            position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
             border: 'none',
             zIndex: is3d ? 200 : -1,
             opacity: is3d ? 1 : 0,
@@ -284,12 +252,19 @@ export default function App() {
           }}
         />
 
-        {/* TerrainScene — 2D map (single instance, repositioned by tab) */}
-        <div style={{
-          ...mapStyle, overflow: 'hidden', transition: 'all 0.3s ease',
+        {/* TerrainScene — 2D map (fills content area on map tab, small inset on command tab) */}
+        <div enable-xr="" style={{
+          position: 'absolute',
+          top: 0, left: 0,
+          width: isMap ? '100%' : isCmd ? '34%' : '100%',
+          height: isMap ? '100%' : isCmd ? '50%' : '100%',
+          ...(isCmd ? { left: 'auto', right: 0, top: 0 } : {}),
+          overflow: 'hidden', transition: 'all 0.3s ease',
           zIndex: isMap ? 1 : is3d ? -2 : 10,
           border: isMap || is3d ? 'none' : `1px solid ${colors.border}`,
-          display: is3d ? 'none' : 'block',
+          opacity: is3d ? 0 : 1,
+          pointerEvents: is3d ? 'none' : 'auto',
+          transform: isCmd ? 'translateZ(15px)' : undefined,
         }}>
           <TerrainScene
             timeSlot={timeSlot}
@@ -323,10 +298,11 @@ export default function App() {
         {/* Command View */}
         {isCmd && (
           <>
-            <div style={{
+            <div enable-xr="" style={{
               position: 'absolute', top: 0, left: 0,
-              width: Math.round(TW * 2 / 3), height: TH,
+              width: '66%', height: '100%',
               overflow: 'hidden', borderRight: `1px solid ${colors.border}`, zIndex: 5,
+              transform: 'translateZ(10px)',
             }}>
               <iframe src="/ics-graph.html"
                 style={{ width: '100%', height: '100%', border: 'none' }}
@@ -334,21 +310,39 @@ export default function App() {
             </div>
 
             {/* Bottom-right: Comms Log */}
-            <div style={{
+            <div enable-xr="" style={{
               position: 'absolute',
-              top: Math.round(TH / 2),
-              left: Math.round(TW * 2 / 3),
-              width: Math.round(TW / 3),
-              height: Math.round(TH / 2),
+              top: '50%', right: 0,
+              width: '34%', height: '50%',
               overflow: 'hidden', display: 'flex', flexDirection: 'column',
               background: 'rgba(10,14,22,0.95)',
               borderTop: `1px solid ${colors.border}`, zIndex: 10,
+              transform: 'translateZ(20px)',
             }}>
               <CommsLogPanel entries={commsLog} />
             </div>
           </>
         )}
       </div>
+
+      {/* Voice control UI */}
+      <VoiceToast toast={voiceToast} />
+      <VoiceHint status={voiceStatus} />
+
+      {/* Strategy Panel — RIGHT sidebar (outside the content area) */}
+      {(isMap || is3d) && showStrategy && (
+        <div enable-xr="" style={{
+          width: PANEL_W, height: '100vh', flexShrink: 0,
+          zIndex: 250, transform: 'translateZ(30px)',
+        }}>
+          <StrategyPanel
+            strategy={strategy}
+            onStrategyChange={handleStrategyChange}
+            sseUrl="/api/strategy/stream"
+          />
+        </div>
+      )}
+
     </div>
   );
 }

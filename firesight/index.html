@@ -87,6 +87,17 @@
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
+
+      /* WebSpatial: transparent background in spatial/XR mode */
+      html.is-spatial, html.is-spatial body, html.is-spatial #root {
+        background-color: transparent !important;
+        --xr-background-material: transparent;
+      }
+
+      /* Spatial panels float in front */
+      html.is-spatial [enable-xr] {
+        --xr-background-material: translucent;
+      }
     </style>
   </head>
   <body>

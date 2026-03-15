@@ -91,23 +91,38 @@ export default function StrategyPanel({ strategy, onStrategyChange, sseUrl }) {
   const [sseLog, setSseLog] = useState([]);
   const sseRef = useRef(null);
 
-  // SSE listener for OpenClaw commands
+  // SSE listener for OpenClaw commands (server broadcasts 'command' events)
   useEffect(() => {
     if (!sseUrl) return;
     const es = new EventSource(sseUrl);
-    es.addEventListener('strategy_change', (e) => {
+    // Listen for both 'command' (server broadcasts this) and 'strategy_change' (legacy)
+    const handler = (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.changes) {
+        // Server sends full strategy object; compute changes
+        if (data.strategy) {
+          const changes = {};
+          for (const [k, v] of Object.entries(data.strategy)) {
+            if (typeof v !== 'object') changes[k] = v;
+          }
+          onStrategyChange(changes);
+          setSseLog(prev => [{
+            time: new Date().toLocaleTimeString(),
+            cmd: data.command || 'remote',
+            source: data.source || 'O. Claw',
+          }, ...prev].slice(0, 20));
+        } else if (data.changes) {
           onStrategyChange(data.changes);
           setSseLog(prev => [{
             time: new Date().toLocaleTimeString(),
             cmd: data.command || 'remote',
-            source: 'O. Claw',
+            source: data.source || 'O. Claw',
           }, ...prev].slice(0, 20));
         }
       } catch {}
-    });
+    };
+    es.addEventListener('command', handler);
+    es.addEventListener('strategy_change', handler);
     sseRef.current = es;
     return () => es.close();
   }, [sseUrl, onStrategyChange]);

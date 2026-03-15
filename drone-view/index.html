@@ -42,8 +42,16 @@
       box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 8px rgba(0,229,255,0.08);
       backdrop-filter: blur(8px);
     }
+    #minimap {
+      position: absolute; bottom: 20px; right: 20px; z-index: 24;
+      width: 280px; height: 280px;
+      background: rgba(8,12,20,0.85); border: 1px solid rgba(0,229,255,0.2);
+      border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 0 8px rgba(0,229,255,0.06);
+      pointer-events: none;
+    }
     #hover-info {
-      position: absolute; bottom: 20px; right: 20px; z-index: 25; pointer-events: none;
+      position: absolute; bottom: 310px; right: 20px; z-index: 25; pointer-events: none;
       display: none; min-width: 180px; max-width: 260px;
       background: rgba(8,12,20,0.92); border: 1px solid rgba(0,229,255,0.25);
       border-radius: 8px; padding: 12px 16px; line-height: 1.6;
@@ -73,7 +81,7 @@
     }
     #fpv-exit:hover { background: rgba(255,60,60,0.35); color: #ff4422; }
     #vr-button {
-      position: absolute; bottom: 20px; right: 20px; z-index: 10;
+      position: absolute; bottom: 20px; right: 310px; z-index: 10;
       background: rgba(0,229,255,0.15); border: 1px solid rgba(0,229,255,0.5);
       border-radius: 4px; color: #00e5ff; padding: 10px 20px; cursor: pointer;
       font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.5px;
@@ -189,7 +197,7 @@
   </style>
 </head>
 <body>
-  <div id="info">
+  <div id="info" style="display:none">
     <span class="tag fire">FIRESIGHT</span>
     <span class="tag drone">DRONE VIEW</span>
     <span class="tag active" id="status">LOADING TILES...</span>
@@ -200,7 +208,7 @@
   <div id="crosshair"></div>
   <div id="altitude-bar"><div id="altitude-indicator"></div></div>
   <div id="altitude-label"></div>
-  <div id="controls">
+  <div id="controls" style="display:none">
     <button id="btn-palisades">PALISADES</button>
     <button id="btn-overhead">OVERHEAD</button>
     <button id="btn-street">STREET LEVEL</button>
@@ -219,6 +227,8 @@
     <span style="padding:2px 6px;border:1px solid rgba(255,255,255,0.15);border-radius:3px;color:rgba(255,255,255,0.5)">DBL-CLICK</span> IGNITE
   </div>
   <div id="vehicle-tooltip" style="display:none"></div>
+  <!-- Minimap -->
+  <canvas id="minimap" width="280" height="280"></canvas>
   <div id="hover-info"></div>
   <div id="fpv-banner"></div>
   <button id="fpv-exit">ESC — EXIT FPV</button>

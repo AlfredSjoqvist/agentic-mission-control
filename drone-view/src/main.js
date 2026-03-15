@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TilesRenderer, GlobeControls, Ellipsoid } from '3d-tiles-renderer';
 import { GoogleCloudAuthPlugin } from '3d-tiles-renderer/plugins';
-import { FireEngine, GRID_ROWS, GRID_COLS, LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX } from './fireEngine.js';
+import { FireEngine, GRID_ROWS, GRID_COLS, LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX, BURNING, BURNED } from './fireEngine.js';
 import { FireOverlay } from './fireOverlay.js';
 import { FireDrone } from './drone.js';
 import { ResponseHelicopter, ResponseAirTanker } from './vehicles.js';
@@ -193,7 +193,7 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 const _xAxis = new THREE.Vector3(1, 0, 0);
 
 function updateFlyCamera() {
-  if (fpvTarget || fpvZooming) return;
+  if (fpvTarget || fpvZooming || xrInVR) return;
 
   ellipsoid.getPositionToCartographic(camera.position, _flyCarto);
   ellipsoid.getEastNorthUpAxes(_flyCarto.lat, _flyCarto.lon, _flyEast, _flyNorth, _flyUp);
@@ -277,7 +277,7 @@ const allUnits = [
 // ============================================================
 // VEHICLE PROXIMITY DETECTION (ray → closest vehicle)
 // ============================================================
-const HIT_RADIUS_BASE = 35; // base world-unit tolerance (tighter hitbox)
+const HIT_RADIUS_BASE = 60; // base world-unit tolerance (scaled up with 2x meshes)
 const _proxyRaycaster = new THREE.Raycaster();
 const _proxyMouse = new THREE.Vector2();
 
@@ -509,6 +509,10 @@ function enterFPV(unit) {
   banner.style.display = '';
   exitBtn.style.display = '';
 
+  // Notify parent to show DroneHUD overlay
+  const unitType = unit.type || fpvUnitType || 'drone';
+  try { window.parent.postMessage({ type: 'fpv_enter', vehicleId: id, vehicleType: unitType }, '*'); } catch(ex) {}
+
   // Show command panel
   showCmdPanel(unit);
 
@@ -641,6 +645,9 @@ function exitFPV() {
   const navHintEl = document.getElementById('nav-hint');
   if (navHintEl) navHintEl.style.display = '';
 
+  // Notify parent to hide DroneHUD overlay
+  try { window.parent.postMessage({ type: 'fpv_exit' }, '*'); } catch(ex) {}
+
   console.log('[FPV] Exited first-person view');
   // Clear re-entrancy guard immediately — it only prevents double-calls within the same event
   _exitingFPV = false;
@@ -738,8 +745,8 @@ function showCmdPanel(unit) {
     // Bridge sprite — derive lat/lng from current ECEF position
     const carto = {};
     ellipsoid.getPositionToCartographic(v.group.position, carto);
-    manualLat = THREE.MathUtils.radToDeg(carto.latitude || 0);
-    manualLng = THREE.MathUtils.radToDeg(carto.longitude || 0);
+    manualLat = THREE.MathUtils.radToDeg(carto.lat || 0);
+    manualLng = THREE.MathUtils.radToDeg(carto.lon || 0);
     manualAlt = carto.height || 80;
   }
   manualSpeed = 0;
@@ -894,8 +901,8 @@ function updateManualControl(dt) {
     if (manualKeys.d) sideInput = 1;
 
     // Ascend / descend
-    if (manualKeys.space) manualAlt = Math.min(500, manualAlt + 1.5);
-    if (manualKeys.shift) manualAlt = Math.max(10, manualAlt - 1.5);
+    if (manualKeys.space) manualAlt = Math.min(800, manualAlt + 3);
+    if (manualKeys.shift) manualAlt = Math.max(10, manualAlt - 3);
 
     manualSpeed = fwdInput !== 0
       ? Math.max(-0.4, Math.min(1, manualSpeed + fwdInput * accel))
@@ -986,8 +993,11 @@ renderer.domElement.addEventListener('dblclick', (e) => {
 
   console.log('=== DOUBLE-CLICK ===');
 
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  // When pointer lock is active, clientX/clientY freeze — use screen center
+  const cx = document.pointerLockElement ? window.innerWidth / 2 : e.clientX;
+  const cy = document.pointerLockElement ? window.innerHeight / 2 : e.clientY;
+  mouse.x = (cx / window.innerWidth) * 2 - 1;
+  mouse.y = -(cy / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
 
   let lat, lng;
@@ -1144,27 +1154,414 @@ function updateHUD() {
 }
 
 // ============================================================
-// WEBXR
+// WEBXR + PICO CONTROLLER SUPPORT
 // ============================================================
+// Strategy: move entire world so headset is near origin (ECEF coords are millions of meters out)
+// We create a vrWorldGroup, reparent all scene children into it, and offset it.
+let xrSession = null;
+let xrInVR = false;
+let xrControllers = [null, null];
+let xrGamepads = [null, null];
+const xrControllerGrips = [null, null];
+const xrRayHelpers = [null, null];
+let xrRefSpace = null;
+
+// VR world offset — the ECEF position the headset is "at"
+const vrWorldPos = new THREE.Vector3();
+let vrWorldGroup = null; // parent group that holds the entire scene in VR
+const vrFly = { fwd: 0, strafe: 0, up: 0, yaw: 0, triggerL: false, triggerR: false, gripL: false, gripR: false };
+let vrPrevTriggerR = false;
+let vrPrevTriggerL = false;
+let vrPrevBtnA = false;
+let vrPrevBtnB = false;
+
+function buildControllerRay() {
+  // Ray length in meters (scene is now near origin in VR)
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, -500), // 500m ray
+  ]);
+  const mat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.5 });
+  return new THREE.Line(geo, mat);
+}
+
+function enterVRMode() {
+  // Save camera position as the VR world anchor
+  vrWorldPos.copy(camera.position);
+
+  // Create a group and reparent all scene children into it
+  vrWorldGroup = new THREE.Group();
+  const children = [...scene.children]; // snapshot
+  for (const child of children) {
+    if (child === vrWorldGroup) continue;
+    vrWorldGroup.add(child);
+  }
+  scene.add(vrWorldGroup);
+
+  // Offset the group so the camera position maps to near-origin
+  vrWorldGroup.position.set(-vrWorldPos.x, -vrWorldPos.y, -vrWorldPos.z);
+
+  // Orient the group so local "up" at camera pos = +Y, and camera forward = -Z
+  const carto = {};
+  ellipsoid.getPositionToCartographic(vrWorldPos, carto);
+  const east = new THREE.Vector3(), north = new THREE.Vector3(), up = new THREE.Vector3();
+  ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, east, north, up);
+
+  // Build rotation: ECEF east/north/up → XR right/forward/up (+X/−Z/+Y)
+  const rotMat = new THREE.Matrix4().makeBasis(east, up, north.clone().negate());
+  const rotQ = new THREE.Quaternion().setFromRotationMatrix(rotMat);
+  vrWorldGroup.quaternion.copy(rotQ);
+
+  // Apply rotation to position offset so it's in the rotated frame
+  vrWorldGroup.position.set(-vrWorldPos.x, -vrWorldPos.y, -vrWorldPos.z);
+  vrWorldGroup.position.applyQuaternion(rotQ);
+
+  // Reset camera for XR (headset will be near origin)
+  camera.position.set(0, 1.6, 0); // standing height
+  camera.quaternion.identity();
+
+  // Re-add lighting to scene (not in vrWorldGroup, so it stays near camera)
+  const ambLight = new THREE.HemisphereLight(0x9ec5ff, 0x4a3520, 0.5);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+  dirLight.position.set(100, 200, 100);
+  scene.add(ambLight);
+  scene.add(dirLight);
+
+  console.log('[VR] Entered VR, world offset:', vrWorldPos.toArray().map(v => v.toFixed(0)));
+}
+
+function exitVRMode() {
+  if (!vrWorldGroup) return;
+  // Restore camera position
+  camera.position.copy(vrWorldPos);
+
+  // Unparent everything from vrWorldGroup back to scene
+  const children = [...vrWorldGroup.children];
+  for (const child of children) {
+    scene.add(child);
+  }
+  scene.remove(vrWorldGroup);
+  vrWorldGroup = null;
+
+  // Restore fly camera orientation
+  const carto = {};
+  ellipsoid.getPositionToCartographic(camera.position, carto);
+  const east = new THREE.Vector3(), north = new THREE.Vector3(), up = new THREE.Vector3();
+  ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, east, north, up);
+  camera.up.copy(up);
+  flyCamPitch = -0.3;
+
+  console.log('[VR] Exited VR mode');
+}
+
 const vrButton = document.getElementById('vr-button');
 if ('xr' in navigator) {
   navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
     if (ok) {
       vrButton.classList.remove('hidden');
       vrButton.addEventListener('click', async () => {
-        const session = await navigator.xr.requestSession('immersive-vr', {
-          optionalFeatures: ['local-floor', 'bounded-floor'],
-        });
-        renderer.xr.enabled = true;
-        renderer.xr.setSession(session);
-        vrButton.textContent = 'IN VR';
-        session.addEventListener('end', () => {
-          renderer.xr.enabled = false;
-          vrButton.textContent = 'ENTER VR';
-        });
+        if (xrSession) return;
+        try {
+          const session = await navigator.xr.requestSession('immersive-vr', {
+            optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+          });
+          xrSession = session;
+          xrInVR = true;
+          renderer.xr.enabled = true;
+          await renderer.xr.setSession(session);
+          vrButton.textContent = 'IN VR';
+
+          // Reparent world
+          enterVRMode();
+
+          // Set up controllers — both can select/interact
+          for (let i = 0; i < 2; i++) {
+            const ctrl = renderer.xr.getController(i);
+            const grip = renderer.xr.getControllerGrip(i);
+            const rayLine = buildControllerRay();
+            ctrl.add(rayLine);
+            scene.add(ctrl);
+            scene.add(grip);
+            xrControllers[i] = ctrl;
+            xrControllerGrips[i] = grip;
+            xrRayHelpers[i] = rayLine;
+
+            ctrl.addEventListener('selectstart', () => {
+              if (i === 1) vrFly.triggerR = true;
+              if (i === 0) vrFly.triggerL = true;
+            });
+            ctrl.addEventListener('selectend', () => {
+              if (i === 1) vrFly.triggerR = false;
+              if (i === 0) vrFly.triggerL = false;
+            });
+            ctrl.addEventListener('squeezestart', () => {
+              if (i === 1) vrFly.gripR = true;
+              if (i === 0) vrFly.gripL = true;
+            });
+            ctrl.addEventListener('squeezeend', () => {
+              if (i === 1) vrFly.gripR = false;
+              if (i === 0) vrFly.gripL = false;
+            });
+          }
+
+          session.addEventListener('end', () => {
+            exitVRMode();
+            xrSession = null;
+            xrInVR = false;
+            renderer.xr.enabled = false;
+            vrButton.textContent = 'ENTER VR';
+            for (let i = 0; i < 2; i++) {
+              if (xrControllers[i]) scene.remove(xrControllers[i]);
+              if (xrControllerGrips[i]) scene.remove(xrControllerGrips[i]);
+              xrControllers[i] = null;
+              xrControllerGrips[i] = null;
+            }
+          });
+        } catch (e) {
+          console.error('[VR] Session start failed:', e);
+        }
       });
     }
   });
+}
+
+// ── VR Controller Input ──
+// Left stick = WASD (fwd/back/strafe), Right stick = yaw + altitude
+// Both triggers = select/mount unit (either hand works as mouse)
+// Grip = boost (either hand)
+// Head tracking naturally controls pitch/yaw via the headset
+function processVRControllers() {
+  if (!xrInVR || !xrSession) return;
+  const session = renderer.xr.getSession();
+  if (!session) return;
+
+  for (const source of session.inputSources) {
+    if (!source.gamepad) continue;
+    const gp = source.gamepad;
+    const hand = source.handedness === 'left' ? 0 : 1;
+    xrGamepads[hand] = gp;
+    const axes = gp.axes;
+    const btns = gp.buttons;
+
+    if (hand === 0) {
+      // LEFT STICK: forward/back (Y) + strafe (X)
+      vrFly.strafe = Math.abs(axes[2]) > 0.12 ? axes[2] : 0;
+      vrFly.fwd = Math.abs(axes[3]) > 0.12 ? -axes[3] : 0;
+      vrFly.gripL = btns[1]?.pressed || false;
+      vrFly.triggerL = btns[0]?.pressed || false;
+
+      // Left trigger = select unit (same as right — either hand works)
+      if (vrFly.triggerL && !vrPrevTriggerL) {
+        vrSelectUnit(0); // use left controller ray
+      }
+      vrPrevTriggerL = vrFly.triggerL;
+    }
+
+    if (hand === 1) {
+      // RIGHT STICK: yaw (X) + altitude (Y)
+      vrFly.yaw = Math.abs(axes[2]) > 0.12 ? axes[2] : 0;
+      vrFly.up = Math.abs(axes[3]) > 0.12 ? -axes[3] : 0;
+      vrFly.gripR = btns[1]?.pressed || false;
+      vrFly.triggerR = btns[0]?.pressed || false;
+
+      // Right trigger = select unit
+      if (vrFly.triggerR && !vrPrevTriggerR) {
+        vrSelectUnit(1); // use right controller ray
+      }
+      vrPrevTriggerR = vrFly.triggerR;
+
+      // A button = ignite at pointer
+      const btnA = btns[4]?.pressed || false;
+      if (btnA && !vrPrevBtnA) {
+        vrIgniteAtPointer(1);
+      }
+      vrPrevBtnA = btnA;
+
+      // B button = ignite at pointer (alternative)
+      const btnB = btns[5]?.pressed || false;
+      if (btnB && !vrPrevBtnB) {
+        vrIgniteAtPointer(0);
+      }
+      vrPrevBtnB = btnB;
+    }
+  }
+}
+
+// ── VR Action Helpers ──
+const _vrRayDir = new THREE.Vector3();
+const _vrRayOrigin = new THREE.Vector3();
+const _vrRaycaster = new THREE.Raycaster();
+
+function vrGetControllerRay(hand) {
+  const ctrl = xrControllers[hand];
+  if (!ctrl) return null;
+  ctrl.getWorldPosition(_vrRayOrigin);
+  ctrl.getWorldDirection(_vrRayDir).negate();
+  return { origin: _vrRayOrigin.clone(), direction: _vrRayDir.clone() };
+}
+
+function vrSelectUnit(hand) {
+  const ray = vrGetControllerRay(hand);
+  if (!ray || !vrWorldGroup) return;
+
+  // Transform ray into world (ECEF) space for hit testing
+  const invMat = new THREE.Matrix4().copy(vrWorldGroup.matrixWorld).invert();
+  ray.origin.applyMatrix4(invMat);
+  ray.direction.transformDirection(invMat).normalize();
+
+  let closest = null;
+  let closestDist = Infinity;
+  for (const [id, sprite] of agentSprites) {
+    if (!sprite.group.visible) continue;
+    const pos = sprite.group.position;
+    const v = new THREE.Vector3().subVectors(pos, ray.origin);
+    const projLen = v.dot(ray.direction);
+    if (projLen < 0) continue;
+    const closestOnRay = ray.origin.clone().add(ray.direction.clone().multiplyScalar(projLen));
+    const perpDist = closestOnRay.distanceTo(pos);
+    const hitR = Math.max(80, 80 * (ray.origin.distanceTo(pos) / 600));
+    if (perpDist < hitR && projLen < closestDist) {
+      closestDist = projLen;
+      closest = { id, sprite };
+    }
+  }
+  if (closest) {
+    const fakeUnit = {
+      vehicle: { id: closest.id, group: closest.sprite.group, _droneMesh: closest.sprite.mesh, _mesh: closest.sprite.mesh },
+      type: closest.sprite.type || 'drone',
+      isBridgeSprite: true,
+      bridgeId: closest.id,
+    };
+    enterFPV(fakeUnit);
+  }
+}
+
+function vrIgniteAtPointer(hand) {
+  const ray = vrGetControllerRay(hand);
+  if (!ray || !vrWorldGroup) return;
+
+  // Transform ray into ECEF space
+  const invMat = new THREE.Matrix4().copy(vrWorldGroup.matrixWorld).invert();
+  ray.origin.applyMatrix4(invMat);
+  ray.direction.transformDirection(invMat).normalize();
+
+  _vrRaycaster.set(ray.origin, ray.direction);
+  const hits = _vrRaycaster.intersectObject(tiles.group, true);
+  if (hits.length > 0) {
+    const carto = {};
+    ellipsoid.getPositionToCartographic(hits[0].point, carto);
+    const lat = carto.lat * 180 / Math.PI;
+    const lng = carto.lon * 180 / Math.PI;
+    fireEngine.igniteAtLatLng(lat, lng, 3);
+  }
+}
+
+// ── VR Flight — moves vrWorldGroup (the world moves around you) ──
+function updateVRFlight() {
+  if (!xrInVR || !vrWorldGroup) return;
+  if (fpvTarget) return;
+
+  // Get ENU axes at current world position
+  const carto = {};
+  ellipsoid.getPositionToCartographic(vrWorldPos, carto);
+  const east = new THREE.Vector3(), north = new THREE.Vector3(), up = new THREE.Vector3();
+  ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, east, north, up);
+
+  // Speed: grip on either hand = boost
+  const boost = vrFly.gripR || vrFly.gripL;
+  const speed = (boost ? 80 : 25) * 0.016;
+
+  // Get headset forward direction in world space for movement reference
+  const xrCam = renderer.xr.getCamera();
+  const headFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(xrCam.quaternion);
+  // Transform to ECEF direction
+  const invQ = vrWorldGroup.quaternion.clone().invert();
+  headFwd.applyQuaternion(invQ);
+  // Project onto tangent plane
+  const fwdN = headFwd.dot(north);
+  const fwdE = headFwd.dot(east);
+
+  const move = new THREE.Vector3();
+  // Left stick forward/back (in head direction)
+  move.addScaledVector(north, fwdN * vrFly.fwd * speed);
+  move.addScaledVector(east, fwdE * vrFly.fwd * speed);
+  // Left stick strafe
+  move.addScaledVector(east, vrFly.strafe * speed * 0.7);
+  // Right stick altitude
+  move.addScaledVector(up, vrFly.up * speed * 0.5);
+
+  // Update world position
+  vrWorldPos.add(move);
+
+  // Update world group offset
+  vrWorldGroup.position.set(-vrWorldPos.x, -vrWorldPos.y, -vrWorldPos.z);
+  // Recompute orientation for new position
+  ellipsoid.getPositionToCartographic(vrWorldPos, carto);
+  ellipsoid.getEastNorthUpAxes(carto.lat, carto.lon, east, north, up);
+  const rotMat = new THREE.Matrix4().makeBasis(east, up, north.clone().negate());
+  vrWorldGroup.quaternion.setFromRotationMatrix(rotMat);
+  vrWorldGroup.position.set(-vrWorldPos.x, -vrWorldPos.y, -vrWorldPos.z);
+  vrWorldGroup.position.applyQuaternion(vrWorldGroup.quaternion);
+
+  // Right stick yaw — snap-turn the world group
+  if (Math.abs(vrFly.yaw) > 0.1) {
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -vrFly.yaw * 0.03);
+    vrWorldGroup.quaternion.premultiply(yawQ);
+    vrWorldGroup.position.set(-vrWorldPos.x, -vrWorldPos.y, -vrWorldPos.z);
+    vrWorldGroup.position.applyQuaternion(vrWorldGroup.quaternion);
+  }
+}
+
+// ── VR FPV Control (when mounted on a unit in VR) ──
+function updateVRManualControl() {
+  if (!xrInVR || !fpvTarget || !fpvManualMode) return;
+
+  const isPlane = PLANE_TYPES.has(fpvUnitType);
+  const isHover = !isPlane;
+  const look = getCameraLookNE();
+  const cosLat = Math.max(0.01, Math.cos(THREE.MathUtils.degToRad(manualLat)));
+
+  if (isHover) {
+    const accel = 0.012;
+    const fwdInput = Math.abs(vrFly.fwd) > 0.1 ? vrFly.fwd : 0;
+    const sideInput = Math.abs(vrFly.strafe) > 0.1 ? vrFly.strafe : 0;
+
+    if (vrFly.up > 0.2) manualAlt = Math.min(800, manualAlt + 3);
+    if (vrFly.up < -0.2) manualAlt = Math.max(10, manualAlt - 3);
+
+    manualSpeed = fwdInput !== 0
+      ? Math.max(-0.4, Math.min(1, manualSpeed + fwdInput * accel))
+      : manualSpeed * 0.94;
+
+    const maxSpeed = 0.00018;
+    manualLat += look.north * manualSpeed * maxSpeed + (-look.east) * sideInput * 0.3 * maxSpeed;
+    manualLng += (look.east * manualSpeed * maxSpeed + look.north * sideInput * 0.3 * maxSpeed) / cosLat;
+
+    ellipsoid.getCartographicToPosition(
+      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, _manualNewPos
+    );
+    fpvTarget.group.position.copy(_manualNewPos);
+  } else if (isPlane) {
+    if (vrFly.gripR) manualSpeed = Math.min(1, manualSpeed + 0.01);
+    if (vrFly.gripL) manualSpeed = Math.max(0.15, manualSpeed - 0.02);
+
+    const bankInput = Math.abs(vrFly.strafe) > 0.1 ? vrFly.strafe : 0;
+    if (bankInput > 0) manualBankAngle = Math.min(0.6, manualBankAngle + 0.02);
+    else if (bankInput < 0) manualBankAngle = Math.max(-0.6, manualBankAngle - 0.02);
+    else manualBankAngle *= 0.94;
+
+    if (vrFly.up > 0.2) manualAlt = Math.max(100, manualAlt - 2);
+    if (vrFly.up < -0.2) manualAlt = Math.min(600, manualAlt + 2);
+
+    const maxSpeed = 0.00032;
+    manualLat += look.north * manualSpeed * maxSpeed;
+    manualLng += look.east * manualSpeed * maxSpeed / cosLat;
+
+    ellipsoid.getCartographicToPosition(
+      THREE.MathUtils.degToRad(manualLat), THREE.MathUtils.degToRad(manualLng), manualAlt, _manualNewPos
+    );
+    fpvTarget.group.position.copy(_manualNewPos);
+  }
 }
 
 // ============================================================
@@ -1195,6 +1592,19 @@ renderer.setAnimationLoop((time) => {
   _frameCount++;
   camera.updateMatrixWorld();
   tiles.update();
+
+  // ── VR controller input + flight ──
+  processVRControllers();
+  if (xrInVR) {
+    if (fpvTarget && fpvManualMode) {
+      updateVRManualControl();
+    } else {
+      updateVRFlight();
+    }
+    // Sync VR reference space to camera position every frame
+    _vrSyncRefSpace();
+  }
+
   updateFlyCamera();
   if (_frameCount % 4 === 0) updateHUD(); // throttle DOM updates
 
@@ -1213,8 +1623,10 @@ renderer.setAnimationLoop((time) => {
     v.update(fireEngine, camera);
   });
 
-  // Manual vehicle control
-  try { updateManualControl(0.016); } catch(err) { console.error('[manual]', err); }
+  // Manual vehicle control (keyboard — VR uses updateVRManualControl above)
+  if (!xrInVR) {
+    try { updateManualControl(0.016); } catch(err) { console.error('[manual]', err); }
+  }
 
   // ---- FPV camera follow ----
   if (fpvTarget) {
@@ -1225,20 +1637,23 @@ renderer.setAnimationLoop((time) => {
     _fpvUpOffset.copy(up).multiplyScalar(5);
     camera.position.copy(vPos).add(_fpvUpOffset);
 
-    // Build camera orientation from mouse yaw/pitch
-    _fpvRefRight.crossVectors(fpvRefFwd, up).normalize();
-    _fpvRefFwd2.crossVectors(up, _fpvRefRight).normalize();
+    // In VR, the headset controls orientation — only set position above
+    if (!xrInVR) {
+      // Build camera orientation from mouse yaw/pitch
+      _fpvRefRight.crossVectors(fpvRefFwd, up).normalize();
+      _fpvRefFwd2.crossVectors(up, _fpvRefRight).normalize();
 
-    // Base quaternion: orient camera so -Z looks along refFwd, +Y is up
-    _fpvNegFwd.copy(_fpvRefFwd2).negate();
-    _fpvBaseMat.makeBasis(_fpvRefRight, up, _fpvNegFwd);
-    _fpvBaseQ.setFromRotationMatrix(_fpvBaseMat);
+      // Base quaternion: orient camera so -Z looks along refFwd, +Y is up
+      _fpvNegFwd.copy(_fpvRefFwd2).negate();
+      _fpvBaseMat.makeBasis(_fpvRefRight, up, _fpvNegFwd);
+      _fpvBaseQ.setFromRotationMatrix(_fpvBaseMat);
 
-    // Yaw and pitch (local camera axes)
-    _fpvYawQ.setFromAxisAngle(_yAxis, fpvYaw);
-    _fpvPitchQ.setFromAxisAngle(_xAxis, fpvPitch);
+      // Yaw and pitch (local camera axes)
+      _fpvYawQ.setFromAxisAngle(_yAxis, fpvYaw);
+      _fpvPitchQ.setFromAxisAngle(_xAxis, fpvPitch);
 
-    camera.quaternion.copy(_fpvBaseQ).multiply(_fpvYawQ).multiply(_fpvPitchQ);
+      camera.quaternion.copy(_fpvBaseQ).multiply(_fpvYawQ).multiply(_fpvPitchQ);
+    }
   }
 
   renderer.render(scene, camera);
@@ -1279,8 +1694,13 @@ function buildQuadcopterMesh(color, s = 3) {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
   const accentMat = new THREE.MeshBasicMaterial({ color });
+  const rotorMat = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.15, side: THREE.DoubleSide });
   // Body
   g.add(new THREE.Mesh(new THREE.BoxGeometry(0.5*s, 0.12*s, 0.35*s), bodyMat));
+  // Accent stripe on body
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.3*s, 0.03*s, 0.36*s), accentMat);
+  stripe.position.set(0, 0.02*s, 0);
+  g.add(stripe);
   // 4 arms + rotors
   const armLen = 0.5*s, armR = 0.03*s, rotorR = 0.22*s;
   for (let i = 0; i < 4; i++) {
@@ -1291,27 +1711,27 @@ function buildQuadcopterMesh(color, s = 3) {
     arm.rotation.y = ang;
     arm.position.set(ax * 0.5, 0, az * 0.5);
     g.add(arm);
-    // Rotor disc
+    // Rotor disc — neutral gray, not accent color
     const disc = new THREE.Mesh(
       new THREE.CylinderGeometry(rotorR, rotorR, 0.01*s, 12),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide })
+      rotorMat
     );
     disc.position.set(ax, 0.08*s, az);
     g.add(disc);
     allRotors.push({ mesh: disc, speed: 12 + Math.random() * 4 });
-    // Motor
-    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.04*s, 0.04*s, 0.06*s, 8), accentMat);
+    // Motor hub
+    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.04*s, 0.04*s, 0.06*s, 8), new THREE.MeshBasicMaterial({ color: 0x333333 }));
     motor.position.set(ax, 0.04*s, az);
     g.add(motor);
   }
-  // LED
+  // LED — keep accent color here, it's small
   const led = new THREE.Mesh(new THREE.SphereGeometry(0.03*s, 6, 4), new THREE.MeshBasicMaterial({ color }));
   led.position.set(-0.2*s, 0.08*s, 0);
   g.add(led);
-  // Scan beam (downward cone)
+  // Scan beam (downward cone) — subtle cyan instead of pink
   const beam = new THREE.Mesh(
     new THREE.ConeGeometry(0.15*s, 0.8*s, 8, 1, true),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ color: 0x22D3EE, transparent: true, opacity: 0.06, side: THREE.DoubleSide })
   );
   beam.position.y = -0.5*s;
   beam.rotation.x = Math.PI;
@@ -1323,8 +1743,13 @@ function buildHelicopterMesh(color, s = 4) {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
   const accentMat = new THREE.MeshBasicMaterial({ color });
+  const rotorMat = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
   // Fuselage
   g.add(new THREE.Mesh(new THREE.BoxGeometry(0.7*s, 0.22*s, 0.3*s), bodyMat));
+  // Accent stripe on fuselage
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.5*s, 0.04*s, 0.31*s), accentMat);
+  stripe.position.set(0, 0.02*s, 0);
+  g.add(stripe);
   // Tail boom
   const tail = new THREE.Mesh(new THREE.BoxGeometry(0.6*s, 0.08*s, 0.08*s), bodyMat);
   tail.position.set(-0.6*s, 0.05*s, 0);
@@ -1333,21 +1758,25 @@ function buildHelicopterMesh(color, s = 4) {
   const fin = new THREE.Mesh(new THREE.BoxGeometry(0.02*s, 0.2*s, 0.12*s), accentMat);
   fin.position.set(-0.9*s, 0.15*s, 0);
   g.add(fin);
-  // Tail rotor
+  // Tail rotor — neutral gray, not pink
   const tailRotor = new THREE.Mesh(
     new THREE.CylinderGeometry(0.08*s, 0.08*s, 0.01*s, 8),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4 })
+    rotorMat
   );
   tailRotor.rotation.x = Math.PI / 2;
   tailRotor.position.set(-0.9*s, 0.15*s, 0.07*s);
   g.add(tailRotor);
   allRotors.push({ mesh: tailRotor, speed: 18 });
-  // Main rotor disc
+  // Rotor mast
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.02*s, 0.02*s, 0.1*s, 6), new THREE.MeshBasicMaterial({ color: 0x444444 }));
+  mast.position.set(0, 0.14*s, 0);
+  g.add(mast);
+  // Main rotor disc — neutral translucent gray
   const mainRotor = new THREE.Mesh(
     new THREE.CylinderGeometry(0.55*s, 0.55*s, 0.01*s, 16),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
+    rotorMat
   );
-  mainRotor.position.y = 0.18*s;
+  mainRotor.position.y = 0.20*s;
   g.add(mainRotor);
   allRotors.push({ mesh: mainRotor, speed: 10 });
   // Skids
@@ -1366,19 +1795,25 @@ function buildHelicopterMesh(color, s = 4) {
 function buildPlaneMesh(color, s = 5) {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a });
+  const wingMat = new THREE.MeshBasicMaterial({ color: 0x3a4a5a });
   const accentMat = new THREE.MeshBasicMaterial({ color });
   // Fuselage
   g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.08*s, 0.06*s, 1.0*s, 8), bodyMat));
   g.children[0].rotation.z = Math.PI / 2;
-  // Wings
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(0.15*s, 0.02*s, 1.2*s), accentMat);
+  // Accent stripe along fuselage
+  const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.085*s, 0.065*s, 0.3*s, 8), accentMat);
+  stripe.rotation.z = Math.PI / 2;
+  stripe.position.set(0.1*s, 0, 0);
+  g.add(stripe);
+  // Wings — neutral gray, not accent color
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(0.15*s, 0.02*s, 1.2*s), wingMat);
   wing.position.set(0.05*s, 0, 0);
   g.add(wing);
   // Tail horizontal stabilizer
-  const hstab = new THREE.Mesh(new THREE.BoxGeometry(0.08*s, 0.02*s, 0.4*s), accentMat);
+  const hstab = new THREE.Mesh(new THREE.BoxGeometry(0.08*s, 0.02*s, 0.4*s), wingMat);
   hstab.position.set(-0.45*s, 0.02*s, 0);
   g.add(hstab);
-  // Tail vertical stabilizer
+  // Tail vertical stabilizer — accent color (small, visible identifier)
   const vstab = new THREE.Mesh(new THREE.BoxGeometry(0.08*s, 0.18*s, 0.02*s), accentMat);
   vstab.position.set(-0.45*s, 0.1*s, 0);
   g.add(vstab);
@@ -1678,23 +2113,23 @@ function createAgentSprite(id, type, dtype) {
   try {
     if (type === 'drone' || (!GROUND_TYPES.has(type) && !AIR_TYPES.has(type))) {
       mesh = (dtype === 'mapper' || dtype === 'reaper')
-        ? buildPlaneMesh(color, dtype === 'reaper' ? 8 : 5)
-        : buildQuadcopterMesh(color, 5);
+        ? buildPlaneMesh(color, dtype === 'reaper' ? 16 : 10)
+        : buildQuadcopterMesh(color, 10);
     } else if (type === 'heli') {
-      mesh = buildHelicopterMesh(color, 6);
+      mesh = buildHelicopterMesh(color, 12);
     } else if (AIR_TYPES.has(type)) {
-      mesh = buildPlaneMesh(color, type === 'air' ? 8 : 6);
+      mesh = buildPlaneMesh(color, type === 'air' ? 16 : 12);
     } else if (type === 'hotshot' || type === 'crew') {
-      mesh = buildCrewMesh(color, 4);
+      mesh = buildCrewMesh(color, 8);
     } else {
-      mesh = buildGroundVehicleMesh(color, type === 'dozer' ? 6 : 5);
+      mesh = buildGroundVehicleMesh(color, type === 'dozer' ? 12 : 10);
     }
   } catch (e) {
     console.warn('[BRIDGE] Mesh build failed for', id, type, dtype, e.message);
-    mesh = buildFallbackSphere(color, 5);
+    mesh = buildFallbackSphere(color, 10);
   }
 
-  if (!mesh) mesh = buildFallbackSphere(color, 5);
+  if (!mesh) mesh = buildFallbackSphere(color, 10);
 
   // Disable depth test on all materials so sprites render above 3D tiles
   mesh.traverse((child) => {
@@ -2081,6 +2516,13 @@ window.addEventListener('message', (ev) => {
       enterFPV(fakeUnit);
     }
   }
+
+  // Remote FPV exit from parent (DroneHUD exit button)
+  if (ev.data.type === 'exit_fpv') {
+    if (fpvTarget || fpvZooming) {
+      exitFPV();
+    }
+  }
 });
 
 // Periodic cleanup
@@ -2109,3 +2551,96 @@ const _origLoop = renderer.getAnimationLoop && renderer.getAnimationLoop();
   lerpSpritesFrame();
   requestAnimationFrame(spinRotors);
 })();
+
+// ============================================================
+// MINIMAP — receives snapshots from the 2D map (TerrainScene) via postMessage
+// ============================================================
+const _minimapCanvas = document.getElementById('minimap');
+const _mmCtx = _minimapCanvas ? _minimapCanvas.getContext('2d') : null;
+const _mmW = 280, _mmH = 280;
+let _mmImg = null;
+let _mmReady = false;
+
+// Listen for minimap snapshots from parent (forwarded from TerrainScene)
+window.addEventListener('message', (ev) => {
+  if (ev.data?.type === 'minimap_snapshot' && ev.data.dataUrl) {
+    if (!_mmImg) {
+      _mmImg = new Image();
+      _mmImg.onload = () => {
+        _mmReady = true;
+        drawMinimap();
+      };
+    }
+    _mmImg.src = ev.data.dataUrl;
+  }
+});
+
+function drawMinimap() {
+  if (!_mmCtx || !_mmReady || !_mmImg) return;
+  _mmCtx.drawImage(_mmImg, 0, 0, _mmW, _mmH);
+  // Label
+  _mmCtx.fillStyle = 'rgba(0,229,255,0.35)';
+  _mmCtx.font = '8px monospace';
+  _mmCtx.fillText('TACTICAL MAP', 8, 14);
+}
+
+// ============================================================
+// OPENCLAW SSE — listen for strategy commands from server
+// ============================================================
+const SSE_URL = 'http://localhost:3001/api/strategy/stream';
+let _lastStrategy = {};
+
+// Connect to SSE
+try {
+  const es = new EventSource(SSE_URL);
+  es.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.type === 'init' && data.strategy) {
+        _lastStrategy = { ...data.strategy };
+      }
+    } catch {}
+  };
+  es.addEventListener('command', (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.strategy) {
+        // Compute what changed
+        const changes = {};
+        for (const [k, v] of Object.entries(data.strategy)) {
+          if (typeof v !== 'object' && _lastStrategy[k] !== v) {
+            changes[k] = v;
+          }
+        }
+        _lastStrategy = { ...data.strategy };
+
+        // Forward strategy to parent (firesight App.jsx) so TerrainScene agents update
+        window.parent.postMessage({
+          type: 'strategy_update',
+          strategy: data.strategy,
+          changes,
+          source: 'openclaw',
+        }, '*');
+
+        if (Object.keys(changes).length > 0) {
+          console.log('[OPENCLAW] Strategy changed:', changes);
+        }
+      }
+    } catch {}
+  });
+  es.onerror = () => { /* silent — server may not be running */ };
+  console.log('[OPENCLAW] SSE connected to', SSE_URL);
+} catch (e) {
+  console.warn('[OPENCLAW] SSE connection failed:', e.message);
+}
+
+// Also listen for strategy_update from parent (when user changes strategy in UI)
+window.addEventListener('message', (ev) => {
+  if (ev.data?.type === 'strategy_update' && ev.data.strategy) {
+    const changes = ev.data.changes || {};
+    // Announce UI-driven changes too
+    if (Object.keys(changes).length > 0 && ev.data.source !== 'openclaw') {
+      announceStrategyChange(null, changes);
+    }
+  }
+});

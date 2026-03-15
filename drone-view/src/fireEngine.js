@@ -85,30 +85,33 @@ export class FireEngine {
         // Ocean cells get negative elevation — noisy coastline for organic shape
         // Expanded coastline covering Ventura to Long Beach
         // Approximate Southern California coastline (lat as function of lng)
+        // Coastline approximation — Malibu to Santa Monica to Palos Verdes
         let coastBase;
         if (lng < -118.95) {
-          // Ventura coast — runs roughly east-west at ~34.27
-          coastBase = 34.27;
-        } else if (lng < -118.75) {
-          // Malibu west — coast curves south from 34.27 to 34.04
-          coastBase = 34.27 + (lng + 118.95) * 1.15;
+          // Far west past Point Dume — coast curves north along PCH
+          coastBase = 34.04 + (lng + 119.00) * 1.0;
+        } else if (lng < -118.80) {
+          // Point Dume to Malibu — coast runs ~ENE around 34.03-34.04
+          coastBase = 34.03 + (lng + 118.95) * 0.1;
+        } else if (lng < -118.65) {
+          // Malibu Colony to Pepperdine — coast at ~34.03
+          coastBase = 34.035 + (lng + 118.80) * 0.03;
         } else if (lng < -118.53) {
-          // Malibu to Palisades — coast ~34.04 to 34.03
-          coastBase = 34.04 + (lng + 118.75) * 0.05;
+          // Pepperdine to Pacific Palisades — coast drops to ~34.02
+          coastBase = 34.04 + (lng + 118.65) * 0.08;
         } else if (lng < -118.49) {
-          // Palisades to Santa Monica — 34.03 to 34.015
-          coastBase = 34.03 + (lng + 118.53) * 0.375;
+          // Pacific Palisades bluffs — coast at ~34.03
+          coastBase = 34.03 + (lng + 118.53) * 0.25;
         } else if (lng < -118.40) {
-          // Santa Monica to Marina/LAX — 34.015 to 33.96
-          coastBase = 34.015 + (lng + 118.49) * 0.61;
+          // Santa Monica to Venice — coast drops south to ~34.01
+          coastBase = 34.015 + (lng + 118.49) * 0.5;
         } else if (lng < -118.25) {
-          // LAX to Palos Verdes — coast dips to ~33.75 then curves
-          coastBase = 33.96 + (lng + 118.40) * 1.4;
+          // Marina del Rey to LAX — coast at ~33.96
+          coastBase = 33.96 + (lng + 118.40) * 0.6;
         } else if (lng < -118.10) {
-          // San Pedro / Long Beach — coast ~33.72 to 33.76
-          coastBase = 33.75 + (lng + 118.25) * (-0.27);
+          // South Bay — Redondo, Hermosa
+          coastBase = 33.86 + (lng + 118.25) * 0.1;
         } else {
-          // East of Long Beach — coast ~33.76
           coastBase = 33.76;
         }
         const coastNoise = fbm(lat * 40, lng * 40, 7) * 0.005 - 0.0025;

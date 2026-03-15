@@ -3,379 +3,1084 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenClaw Command Debug</title>
+<title>FireSight — Strategy Debug</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: #0A0D11; color: #D4DAE3;
     font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
-    overflow: hidden; height: 100vh;
+    height: 100vh; display: flex; flex-direction: column;
   }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
 
   .header {
-    padding: 12px 16px 10px; display: flex; align-items: center; gap: 10;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 10px 16px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0;
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; }
   .dot.live { background: #22C55E; box-shadow: 0 0 8px #22C55E; }
   .dot.dead { background: #EF4444; box-shadow: 0 0 8px #EF4444; }
-  .header-title { font-size: 10px; color: #64748B; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; }
-  .header-status { margin-left: auto; font-size: 9px; letter-spacing: 0.5px; }
 
+  .main { display: flex; flex: 1; overflow: hidden; }
+  .left { flex: 1; overflow-y: auto; border-right: 1px solid rgba(255,255,255,0.06); }
+  .right { width: 320px; display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+
+  /* Strategy categories */
+  .cat {
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    padding: 10px 14px 8px;
+  }
+  .cat-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  }
+  .cat-name {
+    font-size: 8px; letter-spacing: 2px; text-transform: uppercase;
+    font-weight: 700; color: #64748B;
+  }
+  .cat-protocol {
+    font-size: 7px; color: #334155; letter-spacing: 0.5px;
+    margin-left: auto;
+  }
+  .cat-active {
+    font-size: 8px; padding: 1px 6px; border-radius: 3px;
+    font-weight: 700; letter-spacing: 0.5px;
+  }
+  .options { display: flex; flex-wrap: wrap; gap: 4px; }
+  .opt {
+    font-size: 10px; padding: 5px 10px; border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+    color: #64748B; cursor: pointer;
+    transition: all 0.15s; position: relative;
+  }
+  .opt:hover { background: rgba(255,255,255,0.05); color: #94A3B8; }
+  .opt.active {
+    border-color: var(--cat-color, #A78BFA);
+    color: var(--cat-color, #A78BFA);
+    background: color-mix(in srgb, var(--cat-color, #A78BFA) 10%, transparent);
+    font-weight: 700;
+  }
+  .opt .confirm-dot {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: #EF4444; position: absolute; top: 3px; right: 3px;
+  }
+
+  /* Tooltip on hover */
+  .opt[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute; bottom: calc(100% + 6px); left: 50%;
+    transform: translateX(-50%); white-space: nowrap;
+    font-size: 9px; font-weight: 400; color: #94A3B8;
+    background: #1E2636; border: 1px solid rgba(255,255,255,0.08);
+    padding: 4px 8px; border-radius: 4px; z-index: 100;
+    pointer-events: none; letter-spacing: 0;
+  }
+
+  /* Right panel */
   .last-cmd {
-    padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
-    transition: background 0.3s;
+    padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
   }
-  .last-cmd.active { background: rgba(167,139,250,0.06); }
-  .last-cmd-label { font-size: 8px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 5px; }
-  .last-cmd-value { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; color: #334155; transition: color 0.3s; }
+  .last-cmd-label { font-size: 7px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 4px; }
+  .last-cmd-value { font-size: 14px; font-weight: 700; color: #334155; transition: color 0.3s; }
   .last-cmd-value.active { color: #A78BFA; }
-  .last-cmd-meta { font-size: 8px; color: #475569; margin-top: 4px; }
-  .confirmed-badge { color: #EF4444; margin-left: 8px; font-weight: 700; }
+  .last-cmd-meta { font-size: 8px; color: #475569; margin-top: 3px; }
 
-  .history {
-    padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
-    max-height: 120px; overflow-y: auto;
+  .history { flex: 1; overflow-y: auto; padding: 6px 14px; }
+  .history-title { font-size: 7px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 4px; }
+  .hist-entry {
+    font-size: 9px; padding: 3px 0 3px 8px; display: flex; gap: 8px;
+    border-left: 2px solid transparent; color: #475569;
   }
-  .history-title { font-size: 8px; color: #64748B; letter-spacing: 1.5px; margin-bottom: 5px; }
-  .history-entry {
-    font-size: 9px; padding: 2px 0 2px 8px; display: flex; gap: 8;
-    border-left: 2px solid transparent;
-  }
-  .history-entry.latest { border-left-color: #A78BFA; color: #A78BFA; font-weight: 700; }
-  .history-time { color: #334155; width: 60px; flex-shrink: 0; }
+  .hist-entry.latest { border-left-color: #A78BFA; color: #A78BFA; font-weight: 700; }
+  .hist-time { color: #334155; width: 55px; flex-shrink: 0; }
 
-  .filters {
-    padding: 8px 16px 6px; border-bottom: 1px solid rgba(255,255,255,0.06);
-    display: flex; flex-wrap: wrap; gap: 4;
-  }
-  .filter-btn {
-    font-size: 8px; letter-spacing: 0.8px; font-weight: 700;
-    font-family: inherit; color: #475569;
-    background: transparent; border: 1px solid #1E2636;
-    border-radius: 3px; padding: 3px 8px; cursor: pointer;
-    transition: all 0.15s;
-  }
-  .filter-btn.active { color: var(--cat-color); background: color-mix(in srgb, var(--cat-color) 10%, transparent); border-color: color-mix(in srgb, var(--cat-color) 30%, transparent); }
-  .filter-btn:hover { background: rgba(255,255,255,0.03); }
-
-  .cmd-list { flex: 1; overflow-y: auto; }
-  .cmd-row {
-    padding: 7px 16px; display: flex; align-items: center; gap: 10;
-    border-bottom: 1px solid rgba(255,255,255,0.02);
-    border-left: 3px solid transparent; cursor: default;
-    transition: background 0.12s;
-  }
-  .cmd-row:hover { background: rgba(255,255,255,0.02); }
-  .cmd-row.active { background: rgba(167,139,250,0.12); border-left-color: #A78BFA; }
-  .cmd-dot {
-    width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
-    border: 1px solid #1E2636;
-  }
-  .cmd-dot.active { background: #A78BFA; border-color: #A78BFA; box-shadow: 0 0 8px #A78BFA; }
-  .cmd-name { flex: 1; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: #94A3B8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cmd-name.active { color: #A78BFA; }
-  .role-badge {
-    font-size: 7px; letter-spacing: 0.5px; padding: 2px 6px;
-    border-radius: 3px; white-space: nowrap; flex-shrink: 0;
-    opacity: 0.8;
-  }
-  .confirm-badge {
-    font-size: 7px; letter-spacing: 0.5px; color: #EF4444;
-    background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25);
-    padding: 2px 5px; border-radius: 3px; flex-shrink: 0;
-  }
-
-  .tooltip {
-    position: fixed; width: 320px; padding: 12px 14px;
-    background: #151920; border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-    z-index: 10000; pointer-events: none; display: none;
-  }
-  .tooltip.show { display: block; }
-  .tooltip-title { font-size: 12px; font-weight: 700; color: #D4DAE3; margin-bottom: 4px; letter-spacing: 0.5px; }
-  .tooltip-cat { font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; }
-  .tooltip-desc { font-size: 11px; color: #94A3B8; line-height: 1.6; font-family: 'Inter', -apple-system, sans-serif; }
-  .tooltip-confirm {
-    font-size: 9px; color: #EF4444; margin-top: 8px;
-    padding: 4px 8px; background: rgba(239,68,68,0.08);
-    border-radius: 4px; border: 1px solid rgba(239,68,68,0.2);
-  }
-
-  .layout { display: flex; flex-direction: column; height: 100vh; }
-
-  /* Manual test bar */
   .test-bar {
-    padding: 8px 16px; border-top: 1px solid rgba(255,255,255,0.06);
-    display: flex; gap: 6; flex-shrink: 0;
+    padding: 8px 14px; border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex; gap: 6px; flex-shrink: 0;
   }
   .test-input {
     flex: 1; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
     border-radius: 4px; padding: 6px 10px; color: #D4DAE3;
-    font-family: inherit; font-size: 11px; outline: none;
+    font-family: inherit; font-size: 10px; outline: none;
   }
   .test-input:focus { border-color: #A78BFA; }
   .test-btn {
     background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.3);
-    border-radius: 4px; padding: 6px 14px; color: #A78BFA;
-    font-family: inherit; font-size: 10px; font-weight: 700;
+    border-radius: 4px; padding: 6px 12px; color: #A78BFA;
+    font-family: inherit; font-size: 9px; font-weight: 700;
     letter-spacing: 1px; cursor: pointer;
   }
-  .test-btn:hover { background: rgba(167,139,250,0.2); }
+
+  /* Voice control */
+  @keyframes micRing {
+    0%   { box-shadow: 0 0 0 0 rgba(224, 64, 64, 0.55); }
+    70%  { box-shadow: 0 0 0 7px rgba(224, 64, 64, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(224, 64, 64, 0); }
+  }
+  @keyframes micPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .mic-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 11px; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 4px;
+    cursor: pointer; outline: none; transition: all 0.2s;
+  }
+  .mic-btn:hover { background: rgba(255,255,255,0.07); }
+  .mic-btn.recording {
+    border-color: rgba(224,64,64,0.4); background: rgba(224,64,64,0.1);
+    animation: micRing 1.2s ease-in-out infinite;
+  }
+  .mic-btn.transcribing {
+    border-color: rgba(91,155,213,0.4); background: rgba(91,155,213,0.08);
+    opacity: 0.7; cursor: default;
+  }
+  .mic-label {
+    font-size: 9px; letter-spacing: 0.09em; user-select: none;
+    transition: color 0.2s;
+  }
+  .voice-toast {
+    position: fixed; top: 50px; left: 50%; transform: translateX(-50%);
+    z-index: 200; display: flex; align-items: center; gap: 10px;
+    padding: 6px 18px; background: rgba(8,11,16,0.92);
+    backdrop-filter: blur(20px); border-radius: 20px;
+    pointer-events: none; white-space: nowrap;
+    animation: toastIn 0.22s ease;
+  }
+  .voice-toast.exiting { animation: toastOut 0.4s ease forwards; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+  @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
+  .voice-toast .heard { font-size: 10px; color: #94A3B8; opacity: 0.65; letter-spacing: 0.02em; }
+  .voice-toast .arrow { font-size: 9px; color: #475569; }
+  .voice-toast .toast-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .voice-toast .toast-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; }
+  .speaking-indicator {
+    font-size: 8px; color: #22C55E; letter-spacing: 1px;
+    animation: micPulse 0.8s ease infinite;
+  }
+
+  .section-label {
+    font-size: 7px; color: #475569; letter-spacing: 1.5px; padding: 8px 14px 2px;
+    text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+
+  /* Additive items (evac zones, crew extensions) */
+  .additive-list { padding: 4px 0; }
+  .additive-item {
+    font-size: 9px; padding: 2px 8px; display: flex; gap: 6px; color: #64748B;
+  }
+  .additive-item .zone { color: #22D3EE; font-weight: 600; width: 40px; }
+  .additive-item .level { font-weight: 700; }
+
+  .empty-msg { font-size: 9px; color: #1E2636; padding: 4px 0; font-style: italic; }
 </style>
 </head>
 <body>
-<div class="layout">
-  <div class="header">
-    <div class="dot" id="statusDot"></div>
-    <span class="header-title">OpenClaw Command Debug</span>
-    <span class="header-status" id="statusText"></span>
-  </div>
-
-  <div class="last-cmd" id="lastCmdBox">
-    <div class="last-cmd-label">LAST COMMAND FROM TELEGRAM BOT</div>
-    <div class="last-cmd-value" id="lastCmdValue">Waiting for Telegram command...</div>
-    <div class="last-cmd-meta" id="lastCmdMeta"></div>
-  </div>
-
-  <div class="history" id="historyBox" style="display:none">
-    <div class="history-title">COMMAND HISTORY (<span id="historyCount">0</span>)</div>
-    <div id="historyList"></div>
-  </div>
-
-  <div class="filters" id="filterBar"></div>
-
-  <div class="cmd-list" id="cmdList"></div>
-
-  <!-- Manual test input -->
-  <div class="test-bar">
-    <input class="test-input" id="testInput" placeholder="Type command to test (e.g. strategy defensive)" />
-    <button class="test-btn" id="testBtn">SEND</button>
-  </div>
+<div class="header">
+  <div class="dot" id="statusDot"></div>
+  <span style="font-size:10px;color:#64748B;letter-spacing:2px;text-transform:uppercase;font-weight:700">
+    FIRESIGHT STRATEGY DEBUG
+  </span>
+  <span style="flex:1"></span>
+  <span class="speaking-indicator" id="speakingInd" style="display:none">SPEAKING</span>
+  <button class="mic-btn" id="micBtn" title="Click to speak a command">
+    <svg width="10" height="13" viewBox="0 0 10 13" fill="none" style="flex-shrink:0">
+      <rect x="3" y="0.5" width="4" height="7" rx="2" fill="currentColor"/>
+      <path d="M1 6C1 8.5 2.5 10 5 10C7.5 10 9 8.5 9 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+      <line x1="5" y1="10" x2="5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      <line x1="3" y1="12" x2="7" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+    <span class="mic-label" id="micLabel" style="color:#64748B">VOICE</span>
+  </button>
+  <span style="font-size:8px;letter-spacing:0.5px" id="statusText"></span>
 </div>
 
-<div class="tooltip" id="tooltip">
-  <div class="tooltip-title" id="ttTitle"></div>
-  <div class="tooltip-cat" id="ttCat"></div>
-  <div class="tooltip-desc" id="ttDesc"></div>
-  <div class="tooltip-confirm" id="ttConfirm" style="display:none">Requires explicit confirmation before execution</div>
+<div class="main">
+  <!-- LEFT: Strategy state by category -->
+  <div class="left" id="strategyPanel"></div>
+
+  <!-- RIGHT: Command log -->
+  <div class="right">
+    <div class="last-cmd">
+      <div class="last-cmd-label">LAST TELEGRAM COMMAND</div>
+      <div class="last-cmd-value" id="lastCmdValue">Waiting...</div>
+      <div class="last-cmd-meta" id="lastCmdMeta"></div>
+    </div>
+    <div class="section-label">COMMAND HISTORY</div>
+    <div class="history" id="historyList"></div>
+    <div class="test-bar">
+      <input class="test-input" id="testInput" placeholder="Send command..." />
+      <button class="test-btn" id="testBtn">SEND</button>
+    </div>
+  </div>
 </div>
 
 <script>
-const COMMANDS = [
-  { cat: 'Strategy', cmd: 'strategy offensive', role: 'IC', desc: 'All resources attack the fire head-on. Maximum aggression. Used when fire is small or resources are overwhelming.', color: '#A78BFA' },
-  { cat: 'Strategy', cmd: 'strategy defensive', role: 'IC', desc: 'Hold existing lines, protect structures. No new fireline construction. Used when fire behavior exceeds suppression capability.', color: '#A78BFA' },
-  { cat: 'Strategy', cmd: 'strategy confine', role: 'IC', desc: 'Allow fire to burn within a containment box defined by natural barriers. Minimal direct engagement.', color: '#A78BFA' },
-  { cat: 'Strategy', cmd: 'strategy transition', role: 'IC / Safety', desc: 'All crews safely reposition. Temporary hold during strategy change. No one engages fire.', color: '#A78BFA' },
-  { cat: 'Attack Mode', cmd: 'attack direct', role: 'Ops Chief', desc: 'Crews work directly at the fire edge. Fastest suppression but highest exposure.', color: '#F59E0B' },
-  { cat: 'Attack Mode', cmd: 'attack parallel', role: 'Ops Chief', desc: 'Fireline built 30-100ft from fire edge. Burnout between line and fire. Balances speed with safety.', color: '#F59E0B' },
-  { cat: 'Attack Mode', cmd: 'attack indirect', role: 'Ops Chief', desc: 'Line built far from fire at natural barriers (roads, ridges). Backfire burns fuel between line and main fire.', color: '#F59E0B' },
-  { cat: 'Firing Ops', cmd: 'fire burnout', role: 'Div Supervisor', desc: 'Authorized burnout from existing fireline. Low-intensity firing to remove fuel.', color: '#EF4444' },
-  { cat: 'Firing Ops', cmd: 'fire backfire', role: 'IC (written)', desc: 'SAFETY-CRITICAL. Intentional large fire set to draw main fire. High risk if wind shifts.', color: '#EF4444', confirm: true },
-  { cat: 'Firing Ops', cmd: 'fire cancel', role: 'IC / Safety', desc: 'Cancel all firing operations immediately. All ignition devices secured.', color: '#EF4444' },
-  { cat: 'Structure', cmd: 'struct triage', role: 'Struct Group Sup', desc: 'Assess all structures: defensible, marginal, or non-defensible. No active protection yet.', color: '#F97316' },
-  { cat: 'Structure', cmd: 'struct protect', role: 'Struct Group Sup', desc: 'Active structure protection. Engines deploy foam, gel, sprinklers on defensible structures.', color: '#F97316' },
-  { cat: 'Structure', cmd: 'struct abandon', role: 'Div Supervisor', desc: 'Zone abandoned — all resources withdraw immediately. Structures in zone are lost.', color: '#F97316' },
-  { cat: 'Structure', cmd: 'struct bump-and-run', role: 'Engine Boss', desc: 'Rapid structure prep: quick foam/gel spray, move to next. No staying to defend.', color: '#F97316' },
-  { cat: 'Evacuation', cmd: 'evac advisory [zone]', role: 'IC → LE Liaison', desc: 'Voluntary evacuation suggested. Residents advised to prepare. No road closures.', color: '#22D3EE' },
-  { cat: 'Evacuation', cmd: 'evac warning [zone]', role: 'IC → LE Liaison', desc: 'Evacuation imminent. Vulnerable populations should leave now. Contraflow may activate.', color: '#22D3EE' },
-  { cat: 'Evacuation', cmd: 'evac order [zone]', role: 'IC → Sheriff', desc: 'MANDATORY evacuation. Law enforcement goes door-to-door. All roads one-way out.', color: '#22D3EE', confirm: true },
-  { cat: 'Evacuation', cmd: 'evac rescue [zone]', role: 'IC → Sheriff', desc: 'Rescue-only mode. Orderly evacuation failed. Only rescue teams enter zone.', color: '#22D3EE', confirm: true },
-  { cat: 'Evacuation', cmd: 'evac lift [zone]', role: 'IC', desc: 'Evacuation lifted. Residents may return. Roads reopen.', color: '#22D3EE' },
-  { cat: 'Air Ops', cmd: 'air priority head', role: 'Air Ops Dir', desc: 'All air resources target fire head. VLAT retardant + heli bucket drops on advancing front.', color: '#60A5FA' },
-  { cat: 'Air Ops', cmd: 'air priority structures', role: 'Air Ops Dir', desc: 'Retardant lines around threatened structures. Helicopters water-drop on structure groups.', color: '#60A5FA' },
-  { cat: 'Air Ops', cmd: 'air priority flanks', role: 'Air Ops Dir', desc: 'Split air force between flanks to contain lateral spread.', color: '#60A5FA' },
-  { cat: 'Air Ops', cmd: 'air hold', role: 'IC / Safety', desc: 'All aircraft grounded. Used for safety (wind/visibility) or airspace conflict.', color: '#60A5FA' },
-  { cat: 'Air Ops', cmd: 'air medevac', role: 'Safety Officer', desc: 'Helicopter diverted to medical evacuation. Overrides all air priorities.', color: '#60A5FA' },
-  { cat: 'Drones', cmd: 'drone recon', role: 'Plans Chief', desc: 'Drone fleet in distributed recon grid. IR + visual mapping for spread prediction.', color: '#818CF8' },
-  { cat: 'Drones', cmd: 'drone safety', role: 'Safety Officer', desc: 'Drones overwatch crew positions. Alert if fire approaches escape routes.', color: '#818CF8' },
-  { cat: 'Resources', cmd: 'crew rotate [resource]', role: 'Ops Chief', desc: 'Order crew rotation. Resource returns to camp, replacement dispatched from staging.', color: '#34D399' },
-  { cat: 'Resources', cmd: 'crew extend [resource]', role: 'IC', desc: 'Authorize extended shift beyond 16hr limit. Requires documented justification.', color: '#34D399' },
-  { cat: 'Resources', cmd: 'mutual aid', role: 'IC → IROC', desc: 'Request mutual aid through Interagency Resource Ordering. Regional/national resources dispatched.', color: '#34D399' },
-  { cat: 'Planning', cmd: 'iap approve', role: 'IC', desc: 'Approve Incident Action Plan. All section chiefs briefed. Operational period begins.', color: '#A3A3A3' },
-  { cat: 'Planning', cmd: 'night ops approve', role: 'IC', desc: 'Authorize night operations. Requires adequate lighting and verified safety zones.', color: '#A3A3A3' },
-  { cat: 'Planning', cmd: 'night ops cancel', role: 'IC', desc: 'Cancel night operations. All crews return to camp at sunset.', color: '#A3A3A3' },
-  { cat: 'Safety', cmd: 'safety stop all', role: 'Safety Officer', desc: 'FULL SAFETY STOP. Every crew ceases ALL operations and moves to safety zones. Only for imminent life threat.', color: '#EF4444', confirm: true },
-  { cat: 'Safety', cmd: 'safety stop [div]', role: 'Safety Officer', desc: 'Safety stop for specific division. That division ceases work, others continue.', color: '#EF4444' },
-  { cat: 'Safety', cmd: 'safety resume', role: 'IC', desc: 'Clear safety stop. All crews verify escape routes then resume operations.', color: '#EF4444' },
-  { cat: 'Safety', cmd: 'lces check', role: 'Safety Officer', desc: 'Order LCES (Lookouts, Communications, Escape Routes, Safety Zones) check for all crews.', color: '#EF4444' },
+const API = 'http://localhost:3001';
+
+// ── Mutually exclusive strategy categories ──
+const CATEGORIES = [
+  {
+    key: 'posture', label: 'POSTURE', color: '#A78BFA',
+    protocol: 'NWCG IRPG — Overall Strategy',
+    options: [
+      { value: 'offensive', cmd: 'strategy offensive', tip: 'All resources attack fire', role: 'IC' },
+      { value: 'defensive', cmd: 'strategy defensive', tip: 'Hold lines, protect structures', role: 'IC' },
+      { value: 'confine', cmd: 'strategy confine', tip: 'Burn to natural barriers', role: 'IC' },
+      { value: 'transition', cmd: 'strategy transition', tip: 'All crews reposition safely', role: 'IC / Safety' },
+    ]
+  },
+  {
+    key: 'attackMode', label: 'ATTACK MODE', color: '#F59E0B',
+    protocol: 'NWCG Suppression Tactics',
+    options: [
+      { value: 'direct', cmd: 'attack direct', tip: 'Crews at fire edge', role: 'Ops Chief' },
+      { value: 'parallel', cmd: 'attack parallel', tip: 'Line 30-100ft offset + burnout', role: 'Ops Chief' },
+      { value: 'indirect', cmd: 'attack indirect', tip: 'Line at natural barriers + backfire', role: 'Ops Chief' },
+    ]
+  },
+  {
+    key: 'firingAuth', label: 'FIRING OPS', color: '#EF4444',
+    protocol: 'NWCG Firing Authorization',
+    options: [
+      { value: 'none', cmd: 'fire cancel', tip: 'No firing authorized', role: 'IC' },
+      { value: 'burnout', cmd: 'fire burnout', tip: 'Crew-boss level burn from line', role: 'Div Supervisor' },
+      { value: 'backfire', cmd: 'fire backfire', tip: 'IC written approval required', role: 'IC', confirm: true },
+    ]
+  },
+  {
+    key: 'structMode', label: 'STRUCTURE PROTECTION', color: '#F97316',
+    protocol: 'NWCG Structure Triage',
+    options: [
+      { value: 'triage', cmd: 'struct triage', tip: 'Assess defensibility', role: 'Struct Sup' },
+      { value: 'protect', cmd: 'struct protect', tip: 'Engines defend structures', role: 'Struct Sup' },
+      { value: 'abandon', cmd: 'struct abandon', tip: 'Withdraw all resources', role: 'Div Sup' },
+      { value: 'bump-and-run', cmd: 'struct bump-and-run', tip: 'Rapid prep, move on', role: 'Engine Boss' },
+    ]
+  },
+  {
+    key: 'airPriority', label: 'AIR PRIORITY', color: '#60A5FA',
+    protocol: 'CAL FIRE Aviation / ATGS',
+    options: [
+      { value: 'head', cmd: 'air priority head', tip: 'Retardant on fire head', role: 'Air Ops Dir' },
+      { value: 'structures', cmd: 'air priority structures', tip: 'Retardant around buildings', role: 'Air Ops Dir' },
+      { value: 'flanks', cmd: 'air priority flanks', tip: 'Split force on flanks', role: 'Air Ops Dir' },
+      { value: 'hold', cmd: 'air hold', tip: 'All aircraft grounded', role: 'IC / Safety' },
+    ]
+  },
+  {
+    key: 'droneMode', label: 'DRONE MODE', color: '#818CF8',
+    protocol: 'UAS Operations',
+    options: [
+      { value: 'recon', cmd: 'drone recon', tip: 'Distributed recon grid', role: 'Plans Chief' },
+      { value: 'safety', cmd: 'drone safety', tip: 'Crew safety overwatch', role: 'Safety Officer' },
+    ]
+  },
+  {
+    key: 'opsNight', label: 'NIGHT OPS', color: '#A3A3A3',
+    protocol: 'NWCG Night Operations',
+    options: [
+      { value: false, cmd: 'night ops cancel', tip: 'Crews to camp at sunset', role: 'IC' },
+      { value: true, cmd: 'night ops approve', tip: 'Night operations authorized', role: 'IC' },
+    ]
+  },
+  {
+    key: 'safetyStop', label: 'SAFETY STOP', color: '#EF4444',
+    protocol: '10 Standard Fire Orders / 18 Watch Outs',
+    options: [
+      { value: 'none', cmd: 'safety resume', tip: 'Operations normal', role: 'IC' },
+      { value: 'all', cmd: 'safety stop all', tip: 'ALL crews cease ops', role: 'Safety Officer', confirm: true },
+    ]
+  },
+  {
+    key: 'iapStatus', label: 'IAP STATUS', color: '#6B7280',
+    protocol: 'ICS Planning Cycle',
+    options: [
+      { value: 'draft', cmd: null, tip: 'Plan being developed' },
+      { value: 'approved', cmd: 'iap approve', tip: 'Plan approved by IC', role: 'IC' },
+      { value: 'expired', cmd: null, tip: 'Operational period ended' },
+    ]
+  },
 ];
 
-const CATEGORIES = [...new Set(COMMANDS.map(c => c.cat))];
-let currentFilter = 'all';
-let lastCommand = null;
+// ── State ──
+let strategy = {};
 let commandHistory = [];
 
-// ── SSE Connection ──
-function connectSSE() {
-  const dot = document.getElementById('statusDot');
-  const txt = document.getElementById('statusText');
+// ── Render strategy panel ──
+function renderStrategy() {
+  const panel = document.getElementById('strategyPanel');
+  let html = '';
 
-  const es = new EventSource('http://localhost:3001/api/strategy/stream');
+  // Mutually exclusive categories
+  for (const cat of CATEGORIES) {
+    const currentVal = strategy[cat.key];
+    html += `<div class="cat">
+      <div class="cat-header">
+        <span class="cat-name" style="color:${cat.color}">${cat.label}</span>
+        <span class="cat-protocol">${cat.protocol}</span>
+      </div>
+      <div class="options">`;
 
-  es.onopen = () => {
-    dot.className = 'dot live';
-    txt.textContent = 'SSE LIVE';
-    txt.style.color = '#22C55E';
-  };
+    for (const opt of cat.options) {
+      // Handle boolean comparison for opsNight
+      const isActive = (currentVal === opt.value) ||
+        (cat.key === 'opsNight' && currentVal === opt.value) ||
+        (cat.key === 'safetyStop' && !currentVal && opt.value === 'none');
 
-  es.onerror = () => {
-    dot.className = 'dot dead';
-    txt.textContent = 'DISCONNECTED';
-    txt.style.color = '#EF4444';
-  };
+      const clickable = opt.cmd ? `onclick="sendCommand('${opt.cmd}', ${!!opt.confirm})"` : '';
+      const cursor = opt.cmd ? 'cursor:pointer' : 'cursor:default;opacity:0.5';
 
-  es.addEventListener('command', (ev) => {
-    const data = JSON.parse(ev.data);
-    setLastCommand(data.command, data.source || 'telegram', data.commander, data.confirmed);
-  });
+      html += `<div class="opt ${isActive ? 'active' : ''}"
+        style="--cat-color:${cat.color};${cursor}"
+        ${clickable}
+        data-tip="${opt.tip}">
+        ${opt.value === true ? 'APPROVED' : opt.value === false ? 'CANCELLED' : opt.value.toString().toUpperCase()}
+        ${opt.role ? `<span style="font-size:7px;opacity:0.5;margin-left:4px">${opt.role}</span>` : ''}
+        ${opt.confirm ? '<div class="confirm-dot"></div>' : ''}
+      </div>`;
+    }
+    html += '</div></div>';
+  }
 
-  es.addEventListener('reset', () => {
-    setLastCommand('strategy reset', 'system', 'system', false);
-  });
+  // Medevac (boolean, independent)
+  html += `<div class="cat">
+    <div class="cat-header">
+      <span class="cat-name" style="color:#F87171">MEDEVAC</span>
+      <span class="cat-protocol">Emergency Medical</span>
+    </div>
+    <div class="options">
+      <div class="opt ${strategy.medevacActive ? 'active' : ''}"
+        style="--cat-color:#F87171;cursor:pointer"
+        onclick="sendCommand('air medevac', false)"
+        data-tip="Divert helicopter to medevac">
+        ${strategy.medevacActive ? 'ACTIVE' : 'INACTIVE'}
+      </div>
+    </div>
+  </div>`;
+
+  // LCES Check (boolean)
+  html += `<div class="cat">
+    <div class="cat-header">
+      <span class="cat-name" style="color:#FBBF24">LCES</span>
+      <span class="cat-protocol">Lookouts, Comms, Escape Routes, Safety Zones</span>
+    </div>
+    <div class="options">
+      <div class="opt ${strategy.lcesRequired ? 'active' : ''}"
+        style="--cat-color:#FBBF24;cursor:pointer"
+        onclick="sendCommand('lces check', false)"
+        data-tip="Order all crews to verify LCES">
+        ${strategy.lcesRequired ? 'CHECK ORDERED' : 'NORMAL'}
+      </div>
+    </div>
+  </div>`;
+
+  // Mutual Aid
+  html += `<div class="cat">
+    <div class="cat-header">
+      <span class="cat-name" style="color:#34D399">MUTUAL AID</span>
+      <span class="cat-protocol">IROC / NWCG Resource Ordering</span>
+    </div>
+    <div class="options">
+      <div class="opt ${strategy.mutualAidRequested ? 'active' : ''}"
+        style="--cat-color:#34D399;cursor:pointer"
+        onclick="sendCommand('mutual aid', false)"
+        data-tip="Request resources through IROC">
+        ${strategy.mutualAidRequested ? 'REQUESTED' : 'NOT REQUESTED'}
+      </div>
+    </div>
+  </div>`;
+
+  // Evacuation zones (additive, per-zone)
+  html += `<div class="cat">
+    <div class="cat-header">
+      <span class="cat-name" style="color:#22D3EE">EVACUATION ZONES</span>
+      <span class="cat-protocol">Genasys Protect / WEA / IPAWS</span>
+    </div>`;
+
+  const zones = strategy.evacZones || {};
+  const zoneEntries = Object.entries(zones).filter(([,v]) => v && v !== 'none');
+  if (zoneEntries.length === 0) {
+    html += '<div class="empty-msg">No active evacuations</div>';
+  } else {
+    html += '<div class="additive-list">';
+    const levelColors = { advisory: '#60A5FA', warning: '#FBBF24', order: '#EF4444', rescue: '#DC2626', lifted: '#22C55E' };
+    for (const [zone, level] of zoneEntries) {
+      const c = levelColors[level] || '#64748B';
+      html += `<div class="additive-item">
+        <span class="zone">${zone}</span>
+        <span class="level" style="color:${c}">${level.toUpperCase()}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Crew Extensions (additive)
+  html += `<div class="cat">
+    <div class="cat-header">
+      <span class="cat-name" style="color:#34D399">CREW EXTENSIONS</span>
+      <span class="cat-protocol">NWCG Work-Rest (16hr max, 2:1)</span>
+    </div>`;
+
+  const exts = strategy.crewExtensions || {};
+  const extEntries = Object.entries(exts).filter(([,v]) => v && v.authorized);
+  if (extEntries.length === 0) {
+    html += '<div class="empty-msg">No active extensions</div>';
+  } else {
+    html += '<div class="additive-list">';
+    for (const [crew, ext] of extEntries) {
+      html += `<div class="additive-item">
+        <span class="zone">${crew}</span>
+        <span class="level" style="color:#F59E0B">+${ext.hours || 2}hr</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  panel.innerHTML = html;
 }
 
-function setLastCommand(cmd, source, commander, confirmed) {
-  lastCommand = cmd;
-  const box = document.getElementById('lastCmdBox');
-  const val = document.getElementById('lastCmdValue');
-  const meta = document.getElementById('lastCmdMeta');
+// ── Send command ──
+function sendCommand(cmd, needsConfirm) {
+  if (needsConfirm && !confirm(`SAFETY-CRITICAL: Send "${cmd}"?`)) return;
 
-  box.classList.add('active');
-  val.classList.add('active');
-  val.textContent = cmd;
+  fetch(`${API}/api/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command: cmd, source: 'debug-panel', confirmed: needsConfirm || false }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.status === 'confirm_required') {
+      if (confirm(`${data.warning}\n\nConfirm "${data.command}"?`)) {
+        sendCommand(cmd, true);
+      }
+    }
+    // Strategy update will come via SSE
+  })
+  .catch(err => console.error('Command failed:', err));
+}
 
+// ── Command history ──
+function addToHistory(cmd, source, confirmed) {
   const time = new Date().toLocaleTimeString();
-  meta.innerHTML = `via <b>${source || '?'}</b> at ${time}` + (confirmed ? '<span class="confirmed-badge">CONFIRMED</span>' : '');
-
   commandHistory.unshift({ cmd, source, time, confirmed });
   if (commandHistory.length > 50) commandHistory.pop();
-  renderHistory();
-  renderCommands();
-}
 
-function renderHistory() {
-  const box = document.getElementById('historyBox');
+  document.getElementById('lastCmdValue').textContent = cmd;
+  document.getElementById('lastCmdValue').classList.add('active');
+  document.getElementById('lastCmdMeta').innerHTML =
+    `via <b>${source}</b> at ${time}${confirmed ? ' <span style="color:#EF4444">CONFIRMED</span>' : ''}`;
+
   const list = document.getElementById('historyList');
-  const count = document.getElementById('historyCount');
-
-  if (commandHistory.length === 0) { box.style.display = 'none'; return; }
-  box.style.display = 'block';
-  count.textContent = commandHistory.length;
-
-  list.innerHTML = commandHistory.slice(0, 10).map((e, i) =>
-    `<div class="history-entry ${i === 0 ? 'latest' : ''}">
-      <span class="history-time">${e.time}</span>
+  list.innerHTML = commandHistory.slice(0, 30).map((e, i) =>
+    `<div class="hist-entry ${i === 0 ? 'latest' : ''}">
+      <span class="hist-time">${e.time}</span>
       <span>${e.cmd}</span>
     </div>`
   ).join('');
 }
 
-// ── Filters ──
-function renderFilters() {
-  const bar = document.getElementById('filterBar');
-  bar.innerHTML = '';
+// ── SSE ──
+function connectSSE() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const es = new EventSource(`${API}/api/strategy/stream`);
 
-  const allBtn = document.createElement('button');
-  allBtn.className = 'filter-btn' + (currentFilter === 'all' ? ' active' : '');
-  allBtn.style.setProperty('--cat-color', '#64748B');
-  allBtn.textContent = 'ALL';
-  allBtn.onclick = () => { currentFilter = 'all'; renderFilters(); renderCommands(); };
-  bar.appendChild(allBtn);
+  es.onopen = () => { dot.className = 'dot live'; txt.textContent = 'SSE LIVE'; txt.style.color = '#22C55E'; };
+  es.onerror = () => { dot.className = 'dot dead'; txt.textContent = 'DISCONNECTED'; txt.style.color = '#EF4444'; };
 
-  for (const cat of CATEGORIES) {
-    const color = COMMANDS.find(c => c.cat === cat)?.color || '#64748B';
-    const btn = document.createElement('button');
-    btn.className = 'filter-btn' + (currentFilter === cat ? ' active' : '');
-    btn.style.setProperty('--cat-color', color);
-    btn.textContent = cat.toUpperCase();
-    btn.onclick = () => { currentFilter = currentFilter === cat ? 'all' : cat; renderFilters(); renderCommands(); };
-    bar.appendChild(btn);
-  }
-}
+  // Init event (default message)
+  es.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.type === 'init' && data.strategy) {
+        strategy = data.strategy;
+        renderStrategy();
+      }
+    } catch {}
+  };
 
-// ── Command List ──
-function renderCommands() {
-  const list = document.getElementById('cmdList');
-  const filtered = currentFilter === 'all' ? COMMANDS : COMMANDS.filter(c => c.cat === currentFilter);
+  es.addEventListener('command', (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.strategy) { strategy = data.strategy; renderStrategy(); }
+    addToHistory(data.command, data.source || 'telegram', data.confirmed);
+    // Speak every command from any source (voice commands handled separately to avoid double-speak)
+    maybeSpeakSSECommand(data.command, data.source);
+  });
 
-  list.innerHTML = filtered.map((cmd, i) => {
-    const baseCmd = cmd.cmd.split(' [')[0];
-    const isActive = lastCommand === cmd.cmd || lastCommand === baseCmd;
-    return `<div class="cmd-row ${isActive ? 'active' : ''}" data-idx="${COMMANDS.indexOf(cmd)}"
-      onmouseenter="showTooltip(event, ${COMMANDS.indexOf(cmd)})"
-      onmouseleave="hideTooltip()">
-      <div class="cmd-dot ${isActive ? 'active' : ''}"></div>
-      <div class="cmd-name ${isActive ? 'active' : ''}">${cmd.cmd}</div>
-      <div class="role-badge" style="color:${cmd.color};background:${cmd.color}15;border:1px solid ${cmd.color}30">${cmd.role}</div>
-      ${cmd.confirm ? '<div class="confirm-badge">CONFIRM</div>' : ''}
-    </div>`;
-  }).join('');
-}
-
-// ── Tooltip ──
-function showTooltip(ev, idx) {
-  const cmd = COMMANDS[idx];
-  const tt = document.getElementById('tooltip');
-  const rect = ev.currentTarget.getBoundingClientRect();
-
-  document.getElementById('ttTitle').textContent = cmd.cmd;
-  document.getElementById('ttCat').textContent = `${cmd.cat} — ${cmd.role}`;
-  document.getElementById('ttCat').style.color = cmd.color;
-  document.getElementById('ttDesc').textContent = cmd.desc;
-
-  const ttConfirm = document.getElementById('ttConfirm');
-  ttConfirm.style.display = cmd.confirm ? 'block' : 'none';
-
-  tt.classList.add('show');
-  tt.style.left = Math.max(10, rect.left - 340) + 'px';
-  tt.style.top = Math.min(rect.top, window.innerHeight - 160) + 'px';
-}
-
-function hideTooltip() {
-  document.getElementById('tooltip').classList.remove('show');
-}
-
-// ── Manual Test ──
-document.getElementById('testBtn').onclick = sendTest;
-document.getElementById('testInput').onkeydown = (e) => { if (e.key === 'Enter') sendTest(); };
-
-function sendTest() {
-  const input = document.getElementById('testInput');
-  const cmd = input.value.trim();
-  if (!cmd) return;
-
-  fetch('http://localhost:3001/api/command', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command: cmd, source: 'debug-panel', confirmed: true }),
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.status === 'ok') {
-      input.value = '';
-      input.placeholder = `✓ ${data.message}`;
-      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
-    } else if (data.status === 'clarify') {
-      input.placeholder = `Did you mean: ${data.suggestions?.join(', ')}`;
-      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 4000);
-    } else {
-      input.placeholder = `✗ ${data.message}`;
-      setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
-    }
-  })
-  .catch(err => {
-    input.placeholder = `Error: ${err.message}`;
-    setTimeout(() => { input.placeholder = 'Type command to test...'; }, 3000);
+  es.addEventListener('reset', (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.strategy) { strategy = data.strategy; renderStrategy(); }
+    addToHistory('RESET', 'system', false);
   });
 }
 
+// ── Load initial state ──
+fetch(`${API}/api/strategy`)
+  .then(r => r.json())
+  .then(data => { strategy = data.strategy || {}; renderStrategy(); })
+  .catch(() => {});
+
+// ── Manual test ──
+document.getElementById('testBtn').onclick = () => {
+  const input = document.getElementById('testInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  sendCommand(cmd, false);
+  input.value = '';
+};
+document.getElementById('testInput').onkeydown = (e) => {
+  if (e.key === 'Enter') document.getElementById('testBtn').click();
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// VOICE CONTROL — ElevenLabs STT + Gemini TTS
+// ══════════════════════════════════════════════════════════════════════════
+
+const EL_KEY     = 'sk_54b1c8e4cf6543790bb9e81dc51d3aeb2def5878ffc74a2a';
+const GEMINI_KEY = 'AIzaSyCvHl5a_DFDhcLLBW_u9v4vN1f3vL7Yl_o';
+
+let voiceStatus = 'idle'; // idle | recording | transcribing
+let mediaRecorder = null;
+let audioChunks = [];
+let audioCtx = null;
+let vadRaf = null;
+let silTimer = null;
+let maxTimer = null;
+let currentAudio = null;
+let toastTimeout = null;
+let toastExitTimeout = null;
+
+// ── IC acks — 1-2 short sentences ──
+const IC_ACK = {
+  'strategy offensive': 'Copy, going offensive. All units full suppression.',
+  'strategy defensive': 'Copy, defensive posture. Hold lines, protect structures.',
+  'strategy confine': 'Copy, confinement strategy. Monitor perimeter only.',
+  'strategy transition': 'Copy, transitioning. All crews reposition to safety zones.',
+  'attack direct': 'Copy, direct attack. Crews engaging the fire edge.',
+  'attack parallel': 'Copy, parallel attack. Line offset with burnout authorized.',
+  'attack indirect': 'Copy, indirect attack. Working the natural barriers.',
+  'fire burnout': 'Copy, burnout authorized. Burn from the control line.',
+  'fire backfire': 'Copy, backfire authorized. Written approval on record.',
+  'fire cancel': 'Copy, firing cancelled. No ignition authorized.',
+  'struct triage': 'Copy, structure triage. Assessing defensibility now.',
+  'struct protect': 'Copy, structure protection. Engines deploying to buildings.',
+  'struct abandon': 'Copy, structures abandoned. All crews withdraw immediately.',
+  'struct bump-and-run': 'Copy, bump and run. Rapid prep then move to next.',
+  'air priority head': 'Copy, air priority on the head. Tankers rolling.',
+  'air priority structures': 'Copy, air priority structures. Retardant around buildings.',
+  'air priority flanks': 'Copy, air on flanks. Split force both sides.',
+  'air hold': 'Copy, all aircraft grounded. Air hold in effect.',
+  'air medevac': 'Copy, medevac dispatched. Clear the helispot.',
+  'drone recon': 'Copy, drones on recon. Grid coverage established.',
+  'drone safety': 'Copy, drones on safety overwatch. Monitoring crew positions.',
+  'night ops approve': 'Copy, night ops authorized. Maintain situational awareness.',
+  'night ops cancel': 'Copy, night ops cancelled. All crews to camp at sunset.',
+  'safety stop all': 'All stop, all stop. Cease operations, move to safety zones.',
+  'safety resume': 'Copy, operations resumed. Normal tempo restored.',
+  'lces check': 'Copy, LCES check ordered. Verify lookouts, comms, escape routes.',
+  'mutual aid': 'Copy, mutual aid requested. Resources inbound through dispatch.',
+  'iap approve': 'Copy, IAP approved. New operational period in effect.',
+  'crew rotate': 'Copy, crew rotation ordered. Relief deploying from staging.',
+  'crew extend': 'Copy, extension authorized. Monitor fatigue closely.',
+};
+const IC_ACK_DEFAULT = 'Copy, command received. All units stand by.';
+
+// ── Natural language → ICS command mapping ──
+// The API expects exact strings like "strategy defensive". Voice says things like
+// "go defensive" or "pull everyone back". This maps natural language to commands.
+const NL_COMMAND_MAP = [
+  // Posture
+  { test: /\b(go|switch|set)\s+(to\s+)?offensive\b|full\s+attack|hit\s+it\s+hard|go\s+aggressive/i, cmd: 'strategy offensive' },
+  { test: /\b(go|switch|set)\s+(to\s+)?defensive\b|pull\s+back|hold\s+(the\s+)?line|protect\s+mode|defend/i, cmd: 'strategy defensive' },
+  { test: /\b(go|switch|set)\s+(to\s+)?confine\b|let\s+it\s+burn|contain\s+(to|it)|confine/i, cmd: 'strategy confine' },
+  { test: /\btransition\b|reposition|shift\s+strategy/i, cmd: 'strategy transition' },
+  // Also match bare keywords
+  { test: /^offensive$/i, cmd: 'strategy offensive' },
+  { test: /^defensive$/i, cmd: 'strategy defensive' },
+  { test: /^confine$/i, cmd: 'strategy confine' },
+
+  // Attack mode
+  { test: /\bdirect\s+attack\b|attack\s+direct\b|crews?\s+(on|at)\s+(the\s+)?edge/i, cmd: 'attack direct' },
+  { test: /\bparallel\s+attack\b|attack\s+parallel\b|offset\s+line/i, cmd: 'attack parallel' },
+  { test: /\bindirect\s+attack\b|attack\s+indirect\b|natural\s+barrier/i, cmd: 'attack indirect' },
+
+  // Firing ops
+  { test: /\bburnout\b|burn\s+out\b|burn\s+from\s+(the\s+)?line/i, cmd: 'fire burnout' },
+  { test: /\bbackfire\b|back\s+fire\b/i, cmd: 'fire backfire' },
+  { test: /\bcancel\s+(all\s+)?fir(e|ing)\b|no\s+(more\s+)?burn/i, cmd: 'fire cancel' },
+
+  // Structure protection
+  { test: /\btriage\b|assess\s+(the\s+)?structur/i, cmd: 'struct triage' },
+  { test: /\bprotect\s+(the\s+)?structur|\bstructure\s+protect\b|defend\s+(the\s+)?build/i, cmd: 'struct protect' },
+  { test: /\babandon\s+(the\s+)?structur|\bstructure\s+abandon\b|leave\s+(the\s+)?build/i, cmd: 'struct abandon' },
+  { test: /\bbump\s*(and|&|n)\s*run\b/i, cmd: 'struct bump-and-run' },
+
+  // Air ops
+  { test: /\b(air|tanker|retardant)\s+(on|priority|to)\s+(the\s+)?head\b|hit\s+(the\s+)?head/i, cmd: 'air priority head' },
+  { test: /\b(air|tanker|retardant)\s+(on|priority|to)\s+(the\s+)?structur|retardant\s+(around|on)\s+(the\s+)?build/i, cmd: 'air priority structures' },
+  { test: /\b(air|tanker|retardant)\s+(on|priority|to)\s+(the\s+)?flank/i, cmd: 'air priority flanks' },
+  { test: /\bground\s+(the\s+)?(air|aircraft|helicopter|chopper)|air\s+hold\b|hold\s+(all\s+)?air/i, cmd: 'air hold' },
+  { test: /\bmedevac\b|medical\s+(evacuat|emergenc)/i, cmd: 'air medevac' },
+
+  // Drones
+  { test: /\bdrone.?\s*recon\b|send\s+(the\s+)?drone|drone.?\s*scout|eyes\s+in\s+(the\s+)?sky/i, cmd: 'drone recon' },
+  { test: /\bdrone.?\s*safety\b|drone.?\s*overwatch\b|watch\s+(the\s+)?crew/i, cmd: 'drone safety' },
+
+  // Night ops
+  { test: /\bnight\s+ops?\s+(approve|authorize|go)\b|approve\s+night/i, cmd: 'night ops approve' },
+  { test: /\bnight\s+ops?\s+(cancel|stop|no)\b|cancel\s+night|no\s+night/i, cmd: 'night ops cancel' },
+
+  // Safety
+  { test: /\bstop\s+every(thing|one)|\ball\s+stop\b|safety\s+stop\s+all\b|cease\s+(all\s+)?op/i, cmd: 'safety stop all' },
+  { test: /\bresume\s+(op|normal)|safety\s+resume\b|clear\s+to\s+proceed/i, cmd: 'safety resume' },
+  { test: /\blces\b|check\s+(lookout|escape|safety\s+zone)/i, cmd: 'lces check' },
+
+  // Mutual aid
+  { test: /\bmutual\s+aid\b|need\s+more\s+(people|resource|crew|help)|request\s+(more\s+)?resource/i, cmd: 'mutual aid' },
+
+  // Crew
+  { test: /\brotate\s+(the\s+)?(hotshot|crew)|pull\s+(back\s+)?(the\s+)?hotshot|hotshot.?\s*rotat/i, cmd: 'crew rotate hotshots' },
+  { test: /\bextend\s+(the\s+)?(hotshot|crew)|hotshot.?\s*extend|keep\s+(the\s+)?crew/i, cmd: 'crew extend hotshots' },
+
+  // IAP
+  { test: /\biap\s+approve\b|approve\s+(the\s+)?plan\b/i, cmd: 'iap approve' },
+
+  // Evacuation with zone extraction
+  { test: /\bevacuat.*order\b|mandatory\s+evac/i, cmd: 'evac order', extractZone: true },
+  { test: /\bevacuat.*warn(ing)?\b|warn\s+.*zone/i, cmd: 'evac warning', extractZone: true },
+  { test: /\bevacuat.*advisory\b|advisory\s+.*zone/i, cmd: 'evac advisory', extractZone: true },
+  { test: /\bevacuat.*rescue\b|rescue\s+.*zone/i, cmd: 'evac rescue', extractZone: true },
+  { test: /\blift\s+(the\s+)?evac|cancel\s+(the\s+)?evac/i, cmd: 'evac lift', extractZone: true },
+  { test: /\bevacuat|\bget\s+(every|them|people)\s+out\b/i, cmd: 'evac warning', extractZone: true },
+];
+
+const ZONE_PATTERN = /\b(OR-?\d+|zone\s*\w+|[A-Z]{1,3}-?\d{1,3})\b/i;
+
+// Returns an array of ICS command strings from a transcript (supports multi-command)
+function nlToCommands(transcript) {
+  const text = transcript.trim();
+  const lower = text.toLowerCase();
+  const clean = lower.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const found = [];
+  const usedCategories = new Set(); // prevent duplicate categories
+
+  // Category grouping to avoid conflicting commands
+  const CMD_CATEGORY = {
+    'strategy offensive': 'posture', 'strategy defensive': 'posture', 'strategy confine': 'posture', 'strategy transition': 'posture',
+    'attack direct': 'attack', 'attack parallel': 'attack', 'attack indirect': 'attack',
+    'fire burnout': 'firing', 'fire backfire': 'firing', 'fire cancel': 'firing',
+    'struct triage': 'struct', 'struct protect': 'struct', 'struct abandon': 'struct', 'struct bump-and-run': 'struct',
+    'air priority head': 'air', 'air priority structures': 'air', 'air priority flanks': 'air', 'air hold': 'air',
+    'air medevac': 'medevac',
+    'drone recon': 'drone', 'drone safety': 'drone',
+    'night ops approve': 'night', 'night ops cancel': 'night',
+    'safety stop all': 'safety', 'safety resume': 'safety',
+    'lces check': 'lces', 'mutual aid': 'mutual', 'iap approve': 'iap',
+    'crew rotate hotshots': 'crew', 'crew extend hotshots': 'crew',
+  };
+
+  function addCmd(cmd) {
+    const cat = CMD_CATEGORY[cmd] || cmd;
+    if (!usedCategories.has(cat)) { usedCategories.add(cat); found.push(cmd); }
+  }
+
+  // Exact ICS command strings embedded anywhere
+  const allCmds = [
+    'air priority structures', 'air priority head', 'air priority flanks',
+    'crew rotate hotshots', 'crew extend hotshots',
+    'struct bump-and-run', 'struct bump and run',
+    'strategy offensive', 'strategy defensive', 'strategy confine', 'strategy transition',
+    'attack direct', 'attack parallel', 'attack indirect',
+    'fire burnout', 'fire backfire', 'fire cancel',
+    'struct triage', 'struct protect', 'struct abandon',
+    'safety stop all', 'safety resume',
+    'night ops approve', 'night ops cancel',
+    'air hold', 'air medevac',
+    'drone recon', 'drone safety',
+    'mutual aid', 'lces check', 'iap approve',
+    'evac advisory', 'evac warning', 'evac order', 'evac rescue', 'evac lift',
+  ];
+  for (const c of allCmds) {
+    if (clean.includes(c) || lower.includes(c)) {
+      addCmd(c === 'struct bump and run' ? 'struct bump-and-run' : c);
+    }
+  }
+
+  // NL pattern matching — scan all rules, collect all matches
+  for (const rule of NL_COMMAND_MAP) {
+    if (rule.test.test(text) || rule.test.test(clean)) {
+      if (rule.extractZone) {
+        const zm = text.match(ZONE_PATTERN);
+        const zone = zm ? zm[1].replace(/\s+/g, '') : 'OR-1';
+        addCmd(rule.cmd + ' ' + zone);
+      } else {
+        addCmd(rule.cmd);
+      }
+    }
+  }
+
+  // Single keyword fallback
+  if (found.length === 0) {
+    const KEYWORD_FALLBACK = [
+      { words: ['offensive'], cmd: 'strategy offensive' },
+      { words: ['defensive'], cmd: 'strategy defensive' },
+      { words: ['confine'], cmd: 'strategy confine' },
+      { words: ['transition'], cmd: 'strategy transition' },
+      { words: ['direct'], cmd: 'attack direct' },
+      { words: ['parallel'], cmd: 'attack parallel' },
+      { words: ['indirect'], cmd: 'attack indirect' },
+      { words: ['burnout'], cmd: 'fire burnout' },
+      { words: ['backfire'], cmd: 'fire backfire' },
+      { words: ['triage'], cmd: 'struct triage' },
+      { words: ['medevac'], cmd: 'air medevac' },
+      { words: ['recon'], cmd: 'drone recon' },
+    ];
+    for (const kw of KEYWORD_FALLBACK) {
+      if (kw.words.some(w => clean.includes(w))) addCmd(kw.cmd);
+    }
+  }
+
+  // Last resort: raw text as single command
+  if (found.length === 0) found.push(text);
+  return found;
+}
+
+// ── PCM → WAV (Gemini TTS returns raw 16-bit PCM at 24kHz) ──
+function pcmToWav(pcmBase64, sampleRate = 24000) {
+  const pcm  = Uint8Array.from(atob(pcmBase64), c => c.charCodeAt(0));
+  const buf  = new ArrayBuffer(44 + pcm.length);
+  const view = new DataView(buf);
+  const str  = (off, s) => [...s].forEach((c, i) => view.setUint8(off + i, c.charCodeAt(0)));
+  str(0, 'RIFF');  view.setUint32(4, 36 + pcm.length, true);
+  str(8, 'WAVE');  str(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  str(36, 'data');  view.setUint32(40, pcm.length, true);
+  new Uint8Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+// ── Gemini TTS — single voice at a time, queue-based ──
+let ttsQueue = [];
+let ttsBusy = false;
+
+function stopAllAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+async function speakIC(text) {
+  // Cancel anything currently playing — only one voice at a time
+  stopAllAudio();
+  ttsQueue = []; // clear any queued speech
+  ttsBusy = true;
+
+  const ind = document.getElementById('speakingInd');
+  ind.style.display = 'inline';
+
+  if (GEMINI_KEY) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${GEMINI_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Sadaltager' } },
+              },
+            },
+          }),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const pcmB64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (pcmB64) {
+          stopAllAudio(); // kill anything that started while we were fetching
+          const wav = pcmToWav(pcmB64);
+          const url = URL.createObjectURL(wav);
+          const audio = new Audio(url);
+          currentAudio = audio;
+          audio.play();
+          audio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; ind.style.display = 'none'; ttsBusy = false; };
+          audio.onerror = () => { currentAudio = null; ind.style.display = 'none'; ttsBusy = false; };
+          return;
+        }
+      }
+    } catch (e) { console.error('Gemini TTS error:', e); }
+  }
+
+  // No fallback — Gemini TTS only. No browser synth.
+  ind.style.display = 'none';
+  ttsBusy = false;
+}
+
+// ── ElevenLabs STT ──
+async function transcribeAudio(blob) {
+  const formData = new FormData();
+  formData.append('file', blob, 'recording.webm');
+  formData.append('model_id', 'scribe_v1');
+  formData.append('language_code', 'eng');
+  // Context prompt helps STT focus on ICS commands and ignore background noise
+  formData.append('prompt', 'Wildfire incident commander issuing tactical commands: go defensive, go offensive, strategy confine, attack direct, attack parallel, attack indirect, fire burnout, fire backfire, struct protect, struct triage, struct abandon, bump and run, air priority head, air priority structures, air priority flanks, air hold, ground the aircraft, drone recon, drone safety, evacuate, medevac, mutual aid, safety stop, lces check, night ops, pull back, hit it hard, protect the structures, retardant on the head');
+  const res = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+    method: 'POST',
+    headers: { 'xi-api-key': EL_KEY },
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`EL STT error ${res.status}`);
+  const data = await res.json();
+  return data.text?.trim() ?? '';
+}
+
+// ── Voice toast ──
+function showVoiceToast(heard, label, color) {
+  clearTimeout(toastTimeout); clearTimeout(toastExitTimeout);
+  let existing = document.getElementById('voiceToast');
+  if (existing) existing.remove();
+
+  const el = document.createElement('div');
+  el.id = 'voiceToast';
+  el.className = 'voice-toast';
+  el.style.borderColor = color + '35';
+  el.style.boxShadow = `0 6px 24px rgba(0,0,0,0.6), 0 0 0 1px ${color}18`;
+  el.innerHTML = `
+    ${heard ? `<span class="heard">"${heard}"</span><span class="arrow">&rarr;</span>` : ''}
+    <div class="toast-dot" style="background:${color};box-shadow:0 0 6px ${color}"></div>
+    <span class="toast-label" style="color:${color}">${label}</span>
+  `;
+  document.body.appendChild(el);
+
+  toastTimeout = setTimeout(() => {
+    el.classList.add('exiting');
+    toastExitTimeout = setTimeout(() => el.remove(), 400);
+  }, 3000);
+}
+
+// ── Mic UI updates ──
+function updateMicUI() {
+  const btn = document.getElementById('micBtn');
+  const label = document.getElementById('micLabel');
+  btn.className = 'mic-btn' + (voiceStatus === 'recording' ? ' recording' : voiceStatus === 'transcribing' ? ' transcribing' : '');
+  btn.style.color = voiceStatus === 'recording' ? '#EF4444' : voiceStatus === 'transcribing' ? '#5B9BD5' : '#64748B';
+  label.textContent = voiceStatus === 'recording' ? 'RECORDING' : voiceStatus === 'transcribing' ? 'PROCESSING' : 'VOICE';
+  label.style.color = btn.style.color;
+}
+
+// ── Stop VAD ──
+function stopVAD() {
+  cancelAnimationFrame(vadRaf);
+  clearTimeout(silTimer);
+  clearTimeout(maxTimer);
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
+
+// ── Stop recording ──
+function stopRecording() {
+  stopVAD();
+  if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
+  mediaRecorder = null;
+}
+
+// ── Start recording ──
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      stopVAD();
+      voiceStatus = 'transcribing';
+      updateMicUI();
+
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      try {
+        const text = await transcribeAudio(blob);
+        if (!text) {
+          showVoiceToast('', 'NO SPEECH DETECTED', '#64748B');
+          voiceStatus = 'idle'; updateMicUI();
+          return;
+        }
+
+        // Map natural language → ICS command(s)
+        const cmds = nlToCommands(text);
+        console.log('[VOICE] transcript:', text, '→ commands:', cmds);
+
+        showVoiceToast(text, cmds.length + ' COMMAND' + (cmds.length > 1 ? 'S' : ''), '#A78BFA');
+
+        // Send all commands to FireSight server
+        const results = await Promise.all(cmds.map(cmd =>
+          fetch(`${API}/api/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd, source: 'voice', confirmed: false }),
+          }).then(r => r.json()).catch(() => ({ status: 'error' }))
+        ));
+
+        // Also relay transcript to OpenClaw
+        sendToOpenClaw(text).catch(e => console.warn('[VOICE] OpenClaw relay failed:', e));
+
+        // Build combined ack from all successful commands
+        const acks = [];
+        let hasConfirm = false;
+        for (let i = 0; i < results.length; i++) {
+          const data = results[i];
+          const cmd = cmds[i];
+          if (data.status === 'confirm_required') {
+            hasConfirm = true;
+          } else if (data.status === 'ok') {
+            acks.push(IC_ACK[data.command || cmd] || IC_ACK_DEFAULT);
+            lastSpokenCmd = data.command || cmd;
+            lastSpokenTime = Date.now();
+          }
+        }
+
+        if (acks.length > 0) {
+          showVoiceToast(text, acks.length + ' EXECUTED', '#22C55E');
+          let speech = acks.join(' ');
+          if (acks.length > 1) {
+            speech += ' That\'s ' + acks.length + ' orders confirmed, all units acknowledge.';
+          }
+          speakIC(speech);
+        } else if (hasConfirm) {
+          showVoiceToast(text, 'CONFIRM REQUIRED', '#EF4444');
+          speakIC('Confirm that order, Commander.');
+        } else {
+          showVoiceToast(text, 'COMMAND FAILED', '#EF4444');
+          speakIC('Command not recognized. Say again.');
+        }
+      } catch (err) {
+        console.error('Voice pipeline error:', err);
+        showVoiceToast('', 'TRANSCRIPTION FAILED', '#EF4444');
+      }
+      voiceStatus = 'idle'; updateMicUI();
+    };
+
+    rec.start();
+    mediaRecorder = rec;
+    voiceStatus = 'recording';
+    updateMicUI();
+
+    // ── VAD: auto-stop after 1.5s silence post-speech ──
+    audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    let hasSpeech = false;
+    const SPEECH_THRESHOLD = 20;   // higher = ignore background chatter, only pick up close mic speech
+    const SILENCE_MS = 1500;
+    const MAX_MS = 15000;
+
+    maxTimer = setTimeout(() => stopRecording(), MAX_MS);
+
+    const tick = () => {
+      analyser.getByteFrequencyData(buf);
+      const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+      if (avg > SPEECH_THRESHOLD) {
+        hasSpeech = true;
+        clearTimeout(silTimer); silTimer = null;
+      } else if (hasSpeech && !silTimer) {
+        silTimer = setTimeout(() => stopRecording(), SILENCE_MS);
+      }
+      vadRaf = requestAnimationFrame(tick);
+    };
+    vadRaf = requestAnimationFrame(tick);
+
+  } catch (err) {
+    showVoiceToast('', 'MIC ACCESS DENIED', '#EF4444');
+    voiceStatus = 'idle'; updateMicUI();
+  }
+}
+
+// ── Mic button click (fallback) ──
+document.getElementById('micBtn').onclick = () => {
+  if (voiceStatus === 'idle') startRecording();
+  else if (voiceStatus === 'recording') stopRecording();
+};
+
+// ── Hold V to record, release V to send ──
+let vHeld = false;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'v' || e.key === 'V') {
+    if (e.repeat) return; // ignore key repeat
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; // don't hijack text fields
+    if (voiceStatus !== 'idle') return;
+    vHeld = true;
+    startRecording();
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if ((e.key === 'v' || e.key === 'V') && vHeld) {
+    vHeld = false;
+    if (voiceStatus === 'recording') stopRecording();
+  }
+});
+
+// ── Speak on ANY command from SSE (phone, telegram, debug panel, voice) ──
+// We track the last spoken command to avoid double-speaking voice commands
+let lastSpokenCmd = '';
+let lastSpokenTime = 0;
+
+// ── Send voice transcript to OpenClaw via Telegram Bot API ──
+// OpenClaw listens on the Telegram bot — we send as if the user sent a message
+const TELEGRAM_BOT_TOKEN = '8716481608:AAGlqB3hHHE52zEWx4CXKGuUZk8mi6OxdhQ';
+const TELEGRAM_CHAT_ID = '7835948646';
+
+async function sendToOpenClaw(text) {
+  const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+  });
+  if (!res.ok) console.warn('[OpenClaw] Telegram relay failed:', res.status);
+  return res;
+}
+
+function maybeSpeakSSECommand(command, source) {
+  // Voice commands are already spoken directly in the voice pipeline — never double-speak
+  if (source === 'voice') return;
+
+  // Skip if we already spoke this exact command recently
+  const now = Date.now();
+  if ((now - lastSpokenTime) < 5000 && lastSpokenCmd === command) return;
+
+  // Skip if TTS is currently busy playing something
+  if (ttsBusy || currentAudio) return;
+
+  const ack = IC_ACK[command] || IC_ACK_DEFAULT;
+  lastSpokenCmd = command;
+  lastSpokenTime = now;
+  speakIC(ack);
+}
+
 // ── Init ──
-renderFilters();
-renderCommands();
+if (window.speechSynthesis) window.speechSynthesis.cancel(); // kill any browser TTS on load
 connectSSE();
 </script>
 </body>
