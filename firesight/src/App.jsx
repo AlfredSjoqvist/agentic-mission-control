@@ -1,9 +1,10 @@
-import React, { useState, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useRef, useEffect } from 'react';
 import TerrainScene from './components/TerrainScene.jsx';
 import AgentPanel, { LargeAgentPanel } from './components/AgentPanel.jsx';
 import Timeline, { sliderToTimeSlot } from './components/Timeline.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
+import CommandChain from './components/CommandChain.jsx';
 import { colors, typography, radii, panelStyle } from './styles/designTokens.js';
 
 // Design target — layout is authored at this size and proportionally scaled
@@ -25,6 +26,30 @@ export default function App() {
   const [swarmActive,  setSwarmActive]  = useState(false);
   const [evacActive,   setEvacActive]   = useState(false);
   const [deployActive, setDeployActive] = useState(false);
+  const [placedUnits, setPlacedUnits] = useState([]);
+
+  const handlePlaceUnit = useCallback((type, worldPos) => {
+    if (!worldPos) return;
+    setPlacedUnits(prev => [...prev, { type, position: { x: worldPos.x, z: worldPos.z }, id: Date.now() }]);
+  }, []);
+
+  // Sequential dispatch — triggered by "Execute Plan" in Pyro panel
+  const [triggerSwarm,  setTriggerSwarm]  = useState(false);
+  const [triggerEvac,   setTriggerEvac]   = useState(false);
+  const [triggerDeploy, setTriggerDeploy] = useState(false);
+  const dispatchTimers = useRef([]);
+
+  const handleFullDispatch = useCallback(() => {
+    // Already dispatched? Bail
+    if (swarmActive && evacActive && deployActive) return;
+    // Stagger: Swarm → 2.5s → Evac → 2.5s → Deploy
+    setTriggerSwarm(true);
+    const t1 = setTimeout(() => setTriggerEvac(true), 2500);
+    const t2 = setTimeout(() => setTriggerDeploy(true), 5000);
+    dispatchTimers.current = [t1, t2];
+  }, [swarmActive, evacActive, deployActive]);
+
+  useEffect(() => () => dispatchTimers.current.forEach(clearTimeout), []);
 
   const toggleLayer = useCallback((key) => {
     setActiveLayers(prev => ({ ...prev, [key]: !prev[key] }));
@@ -110,13 +135,13 @@ export default function App() {
             <div style={{
               width: 6, height: 6,
               borderRadius: '50%',
-              background: colors.danger,
+              background: colors.critical,
               animation: 'pulse 2s ease-in-out infinite',
             }} />
             <span style={{
               fontFamily: typography.sansFamily,
               fontSize: '12px',
-              color: colors.danger,
+              color: colors.critical,
               fontWeight: typography.weights.medium,
             }}>
               Active Incident
@@ -137,12 +162,18 @@ export default function App() {
           <StatusBar />
         </header>
 
-        {/* ── LEFT: Pyro (large primary panel) ────────────────── */}
-        <aside style={{ gridArea: 'left', minHeight: 0 }}>
+        {/* ── LEFT: Pyro (large primary panel) ──────────────── */}
+        <aside style={{
+          gridArea: 'left',
+          minHeight: 0,
+          overflow: 'hidden',
+        }} enable-xr="">
           <LargeAgentPanel
             panelId="pyro"
             simulationMode={simulationMode}
             onSimulate={() => setSimulationMode(true)}
+            onFullDispatch={handleFullDispatch}
+            allDeployed={swarmActive && evacActive && deployActive}
           />
         </aside>
 
@@ -158,12 +189,14 @@ export default function App() {
         }}>
           <TerrainScene
             timeSlot={timeSlot}
+            sliderValue={sliderValue}
             onTerrainClick={handleTerrainClick}
             simulationMode={simulationMode}
             activeLayers={activeLayers}
             swarmActive={swarmActive}
             evacActive={evacActive}
             deployActive={deployActive}
+            placedUnits={placedUnits}
           />
           <TimeframePill timeSlot={timeSlot} simulationMode={simulationMode} />
           {simulationMode && (
@@ -171,22 +204,28 @@ export default function App() {
           )}
         </main>
 
-        {/* ── RIGHT: 3 compact stacked panels ────────────────── */}
+        {/* ── RIGHT: 3 compact panels + Command Chain ─────── */}
         <aside style={{
           gridArea: 'right',
           display: 'flex',
           flexDirection: 'column',
           gap: '8px',
           minHeight: 0,
-          overflow: 'hidden',
-        }}>
-          <AgentPanel panelId="swarm"  onActivate={() => setSwarmActive(true)}  isActive={swarmActive}  />
-          <AgentPanel panelId="evac"   onActivate={() => setEvacActive(true)}   isActive={evacActive}   />
-          <AgentPanel panelId="deploy" onActivate={() => setDeployActive(true)} isActive={deployActive} />
+          overflow: 'auto',
+        }} enable-xr="">
+          <AgentPanel panelId="swarm"  onActivate={() => setSwarmActive(true)}  isActive={swarmActive}  triggerDispatch={triggerSwarm}  />
+          <AgentPanel panelId="evac"   onActivate={() => setEvacActive(true)}   isActive={evacActive}   triggerDispatch={triggerEvac}   />
+          <AgentPanel panelId="deploy" onActivate={() => setDeployActive(true)} isActive={deployActive} triggerDispatch={triggerDeploy} />
+          <CommandChain
+            simulationMode={simulationMode}
+            swarmActive={swarmActive}
+            evacActive={evacActive}
+            deployActive={deployActive}
+          />
         </aside>
 
         {/* ── TIMELINE ────────────────────────────────────────── */}
-        <footer style={{ gridArea: 'timeline', minHeight: 0 }}>
+        <footer style={{ gridArea: 'timeline', minHeight: 0 }} enable-xr="">
           <Timeline
             value={sliderValue}
             onChange={setSliderValue}
@@ -202,6 +241,7 @@ export default function App() {
             y={contextMenu.screenY - 6}
             worldPos={contextMenu.worldPos}
             onClose={closeMenu}
+            onPlaceUnit={handlePlaceUnit}
           />
         )}
       </div>
@@ -237,7 +277,7 @@ function TimeframePill({ timeSlot, simulationMode }) {
         <span style={{
           fontFamily: typography.monoFamily,
           fontSize: '8px',
-          color: colors.fireOneHour,
+          color: colors.accent,
           letterSpacing: '0.10em',
           textTransform: 'uppercase',
           marginRight: '4px',

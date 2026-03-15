@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { colors, typography } from '../styles/designTokens.js';
 
 const indicators = [
-  { label: 'SAT', value: 'ONLINE', color: colors.safe },
-  { label: 'WIND', value: '25 NW', color: colors.warning },
-  { label: 'CREWS', value: '4', color: colors.accent },
-  { label: 'AIR', value: '2', color: colors.accent },
-  { label: 'COMMS', value: 'OK', color: colors.safe },
+  { label: 'SAT', value: 'ONLINE', color: colors.statusOk },
+  { label: 'WIND', value: '25 NW', color: colors.statusOk },
+  { label: 'CREWS', value: '4', color: colors.statusOk },
+  { label: 'AIR', value: '2', color: colors.statusOk },
+  { label: 'COMMS', value: 'OK', color: colors.statusOk },
 ];
 
 export default function StatusBar() {

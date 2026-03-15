@@ -1,18 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Wind, Droplets, Thermometer } from 'lucide-react';
 import {
   colors, typography, radii, shadows, panelStyle, buttonBase, buttonAccent, buttonGhost, buttonDanger,
 } from '../styles/designTokens.js';
-
-// ─── Semantic color roles ───────────────────────────────────────────────────
-// neutral  = environmental / terrain data → accent blue
-// warning  = elevated fire risk           → orange
-// critical = dangerous / emergency state  → red
-const sem = {
-  neutral:  colors.accent,        // #6EA8D7
-  warning:  colors.fireOneHour,   // #E87B2F
-  critical: colors.fireNow,       // #E84430
-};
 
 // ─── Lucide icon wrappers (12×12, matches existing icon API) ───────────────
 function WindIcon({ color }) {
@@ -124,46 +114,78 @@ function PlaneIcon({ color }) {
   );
 }
 
-// ─── Panel data ────────────────────────────────────────────────────────────
+// ─── Panel title icons (16×16, thin stroke, muted) ──────────────────────
+const TITLE_ICON_COLOR = '#7F8A94';
+
+function SwarmTitleIcon({ opacity = 0.6 }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity, transition: 'opacity 0.2s' }}>
+      <circle cx="8" cy="8" r="6" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeDasharray="2.5 2" />
+      <circle cx="8" cy="8" r="2.8" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" />
+      <line x1="8" y1="5.2" x2="8" y2="2" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="8" cy="8" r="0.8" fill={TITLE_ICON_COLOR} />
+    </svg>
+  );
+}
+
+function EvacTitleIcon({ opacity = 0.6 }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity, transition: 'opacity 0.2s' }}>
+      <path d="M3 12 L7 5 L10 8 L13 3" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11 3 L13 3 L13 5" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DeployTitleIcon({ opacity = 0.6 }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity, transition: 'opacity 0.2s' }}>
+      <path d="M8 2 L13.5 5 L13.5 11 L8 14 L2.5 11 L2.5 5 Z" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinejoin="round" />
+      <line x1="8" y1="8" x2="8" y2="14" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="2.5" y1="5" x2="8" y2="8" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="13.5" y1="5" x2="8" y2="8" stroke={TITLE_ICON_COLOR} strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ─── Panel data — Palantir: all chrome uses accent blue or gray ──────────
 const PANELS = {
   pyro: {
     title: 'Pyro Analysis',
     statusLabel: 'Analyzing',
-    statusColor: colors.warning,
+    statusColor: colors.statusOk,
 
-    // ① Critical banner — pulled out of the grid for prominence
     criticalMetric: {
       label: 'Spotting Risk',
       value: 'Extreme',
       icon: SpottingRiskIcon,
     },
 
-    // ② 2×2 environmental grid
     gridMetrics: [
       { label: 'Wind',        value: '25 mph NW', icon: WindIcon,        annotation: 'Strong',   annotationColor: colors.textTertiary },
-      { label: 'Humidity',    value: '12%',       icon: HumidityIcon,    annotation: 'Very Dry', annotationColor: sem.warning         },
-      { label: 'Temperature', value: '94 °F',     icon: TemperatureIcon, annotation: 'High',     annotationColor: sem.warning         },
+      { label: 'Humidity',    value: '12%',       icon: HumidityIcon,    annotation: 'Very Dry', annotationColor: colors.critical     },
+      { label: 'Temperature', value: '94 °F',     icon: TemperatureIcon, annotation: 'High',     annotationColor: colors.critical     },
       { label: 'Slope',       value: '32°',       icon: SlopeIcon,       annotation: 'Steep',    annotationColor: colors.textTertiary },
     ],
 
-    // ③ Behavior prediction strip
     spreadMetric: {
       label: 'Rate of Spread',
       value: '2.4 ch/hr',
       annotation: 'Rapid',
-      annotationColor: sem.warning,
+      annotationColor: colors.critical,
       progress: 0.65,
       icon: SpreadIcon,
     },
 
     action: 'Predict Spread',
-    actionVariant: 'danger',
+    actionVariant: 'accent',
   },
 
   swarm: {
     title: 'Swarm Intel',
+    titleIcon: SwarmTitleIcon,
     statusLabel: 'Active',
-    statusColor: colors.safe,
+    statusColor: colors.statusOk,
     metrics: [
       { label: 'Drones',   value: '12 / 14', icon: DroneIcon,    iconColor: colors.textTertiary },
       { label: 'Coverage', value: '74%',      icon: CoverageIcon, iconColor: colors.textTertiary },
@@ -174,8 +196,9 @@ const PANELS = {
 
   evac: {
     title: 'Evac Routes',
+    titleIcon: EvacTitleIcon,
     statusLabel: '3 Open',
-    statusColor: colors.safe,
+    statusColor: colors.statusOk,
     metrics: [
       { label: 'Civilians', value: '2,847', icon: PersonIcon,     iconColor: colors.textTertiary },
       { label: 'Evacuated', value: '1,203', icon: EvacPersonIcon, iconColor: colors.textTertiary },
@@ -186,8 +209,9 @@ const PANELS = {
 
   deploy: {
     title: 'Deploy Assets',
+    titleIcon: DeployTitleIcon,
     statusLabel: 'Standby',
-    statusColor: colors.warning,
+    statusColor: colors.textTertiary,
     metrics: [
       { label: 'Crews',       value: '4 active',  icon: CrewIcon,  iconColor: colors.textTertiary },
       { label: 'Air Tankers', value: '2 inbound', icon: PlaneIcon, iconColor: colors.textTertiary },
@@ -198,23 +222,50 @@ const PANELS = {
 };
 
 // ─── Large panel variant (for Pyro — primary panel) ────────────────────────
-export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
+export function LargeAgentPanel({ panelId, onSimulate, simulationMode, onFullDispatch, allDeployed }) {
   const panel = PANELS[panelId];
   const [actionState, setActionState] = useState('idle');
+  const [pyroPhase, setPyroPhase] = useState(0);
+  const [pyroVisibleRows, setPyroVisibleRows] = useState(0);
+  const [alertPhase, setAlertPhase] = useState(0);
+  const pyroTimers = useRef([]);
+
+  const clearPyroTimers = useCallback(() => {
+    pyroTimers.current.forEach(clearTimeout);
+    pyroTimers.current = [];
+  }, []);
+
+  useEffect(() => clearPyroTimers, [clearPyroTimers]);
+
+  // Critical Alert phased reveal on mount
+  useEffect(() => {
+    if (panelId !== 'pyro') return;
+    const t1 = setTimeout(() => setAlertPhase(1), 800);
+    const t2 = setTimeout(() => setAlertPhase(2), 2000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [panelId]);
 
   const handleAction = () => {
-    if (actionState !== 'idle') return;
+    if (actionState !== 'idle' || simulationMode) return;
     setActionState('loading');
-    setTimeout(() => {
-      setActionState('done');
-      onSimulate?.();
-      setTimeout(() => setActionState('idle'), 2000);
-    }, 1000);
-  };
+    setPyroPhase(1);
+    setPyroVisibleRows(0);
 
-  const btnStyle = {
-    accent: buttonAccent, ghost: buttonGhost, danger: buttonDanger,
-  }[panel.actionVariant];
+    const t1 = setTimeout(() => setPyroPhase(2), 500);
+    const t2 = setTimeout(() => {
+      setPyroPhase(3);
+      onSimulate?.();
+    }, 1200);
+    const t3 = setTimeout(() => setPyroVisibleRows(1), 1500);
+    const t4 = setTimeout(() => setPyroVisibleRows(2), 1800);
+    const t5 = setTimeout(() => setPyroVisibleRows(3), 2100);
+    const t6 = setTimeout(() => {
+      setActionState('done');
+      setPyroPhase(4);
+    }, 2500);
+    const t7 = setTimeout(() => setActionState('idle'), 4500);
+    pyroTimers.current = [t1, t2, t3, t4, t5, t6, t7];
+  };
 
   const isPyro = panelId === 'pyro';
 
@@ -227,22 +278,14 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
       padding: isPyro ? '20px 20px 24px' : '20px',
       height: '100%',
       boxSizing: 'border-box',
-      // Pyro gets a subtle warm left accent
-      borderLeft: isPyro ? '2px solid rgba(212, 80, 50, 0.25)' : undefined,
     }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isPyro && (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, opacity: 0.85 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, opacity: 0.7 }}>
               <path d="M12 2C12 2 8 6 8 10C8 11.1 8.3 12.1 8.8 13C7.3 12.4 6 11 6 8.5C4 10.5 3 13 3 16C3 19.9 7.1 23 12 23C16.9 23 21 19.9 21 16C21 11 16 7 12 2Z"
-                fill="url(#pyroGrad)" />
-              <defs>
-                <linearGradient id="pyroGrad" x1="12" y1="2" x2="12" y2="23" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stopColor="#D44040" />
-                  <stop offset="100%" stopColor="#E87B2F" />
-                </linearGradient>
-              </defs>
+                fill={colors.textTertiary} />
             </svg>
           )}
           <span style={{
@@ -258,47 +301,61 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
         <StatusDot label={panel.statusLabel} color={panel.statusColor} />
       </div>
 
-      {/* ① Critical Alert — hazard stripe: left border only, backlit glow */}
-      {isPyro && panel.criticalMetric && (
+      {/* ① Critical Alert — phased reveal: scan → detect */}
+      {isPyro && panel.criticalMetric && alertPhase >= 1 && (
         <div style={{
-          borderLeft: `2px solid ${sem.critical}`,
-          background: 'rgba(255, 68, 68, 0.04)',
-          boxShadow: `inset 3px 0 12px rgba(255, 68, 68, 0.06)`,
+          borderLeft: `2px solid ${alertPhase >= 2 ? colors.critical : 'rgba(224, 64, 64, 0.3)'}`,
+          background: alertPhase >= 2 ? 'rgba(224, 64, 64, 0.04)' : 'rgba(224, 64, 64, 0.02)',
+          boxShadow: alertPhase >= 2 ? `inset 3px 0 12px rgba(224, 64, 64, 0.05)` : 'none',
           borderRadius: `0 ${radii.base} ${radii.base} 0`,
           padding: '10px 12px 12px 14px',
+          transition: 'border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease',
         }}>
-          {/* ⚠ CRITICAL ALERT row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '6px' }}>
-            <SpottingRiskIcon color={sem.critical} />
-            <span style={{
-              fontFamily: typography.sansFamily, fontSize: '9px',
-              color: sem.critical, letterSpacing: typography.letterSpacing.widest,
-              textTransform: 'uppercase', fontWeight: typography.weights.semibold,
-            }}>
-              Critical Alert
-            </span>
-          </div>
-          {/* metric label */}
-          <div style={{
-            fontFamily: typography.sansFamily, fontSize: '9px',
-            color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
-            textTransform: 'uppercase', marginBottom: '2px',
-          }}>
-            {panel.criticalMetric.label}
-          </div>
-          {/* value — backlit red text-shadow, like a lit display */}
-          <div style={{
-            fontFamily: typography.monoFamily, fontSize: '15px',
-            color: sem.critical, fontWeight: typography.weights.semibold,
-            letterSpacing: typography.letterSpacing.wide,
-            textShadow: shadows.glowCritical,
-          }}>
-            {panel.criticalMetric.value}
-          </div>
+          {alertPhase === 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <SpottingRiskIcon color={'rgba(224, 64, 64, 0.5)'} />
+              <BlinkingText text="SCANNING THREAT LEVEL..." color={colors.critical} />
+            </div>
+          )}
+          {alertPhase >= 2 && (
+            <>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '6px',
+                opacity: 1, transform: 'translateY(0)',
+                animation: 'fadeInUp 0.4s ease',
+              }}>
+                <SpottingRiskIcon color={colors.critical} />
+                <span style={{
+                  fontFamily: typography.sansFamily, fontSize: '9px',
+                  color: colors.critical, letterSpacing: typography.letterSpacing.widest,
+                  textTransform: 'uppercase', fontWeight: typography.weights.semibold,
+                }}>
+                  Critical Alert
+                </span>
+              </div>
+              <div style={{
+                fontFamily: typography.sansFamily, fontSize: '9px',
+                color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
+                textTransform: 'uppercase', marginBottom: '2px',
+                animation: 'fadeInUp 0.4s ease 0.1s both',
+              }}>
+                {panel.criticalMetric.label}
+              </div>
+              <div style={{
+                fontFamily: typography.monoFamily, fontSize: '15px',
+                color: colors.critical, fontWeight: typography.weights.semibold,
+                letterSpacing: typography.letterSpacing.wide,
+                textShadow: shadows.glowCritical,
+                animation: 'fadeInUp 0.4s ease 0.2s both',
+              }}>
+                {panel.criticalMetric.value}
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {/* ② 2×2 Environmental Grid — gridAutoRows forces all 4 cells equal height */}
+      {/* ② 2×2 Environmental Grid */}
       {isPyro && panel.gridMetrics && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridAutoRows: '76px', gap: '6px' }}>
           {panel.gridMetrics.map((m) => {
@@ -384,16 +441,18 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
               <span style={{
                 fontFamily: typography.monoFamily, fontSize: '9px',
                 color: sm.annotationColor,
-                border: `1px solid ${sm.annotationColor}`,
+                border: `1px solid rgba(224, 64, 64, 0.25)`,
                 borderRadius: '3px', padding: '1px 5px', opacity: 0.85,
               }}>
                 {sm.annotation}
               </span>
             </div>
-            <div style={{ height: '2px', background: 'rgba(140,160,190,0.12)', borderRadius: '1px' }}>
+            {/* Progress bar — blue accent, not orange-red */}
+            <div style={{ height: '2px', background: 'rgba(140,160,190,0.08)', borderRadius: '1px' }}>
               <div style={{
                 height: '100%', width: `${sm.progress * 100}%`,
-                background: `linear-gradient(90deg, ${sem.warning}, ${sem.critical})`,
+                background: colors.accent,
+                opacity: 0.7,
                 borderRadius: '1px',
               }} />
             </div>
@@ -401,228 +460,347 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode }) {
         );
       })()}
 
-      {/* Fallback: non-pyro flat list */}
-      {!isPyro && panel.metrics && (
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-          {panel.metrics.map((m, i) => {
-            const Icon = m.icon;
-            return (
-              <div key={m.label} style={{
-                display: 'flex', flexDirection: 'column', padding: '7px 0',
-                borderBottom: i < panel.metrics.length - 1 ? '1px solid rgba(140,160,190,0.10)' : 'none',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  {Icon && <Icon color={m.iconColor || colors.textTertiary} />}
-                  <span style={{
-                    fontFamily: typography.sansFamily, fontSize: '10px',
-                    color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
-                    textTransform: 'uppercase',
-                  }}>
-                    {m.label}
-                  </span>
-                </div>
-                <div style={{
-                  fontFamily: typography.monoFamily, fontSize: '13px',
-                  color: colors.dataValue, fontWeight: typography.weights.medium,
-                  marginTop: '2px', paddingLeft: '17px', whiteSpace: 'nowrap',
-                }}>
-                  {m.value}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ④ Projected Fire Growth — only visible after simulation triggered */}
-      {isPyro && simulationMode && (
-        <div style={{
-          border: '1px solid rgba(242, 125, 38, 0.20)',
-          background: 'rgba(0, 0, 0, 0.30)',
-          boxShadow: '0 0 0 1px rgba(242, 125, 38, 0.06)',
-          borderRadius: radii.base,
-          padding: '10px 12px 12px 12px',
-        }}>
-          {/* Header */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '8px' }}>
-            <SpreadIcon color={sem.warning} />
-            <span style={{
-              fontFamily: typography.sansFamily, fontSize: '9px',
-              color: sem.warning, letterSpacing: typography.letterSpacing.widest,
-              textTransform: 'uppercase', fontWeight: typography.weights.semibold,
-            }}>
-              Projected Fire Growth
-            </span>
-            {/* SIM badge — blue accent signals AI-computed output, not a live sensor */}
-            <span style={{
-              fontFamily: typography.monoFamily,
-              fontSize: '8px',
-              color: colors.accent,
-              border: '1px solid rgba(110, 168, 215, 0.30)',
-              borderRadius: '3px',
-              padding: '1px 4px',
-              letterSpacing: '0.08em',
-              marginLeft: 'auto',
-            }}>SIM</span>
-          </div>
-          {/* Rows */}
-          {[
-            { label: '+1 Hour',    value: '210 acres', color: sem.warning  },
-            { label: '+3 Hours',   value: '480 acres', color: sem.warning  },
-            { label: 'Confidence', value: '87%',       color: sem.neutral  },
-          ].map(row => (
-            <div key={row.label} style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-              marginBottom: '3px',
-            }}>
-              <span style={{
-                fontFamily: typography.sansFamily, fontSize: '9px',
-                color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
-                textTransform: 'uppercase',
-              }}>
-                {row.label}
-              </span>
-              <span style={{
-                fontFamily: typography.monoFamily, fontSize: '12px',
-                color: row.color, fontWeight: typography.weights.medium,
-                textShadow: row.color === sem.warning
-                  ? '0 0 6px rgba(242, 125, 38, 0.35)'
-                  : 'none',
-              }}>
-                {row.value}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Action — Pyro button is the primary CTA */}
+      {/* Action button — above results so click → results appear below */}
       <button
         style={{
-          ...(isPyro ? {
-            ...buttonBase,
-            background: 'linear-gradient(135deg, rgba(212,64,64,0.18), rgba(232,123,47,0.12))',
-            border: '1px solid rgba(212,80,50,0.28)',
-            color: '#E87B2F',
-          } : btnStyle),
+          ...buttonAccent,
           width: '100%',
           padding: isPyro ? '12px 0' : '10px 0',
-          marginTop: isPyro ? 'auto' : undefined,
           opacity: actionState === 'loading' ? 0.6 : 1,
+          transition: 'opacity 0.3s ease, box-shadow 0.3s ease',
+          boxShadow: actionState === 'loading'
+            ? `0 0 12px ${colors.accentDim}`
+            : 'none',
           fontSize: isPyro ? '12px' : undefined,
         }}
         onClick={handleAction}
       >
-        {actionState === 'done' ? 'Complete' : actionState === 'loading' ? 'Processing...' : panel.action}
+        {actionState === 'done' ? '✓ Complete'
+          : pyroPhase === 1 ? <><ProgressDots /> Analyzing</>
+          : pyroPhase === 2 ? <><ProgressDots /> Running Simulation</>
+          : simulationMode ? '✓ Complete'
+          : panel.action}
       </button>
+
+      {/* ④ Projected Fire Growth — phased reveal, appears below button */}
+      {isPyro && (pyroPhase >= 1 || simulationMode) && (() => {
+        const pyroRows = [
+          { label: '+1 Hour',    numVal: 210, suffix: ' acres', color: colors.dataValue, idx: 0 },
+          { label: '+3 Hours',   numVal: 480, suffix: ' acres', color: colors.dataValue, idx: 1 },
+          { label: 'Confidence', numVal: 87,  suffix: '%',      color: colors.accent,    idx: 2 },
+        ];
+        const isScanning = pyroPhase >= 1 && pyroPhase <= 2;
+        return (
+          <div style={{
+            border: `1px solid ${colors.border}`,
+            background: 'rgba(0, 0, 0, 0.25)',
+            borderRadius: radii.base,
+            padding: '10px 12px 12px 12px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '8px' }}>
+              <SpreadIcon color={colors.textSecondary} />
+              <span style={{
+                fontFamily: typography.sansFamily, fontSize: '9px',
+                color: colors.textSecondary, letterSpacing: typography.letterSpacing.widest,
+                textTransform: 'uppercase', fontWeight: typography.weights.semibold,
+              }}>
+                Projected Fire Growth
+              </span>
+              <span style={{
+                fontFamily: typography.monoFamily,
+                fontSize: '8px',
+                color: colors.accent,
+                border: `1px solid ${colors.accentMid}`,
+                borderRadius: '3px',
+                padding: '1px 4px',
+                letterSpacing: '0.08em',
+                marginLeft: 'auto',
+              }}>SIM</span>
+            </div>
+            {isScanning && (
+              <div style={{ marginBottom: '6px' }}>
+                <BlinkingText
+                  text={pyroPhase === 1 ? 'ANALYZING TERRAIN...' : 'RUNNING SIMULATION...'}
+                  color={colors.accent}
+                />
+                <div style={{
+                  marginTop: '4px',
+                  height: '1px',
+                  background: 'rgba(140,160,190,0.08)',
+                  borderRadius: '1px',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    height: '100%',
+                    background: colors.accent,
+                    opacity: 0.5,
+                    width: '30%',
+                    animation: 'shimmer 1.2s ease-in-out infinite',
+                  }} />
+                </div>
+              </div>
+            )}
+            {pyroRows.map(row => {
+              const visible = simulationMode && pyroPhase === 0
+                ? true
+                : pyroVisibleRows > row.idx;
+              if (!visible && !isScanning) return null;
+              if (isScanning) return null;
+              return (
+                <div key={row.label} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                  marginBottom: '3px',
+                  opacity: visible ? 1 : 0,
+                  transform: visible ? 'translateY(0)' : 'translateY(6px)',
+                  transition: 'opacity 0.4s ease, transform 0.4s ease',
+                }}>
+                  <span style={{
+                    fontFamily: typography.sansFamily, fontSize: '9px',
+                    color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
+                    textTransform: 'uppercase',
+                  }}>
+                    {row.label}
+                  </span>
+                  <span style={{
+                    fontFamily: typography.monoFamily, fontSize: '12px',
+                    color: row.color, fontWeight: typography.weights.medium,
+                  }}>
+                    {visible && (pyroPhase !== 0 || !simulationMode)
+                      ? <AnimatedValue target={row.numVal} duration={800} suffix={row.suffix} />
+                      : `${row.numVal}${row.suffix}`
+                    }
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* ⑤ Execute Recommended Plan — appears after simulation complete */}
+      {isPyro && simulationMode && (pyroPhase === 0 || pyroPhase >= 4) && (
+        <button
+          style={{
+            ...buttonAccent,
+            width: '100%',
+            padding: '12px 0',
+            background: allDeployed ? 'rgba(61, 184, 122, 0.08)' : colors.accentDim,
+            border: `1px solid ${allDeployed ? 'rgba(61, 184, 122, 0.25)' : colors.accentMid}`,
+            color: allDeployed ? colors.statusOk : colors.accent,
+            fontSize: '12px',
+            letterSpacing: '0.10em',
+            transition: 'all 0.3s ease',
+          }}
+          onClick={onFullDispatch}
+          disabled={allDeployed}
+        >
+          {allDeployed ? '✓ All Units Deployed' : '▶ Execute Recommended Plan'}
+        </button>
+      )}
     </div>
   );
 }
 
-// ─── Active-state info per panel ───────────────────────────────────────────
+// ─── Animated number counter ──────────────────────────────────────────────
+function AnimatedValue({ target, duration = 1200, suffix = '', prefix = '' }) {
+  const [current, setCurrent] = useState(0);
+  const startRef = useRef(null);
+
+  useEffect(() => {
+    const num = parseInt(target, 10) || 0;
+    if (num === 0) { setCurrent(0); return; }
+    startRef.current = performance.now();
+    let raf;
+    function tick(now) {
+      const elapsed = now - startRef.current;
+      const t = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setCurrent(Math.round(eased * num));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+
+  return <>{prefix}{current}{suffix}</>;
+}
+
+// ─── Blinking text for loading phases ─────────────────────────────────────
+function BlinkingText({ text, color }) {
+  return (
+    <span style={{
+      fontFamily: typography.monoFamily, fontSize: '8px',
+      color: color || colors.textTertiary,
+      letterSpacing: typography.letterSpacing.widest,
+      textTransform: 'uppercase',
+      animation: 'pulse 1.2s ease-in-out infinite',
+    }}>
+      {text}
+    </span>
+  );
+}
+
+// ─── Progress dots animation ──────────────────────────────────────────────
+function ProgressDots() {
+  const [dots, setDots] = useState('.');
+  useEffect(() => {
+    const id = setInterval(() => {
+      setDots(prev => prev.length >= 3 ? '.' : prev + '.');
+    }, 300);
+    return () => clearInterval(id);
+  }, []);
+  return dots;
+}
+
+// ─── Feed phases per panel ────────────────────────────────────────────────
+const FEED_PHASES = {
+  swarm: [
+    { text: 'INITIALIZING SWARM LINK', delay: 0 },
+    { text: 'CONNECTING TO DRONE FLEET', delay: 600 },
+  ],
+  evac: [
+    { text: 'SCANNING ROUTE NETWORK', delay: 0 },
+    { text: 'VALIDATING CORRIDORS', delay: 600 },
+  ],
+  deploy: [
+    { text: 'MOBILIZING RESOURCES', delay: 0 },
+    { text: 'DISPATCHING UNITS', delay: 600 },
+  ],
+};
+
+// ─── Active-state info — all use accent blue for consistency ──────────────
 const ACTIVE_INFO = {
   swarm: {
     label: 'DRONES DEPLOYED',
-    color: colors.accent,
+    color: colors.statusOk,
     rows: [
-      { label: 'Coverage',  value: '91%',      color: colors.accent  },
-      { label: 'Drones',    value: '12 active', color: colors.text    },
+      { label: 'Coverage',  value: '91%',      color: colors.statusOk },
+      { label: 'Drones',    value: '12 active', color: colors.statusOk },
     ],
   },
   evac: {
     label: 'ROUTES ACTIVE',
-    color: colors.safe,
+    color: colors.statusOk,
     rows: [
-      { label: 'Clear',   value: '2 routes', color: colors.safe   },
-      { label: 'Blocked', value: '1 route',  color: colors.danger },
+      { label: 'Clear',   value: '2 routes', color: colors.statusOk },
+      { label: 'Blocked', value: '1 route',  color: colors.critical },
     ],
   },
   deploy: {
     label: 'UNITS ACTIVE',
-    color: colors.warning,
+    color: colors.statusOk,
     rows: [
-      { label: 'Crews',    value: '4 deployed', color: colors.warning },
-      { label: 'Tankers',  value: '2 airborne', color: colors.accent  },
+      { label: 'Crews',    value: '4 deployed', color: colors.statusOk },
+      { label: 'Tankers',  value: '2 airborne', color: colors.statusOk },
     ],
   },
 };
 
 // ─── Compact panel variant (for Swarm, Evac, Deploy) ───────────────────────
-export default function AgentPanel({ panelId, onActivate, isActive }) {
+export default function AgentPanel({ panelId, onActivate, isActive, triggerDispatch }) {
   const panel = PANELS[panelId];
-  const [actionState, setActionState] = useState('idle');
+  const [phase, setPhase] = useState(0);
+  const [visibleRows, setVisibleRows] = useState(0);
+  const [showBadge, setShowBadge] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const timerRefs = useRef([]);
 
-  const handleAction = () => {
-    if (actionState !== 'idle') return;
-    setActionState('loading');
-    setTimeout(() => {
-      setActionState('done');
+  const clearTimers = useCallback(() => {
+    timerRefs.current.forEach(clearTimeout);
+    timerRefs.current = [];
+  }, []);
+
+  const handleAction = useCallback(() => {
+    if (phase !== 0 || isActive) return;
+    clearTimers();
+    setPhase(1);
+    setVisibleRows(0);
+    setShowBadge(false);
+
+    const t1 = setTimeout(() => setPhase(2), 600);
+    const t2 = setTimeout(() => {
+      setPhase(3);
       onActivate?.();
-      setTimeout(() => setActionState('idle'), 2000);
-    }, 900);
-  };
+    }, 1400);
+    const t3 = setTimeout(() => setVisibleRows(1), 1700);
+    const t4 = setTimeout(() => setVisibleRows(2), 2000);
+    const t5 = setTimeout(() => setShowBadge(true), 2200);
+    const t6 = setTimeout(() => setPhase(4), 2500);
+    const t7 = setTimeout(() => setPhase(0), 4500);
+    timerRefs.current = [t1, t2, t3, t4, t5, t6, t7];
+  }, [phase, isActive, clearTimers, onActivate]);
 
-  const btnStyle = {
-    accent: buttonAccent, ghost: buttonGhost, danger: buttonDanger,
-  }[panel.actionVariant];
+  // External trigger from "Execute Plan" button
+  useEffect(() => {
+    if (triggerDispatch && !isActive && phase === 0) {
+      handleAction();
+    }
+  }, [triggerDispatch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => clearTimers, [clearTimers]);
 
   const activeInfo = ACTIVE_INFO[panelId];
+  const feedPhases = FEED_PHASES[panelId];
+  const isLoading = phase >= 1 && phase <= 2;
+  const isRevealing = phase >= 3;
+
+  let btnLabel = panel.action;
+  if (phase === 1 || phase === 2) btnLabel = <><ProgressDots /></>;
+  else if (phase === 4) btnLabel = '✓ Dispatched';
+  else if (isActive) btnLabel = '✓ Dispatched';
 
   return (
-    <div style={{
-      ...panelStyle,
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '10px',
-      padding: '14px 16px',
-      flex: 1,
-      minHeight: 0,
-    }}>
-      {/* Header row */}
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        ...panelStyle,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        padding: '12px 14px',
+        flex: 'none',
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{
-          fontFamily: typography.sansFamily,
-          fontSize: typography.sizes.md,
-          fontWeight: typography.weights.semibold,
-          color: colors.text,
-          letterSpacing: typography.letterSpacing.tight,
-        }}>
-          {panel.title}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {panel.titleIcon && <panel.titleIcon opacity={hovered || isActive ? 0.8 : 0.6} />}
+          <span style={{
+            fontFamily: typography.sansFamily,
+            fontSize: typography.sizes.md,
+            fontWeight: typography.weights.semibold,
+            color: colors.text,
+            letterSpacing: typography.letterSpacing.tight,
+          }}>
+            {panel.title}
+          </span>
+        </div>
         <StatusDot
-          label={isActive && activeInfo ? activeInfo.label.split(' ')[0] : panel.statusLabel}
-          color={isActive && activeInfo ? activeInfo.color : panel.statusColor}
+          label={showBadge && activeInfo ? activeInfo.label.split(' ')[0] : panel.statusLabel}
+          color={showBadge && activeInfo ? activeInfo.color : panel.statusColor}
         />
       </div>
 
-      {/* Inline metrics */}
       <div style={{ display: 'flex', gap: '16px' }}>
         {panel.metrics.map((m) => {
           const Icon = m.icon;
           return (
             <div key={m.label}>
               <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '3px',
-                marginBottom: '2px',
+                display: 'flex', alignItems: 'center', gap: '3px', marginBottom: '2px',
               }}>
                 {Icon && <Icon color={m.iconColor || colors.textTertiary} />}
                 <span style={{
-                  fontFamily: typography.sansFamily,
-                  fontSize: '9px',
-                  color: colors.textTertiary,
-                  letterSpacing: typography.letterSpacing.wider,
+                  fontFamily: typography.sansFamily, fontSize: '9px',
+                  color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
                   textTransform: 'uppercase',
                 }}>
                   {m.label}
                 </span>
               </div>
               <div style={{
-                fontFamily: typography.monoFamily,
-                fontSize: typography.sizes.base,
-                color: colors.text,
-                fontWeight: typography.weights.medium,
+                fontFamily: typography.monoFamily, fontSize: typography.sizes.base,
+                color: colors.text, fontWeight: typography.weights.medium,
               }}>
                 {m.value}
               </div>
@@ -631,80 +809,94 @@ export default function AgentPanel({ panelId, onActivate, isActive }) {
         })}
       </div>
 
-      {/* Active status section — shown after dispatch */}
-      {isActive && activeInfo && (
-        <div style={{
-          borderTop: `1px solid ${colors.borderSubtle}`,
-          paddingTop: '6px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '3px',
-        }}>
-          <span style={{
-            fontFamily: typography.monoFamily,
-            fontSize: '8px',
-            color: activeInfo.color,
-            letterSpacing: typography.letterSpacing.widest,
-            textTransform: 'uppercase',
-            marginBottom: '2px',
+      {isLoading && feedPhases && (
+        <div style={{ borderTop: `1px solid ${colors.borderSubtle}`, paddingTop: '6px' }}>
+          <BlinkingText text={feedPhases[phase - 1]?.text + '...'} color={colors.accent} />
+          <div style={{
+            marginTop: '6px', height: '1px',
+            background: 'rgba(140,160,190,0.08)', borderRadius: '1px', overflow: 'hidden',
           }}>
-            {activeInfo.label}
-          </span>
-          {activeInfo.rows.map(row => (
-            <div key={row.label} style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'baseline',
-            }}>
-              <span style={{
-                fontFamily: typography.sansFamily,
-                fontSize: '9px',
-                color: colors.textTertiary,
-                letterSpacing: typography.letterSpacing.wider,
-                textTransform: 'uppercase',
-              }}>
-                {row.label}
-              </span>
-              <span style={{
-                fontFamily: typography.monoFamily,
-                fontSize: '11px',
-                color: row.color,
-                fontWeight: typography.weights.medium,
-              }}>
-                {row.value}
-              </span>
-            </div>
-          ))}
+            <div style={{
+              height: '100%', background: colors.accent, opacity: 0.5,
+              width: '30%', animation: 'shimmer 1.2s ease-in-out infinite',
+            }} />
+          </div>
         </div>
       )}
 
-      {/* Action */}
+      {(isRevealing || isActive) && activeInfo && (
+        <div style={{
+          borderTop: `1px solid ${colors.borderSubtle}`,
+          paddingTop: '6px',
+          display: 'flex', flexDirection: 'column', gap: '3px',
+        }}>
+          {showBadge && (
+            <span style={{
+              fontFamily: typography.monoFamily, fontSize: '8px',
+              color: colors.statusOk, letterSpacing: typography.letterSpacing.widest,
+              textTransform: 'uppercase', marginBottom: '2px',
+              opacity: showBadge ? 1 : 0, transition: 'opacity 0.4s ease',
+            }}>
+              {activeInfo.label}
+            </span>
+          )}
+          {activeInfo.rows.map((row, idx) => {
+            const visible = isActive && phase === 0 ? true : visibleRows > idx;
+            if (!visible) return null;
+            const numMatch = row.value.match(/^(\d+)/);
+            const numPart = numMatch ? parseInt(numMatch[1], 10) : null;
+            const textPart = numMatch ? row.value.slice(numMatch[0].length) : row.value;
+            return (
+              <div key={row.label} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                opacity: visible ? 1 : 0,
+                transform: visible ? 'translateY(0)' : 'translateY(6px)',
+                transition: 'opacity 0.4s ease, transform 0.4s ease',
+              }}>
+                <span style={{
+                  fontFamily: typography.sansFamily, fontSize: '9px',
+                  color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
+                  textTransform: 'uppercase',
+                }}>
+                  {row.label}
+                </span>
+                <span style={{
+                  fontFamily: typography.monoFamily, fontSize: '11px',
+                  color: row.color, fontWeight: typography.weights.medium,
+                }}>
+                  {numPart !== null && (phase !== 0 || !isActive)
+                    ? <><AnimatedValue target={numPart} duration={800} />{textPart}</>
+                    : row.value
+                  }
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <button
         style={{
-          ...btnStyle,
-          width: '100%',
-          padding: '7px 0',
-          marginTop: 'auto',
-          opacity: actionState === 'loading' ? 0.6 : 1,
+          ...buttonAccent,
+          width: '100%', padding: '7px 0', marginTop: 'auto',
+          opacity: isLoading ? 0.6 : 1,
+          transition: 'opacity 0.3s ease, box-shadow 0.3s ease',
+          boxShadow: isLoading ? `0 0 12px ${colors.accentDim}` : 'none',
         }}
         onClick={handleAction}
+        disabled={isActive && phase === 0}
       >
-        {actionState === 'done' ? '✓ Dispatched' : actionState === 'loading' ? '...' : panel.action}
+        {btnLabel}
       </button>
     </div>
   );
 }
 
-// ─── Minimal status dot + label ────────────────────────────────────────────
+// ─── Minimal status dot + label — semantic glow per color ───────────────
 function StatusDot({ label, color }) {
-  // Map color to appropriate glow
-  const glowMap = {
-    [colors.safe]:    shadows.glowSafe,
-    [colors.warning]: shadows.glowWarning,
-    [colors.danger]:  shadows.glowCritical,
-  };
-  const glow = glowMap[color] || shadows.glowAccent;
-
+  const glow = color === colors.critical ? shadows.glowCritical
+    : color === colors.statusOk ? shadows.glowStatus
+    : shadows.glowAccent;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
       <div style={{

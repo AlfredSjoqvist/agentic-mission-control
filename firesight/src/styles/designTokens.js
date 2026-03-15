@@ -1,52 +1,45 @@
-// ─── FireSight Design System ───────────────────────────────────────────────
-// Edit this file to change colors, typography, and spacing across the UI.
-//
-// STYLE GUIDE: Tactical Hardware Interface — matte black chassis, modular
-// data cards, mono readouts, hazard-stripe alerts, tactile buttons.
-// Think high-end fire command hardware, not a glass web app.
+// ─── FireSight Design System — Palantir Style ─────────────────────────────
+// Monochromatic UI chrome. Single cold blue accent for interactive elements.
+// Warm colors (gold/orange/red) ONLY in data visualizations (fire on terrain,
+// timeline bar). Red in chrome ONLY for genuine critical alerts.
 
 export const colors = {
-  // Backgrounds — matte, solid, no transparency
-  bg: '#0D0E10',
-  bgPanel: '#111215',
-  bgPanelHover: '#141519',
-  bgInset: 'rgba(255, 255, 255, 0.03)',
+  // Backgrounds — near-black, solid
+  bg: '#0A0D11',
+  bgPanel: '#0F1218',
+  bgPanelHover: '#151920',
+  bgInset: 'rgba(255, 255, 255, 0.025)',
 
-  // Borders — white-tinted, extremely subtle
-  border: 'rgba(255, 255, 255, 0.05)',
+  // Borders — extremely subtle
+  border: 'rgba(255, 255, 255, 0.06)',
   borderSubtle: 'rgba(255, 255, 255, 0.03)',
   borderFocus: 'rgba(255, 255, 255, 0.10)',
 
-  // Accent — desaturated blue, restrained
-  accent: '#6EA8D7',
-  accentDim: 'rgba(110, 168, 215, 0.10)',
+  // Accent — cold blue, the ONLY interactive color in chrome
+  accent: '#5B9BD5',
+  accentDim: 'rgba(91, 155, 213, 0.10)',
+  accentMid: 'rgba(91, 155, 213, 0.25)',
 
-  // Fire — the only vivid warm palette in the UI
-  fireNow: '#FF4444',       // Danger Red
-  fireOneHour: '#F27D26',   // Warning Orange
+  // Fire — DATA LAYER ONLY, never in UI chrome
+  fireNow: '#FF4444',
+  fireOneHour: '#F27D26',
   fireThreeHour: '#E8B830',
 
-  // Status
-  safe: '#10B981',          // Active Emerald
-  warning: '#F27D26',
-  danger: '#FF4444',
+  // Status — semantic: green=healthy/active, red=critical
+  statusOk: '#3DB87A',       // muted emerald — system healthy / active / dispatched
+  critical: '#E04040',       // muted red — genuine emergencies only
 
-  // Text — warm white primary, muted secondary
-  text: '#D8DEE8',
-  textSecondary: 'rgba(200, 210, 225, 0.50)',
-  textTertiary: 'rgba(142, 146, 153, 0.60)',   // #8E9299 @ 60% — industrial silk-screen
+  // Text — cool white, 4-level hierarchy
+  text: '#D4DAE3',
+  textSecondary: 'rgba(185, 195, 210, 0.72)',
+  textTertiary: 'rgba(145, 155, 170, 0.62)',
+  textMuted: 'rgba(115, 125, 140, 0.50)',
 
   // Data values — max legibility mono readouts
-  dataValue: '#E8EEF5',
-
-  // Semantic color roles
-  // neutral  → accent (#6EA8D7)   — environmental / terrain
-  // warning  → fireOneHour        — elevated fire risk
-  // critical → fireNow            — dangerous / emergency
+  dataValue: '#E2E8F0',
 };
 
 export const typography = {
-  // Inter for UI labels; JetBrains Mono for all data values & status codes
   sansFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
   monoFamily: "'JetBrains Mono', 'SF Mono', monospace",
 
@@ -66,7 +59,6 @@ export const typography = {
     semibold: 600,
   },
 
-  // Micro-labels use `widest` to mimic silk-screened industrial equipment text
   letterSpacing: {
     tight: '-0.01em',
     normal: '0',
@@ -92,24 +84,21 @@ export const radii = {
   md: '12px',
   lg: '16px',
   xl: '20px',
-  panel: '28px',   // Large rounded corners — hardware shell aesthetic
+  panel: '28px',
   full: '9999px',
 };
 
 export const shadows = {
-  panel: '0 8px 32px rgba(0, 0, 0, 0.60)',
+  panel: '0 8px 32px rgba(0, 0, 0, 0.65)',
   panelInset: '0 1px 0 rgba(255, 255, 255, 0.02) inset',
   soft: '0 2px 12px rgba(0, 0, 0, 0.4)',
 
-  // LED-style glows for status indicators and critical readouts
-  glowCritical: '0 0 8px rgba(255, 68, 68, 0.45)',
-  glowWarning:  '0 0 8px rgba(242, 125, 38, 0.40)',
-  glowSafe:     '0 0 8px rgba(16, 185, 129, 0.40)',
-  glowAccent:   '0 0 6px rgba(110, 168, 215, 0.30)',
+  // Glows
+  glowAccent:   '0 0 6px rgba(91, 155, 213, 0.30)',
+  glowStatus:   '0 0 6px rgba(61, 184, 122, 0.35)',
+  glowCritical: '0 0 8px rgba(224, 64, 64, 0.40)',
 };
 
-// ─── Shared hardware panel ─────────────────────────────────────────────────
-// Solid matte surface — no glass blur, no transparency
 export const panelStyle = {
   background: colors.bgPanel,
   border: `1px solid ${colors.border}`,
@@ -117,8 +106,7 @@ export const panelStyle = {
   boxShadow: `${shadows.panel}, ${shadows.panelInset}`,
 };
 
-// ─── Buttons ───────────────────────────────────────────────────────────────
-// Tactile look: semi-transparent fill + brighter border + scale feedback
+// ─── Buttons — cold blue accent only ──────────────────────────────────────
 export const buttonBase = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -134,15 +122,15 @@ export const buttonBase = {
   textTransform: 'uppercase',
   transition: 'all 0.15s ease',
   outline: 'none',
-  background: 'rgba(255, 255, 255, 0.05)',
+  background: 'rgba(255, 255, 255, 0.04)',
   color: colors.text,
   padding: '8px 16px',
 };
 
 export const buttonAccent = {
   ...buttonBase,
-  background: 'rgba(110, 168, 215, 0.10)',
-  border: '1px solid rgba(110, 168, 215, 0.22)',
+  background: colors.accentDim,
+  border: `1px solid ${colors.accentMid}`,
   color: colors.accent,
 };
 
@@ -152,7 +140,7 @@ export const buttonGhost = {
 
 export const buttonDanger = {
   ...buttonBase,
-  background: 'rgba(255, 68, 68, 0.08)',
-  border: '1px solid rgba(255, 68, 68, 0.22)',
-  color: colors.danger,
+  background: 'rgba(224, 64, 64, 0.08)',
+  border: '1px solid rgba(224, 64, 64, 0.22)',
+  color: colors.critical,
 };
