@@ -1,0 +1,20 @@
+{
+  "name": "FireSight",
+  "short_name": "FireSight",
+  "description": "Spatial VR command center for wildfire incident response",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060a10",
+  "theme_color": "#060a10",
+  "xr_main_scene": {
+    "default_size": { "width": 1440, "height": 900 }
+  },
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

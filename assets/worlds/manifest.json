@@ -1,0 +1,14 @@
+{
+  "worlds": [
+    {
+      "name": "Palisades Fire Zone - Satellite View",
+      "splat": "palisades-fire-satellite.spz",
+      "pano": "palisades-fire-satellite-pano.png",
+      "collider": null,
+      "worldId": "ea8c4985-59ee-447f-8027-243a70d3f718",
+      "marbleUrl": "https://marble.worldlabs.ai/world/ea8c4985-59ee-447f-8027-243a70d3f718",
+      "center": { "lng": -118.529, "lat": 34.045 },
+      "radiusKm": 1.5
+    }
+  ]
+}

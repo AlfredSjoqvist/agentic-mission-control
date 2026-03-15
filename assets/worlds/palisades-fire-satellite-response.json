@@ -1,0 +1,38 @@
+{
+  "world_id": "ea8c4985-59ee-447f-8027-243a70d3f718",
+  "display_name": "Palisades Fire Zone - Satellite View",
+  "tags": null,
+  "assets": {
+    "mesh": {
+      "collider_mesh_url": null
+    },
+    "imagery": {
+      "pano_url": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/885f8287-901c-4d7f-a720-95b8e9a81c88_pano/rgb_0.png"
+    },
+    "splats": {
+      "spz_urls": {
+        "500k": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/9df2b5db-1829-4647-b3d3-23ad0e90991f_sand_500k.spz",
+        "full_res": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/898cf31a-d499-4034-97ff-66d803a7d55d_sand.spz",
+        "100k": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/7324e0c1-b086-4674-8ac1-c5f428a46f76_sand_100k.spz"
+      },
+      "semantics_metadata": null
+    },
+    "thumbnail_url": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/2116a8e6-5cf0-4547-9d02-570990da426f_sand_mpi/thumbnail.webp",
+    "caption": "The scene is a realistic aerial satellite view of the Palisades wildfire zone, depicting a dramatic and somber natural disaster in progress during January 2025. The mountainous terrain of the Santa Monica Mountains dominates the landscape, characterized by dry chaparral hillsides that stretch extensively, revealing the impact of the active fire. The coastline along the Pacific Ocean is a prominent feature, where the Pacific Palisades neighborhood is nestled, showing clusters of residential and commercial structures adjacent to the water. Thick plumes of smoke billow from the active fire zones, extending over the ocean and across parts of the land, obscuring the views of the distant terrain. The ocean itself appears dark blue, with waves subtly visible from the high vantage point. The mountains continue to undulate far into the distance, covered in similar dry vegetation, suggesting the vastness of the natural environment prone to such fires. The smoke patterns indicate prevailing winds carrying particulate matter from the fire in various directions, influencing the visibility and air quality of the entire region. The urban development of the Pacific Palisades follows the contours of the coastline and extends slightly into the foothills, providing a stark contrast to the untamed, burning landscape. The mountain ranges are interconnected, forming a complex system of ridges and valleys that extend beyond the immediate view, all contributing to the extensive wildfire area. "
+  },
+  "created_at": "2026-03-14T18:47:47Z",
+  "updated_at": "2026-03-14T18:48:12Z",
+  "permission": null,
+  "world_prompt": {
+    "text_prompt": "The scene is a realistic aerial satellite view of the Palisades wildfire zone, depicting a dramatic and somber natural disaster in progress during January 2025. The mountainous terrain of the Santa Monica Mountains dominates the landscape, characterized by dry chaparral hillsides that stretch extensively, revealing the impact of the active fire. The coastline along the Pacific Ocean is a prominent feature, where the Pacific Palisades neighborhood is nestled, showing clusters of residential and commercial structures adjacent to the water. Thick plumes of smoke billow from the active fire zones, extending over the ocean and across parts of the land, obscuring the views of the distant terrain. The ocean itself appears dark blue, with waves subtly visible from the high vantage point. The mountains continue to undulate far into the distance, covered in similar dry vegetation, suggesting the vastness of the natural environment prone to such fires. The smoke patterns indicate prevailing winds carrying particulate matter from the fire in various directions, influencing the visibility and air quality of the entire region. The urban development of the Pacific Palisades follows the contours of the coastline and extends slightly into the foothills, providing a stark contrast to the untamed, burning landscape. The mountain ranges are interconnected, forming a complex system of ridges and valleys that extend beyond the immediate view, all contributing to the extensive wildfire area. The 360 scene is faultless.",
+    "type": "image",
+    "image_prompt": {
+      "uri": "https://cdn.marble.worldlabs.ai/ea8c4985-59ee-447f-8027-243a70d3f718/34ec172a_prompt",
+      "data_base64": null,
+      "extension": ""
+    },
+    "is_pano": false
+  },
+  "world_marble_url": "https://marble.worldlabs.ai/world/ea8c4985-59ee-447f-8027-243a70d3f718",
+  "model": "Marble 0.1-mini"
+}

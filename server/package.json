@@ -1,0 +1,14 @@
+{
+  "name": "firesight-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "generate": "node generate-worlds.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7"
+  }
+}

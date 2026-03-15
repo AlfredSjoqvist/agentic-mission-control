@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ICS Wildfire Command Chain — Live Information Flow</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0A0E17;color:#E2E8F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;height:100vh;width:100vw}
+canvas{display:block}
+#ui{position:absolute;top:0;left:0;right:0;pointer-events:none}
+#title-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:rgba(10,14,23,.85);border-bottom:1px solid #1E2636;pointer-events:auto}
+#title-bar h1{font-size:14px;letter-spacing:1px;color:#A78BFA;font-weight:600}
+#title-bar .sub{font-size:10px;color:#64748B;margin-left:12px}
+#phase-bar{display:flex;gap:8px;align-items:center}
+#phase-bar button{background:#111827;border:1px solid #1E2636;color:#94A3B8;padding:4px 12px;border-radius:4px;font-size:10px;cursor:pointer;pointer-events:auto;transition:all .2s}
+#phase-bar button:hover{border-color:#A78BFA;color:#E2E8F0}
+#phase-bar button.active{background:#A78BFA20;border-color:#A78BFA;color:#A78BFA}
+#legend{position:absolute;bottom:16px;left:16px;background:rgba(17,24,39,.9);border:1px solid #1E2636;border-radius:8px;padding:12px 16px;font-size:9px;pointer-events:auto;max-width:280px}
+#legend h3{font-size:10px;color:#A78BFA;margin-bottom:8px;letter-spacing:1px}
+.leg-row{display:flex;align-items:center;gap:6px;margin:3px 0;color:#94A3B8}
+.leg-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.leg-line{width:20px;height:2px;flex-shrink:0;border-radius:1px}
+#tooltip{position:absolute;display:none;background:rgba(17,24,39,.95);border:1px solid #1E2636;border-radius:6px;padding:10px 14px;font-size:10px;max-width:320px;pointer-events:none;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:100}
+#tooltip .tt-title{font-size:12px;font-weight:700;margin-bottom:4px}
+#tooltip .tt-role{font-size:9px;color:#64748B;margin-bottom:6px}
+#tooltip .tt-section{margin-top:6px;padding-top:6px;border-top:1px solid #1E2636}
+#tooltip .tt-label{font-size:8px;color:#64748B;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+#tooltip .tt-flow{font-size:9px;color:#94A3B8;line-height:1.4}
+#stats{position:absolute;top:50px;right:16px;background:rgba(17,24,39,.9);border:1px solid #1E2636;border-radius:8px;padding:12px 16px;font-size:9px;pointer-events:auto;width:220px}
+#stats h3{font-size:10px;color:#A78BFA;margin-bottom:8px;letter-spacing:1px}
+.stat-row{display:flex;justify-content:space-between;margin:3px 0;color:#94A3B8}
+.stat-val{color:#E2E8F0;font-weight:600}
+#msg-log{position:absolute;bottom:16px;right:16px;background:rgba(17,24,39,.9);border:1px solid #1E2636;border-radius:8px;padding:12px 16px;font-size:9px;pointer-events:auto;width:340px;max-height:300px;overflow-y:auto}
+#msg-log h3{font-size:10px;color:#A78BFA;margin-bottom:8px;letter-spacing:1px}
+.msg{padding:4px 0;border-bottom:1px solid #1E263620;line-height:1.3}
+.msg-from{font-weight:600;margin-right:4px}
+.msg-to{color:#64748B}
+.msg-text{color:#94A3B8;display:block;margin-top:1px}
+#sim-controls{display:flex;gap:10px;align-items:center;pointer-events:auto}
+#sim-controls span{font-size:9px;color:#64748B}
+#play-btn{background:#111827;border:1px solid #A78BFA;color:#A78BFA;padding:5px 16px;border-radius:4px;font-size:11px;cursor:pointer;font-weight:700;letter-spacing:1px;transition:all .2s}
+#play-btn:hover{background:#A78BFA20}
+#play-btn.playing{border-color:#EF4444;color:#EF4444}
+#play-btn.playing:hover{background:#EF444420}
+#speed-wrap{display:flex;align-items:center;gap:6px}
+#speed-slider{-webkit-appearance:none;width:100px;height:4px;border-radius:2px;background:#1E2636;outline:none}
+#speed-slider::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#A78BFA;cursor:pointer;border:2px solid #0A0E17}
+#speed-label{font-size:10px;color:#A78BFA;font-weight:600;min-width:30px}
+#timeline-bar{position:absolute;bottom:0;left:0;right:0;height:3px;background:#111827;pointer-events:none}
+#timeline-progress{height:100%;width:0%;background:linear-gradient(90deg,#A78BFA,#F472B6);transition:width .3s}
+#event-banner{position:absolute;top:55px;left:50%;transform:translateX(-50%);background:rgba(17,24,39,.95);border:1px solid #A78BFA40;border-radius:8px;padding:10px 24px;font-size:12px;color:#E2E8F0;pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap;z-index:50;text-align:center}
+#event-banner .ev-time{font-size:9px;color:#A78BFA;letter-spacing:1px;margin-bottom:2px}
+#event-banner .ev-text{font-size:13px;font-weight:600}
+#event-banner .ev-detail{font-size:9px;color:#94A3B8;margin-top:3px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="title-bar">
+    <div style="display:flex;align-items:baseline">
+      <h1>ICS WILDFIRE COMMAND CHAIN</h1>
+      <span class="sub">Real-time information flow simulation</span>
+    </div>
+    <div id="sim-controls">
+      <button id="play-btn" onclick="togglePlay()">PLAY</button>
+      <button style="background:#111827;border:1px solid #1E2636;color:#64748B;padding:5px 10px;border-radius:4px;font-size:10px;cursor:pointer" onclick="resetSim()">RESET</button>
+      <div id="speed-wrap">
+        <span>SPEED:</span>
+        <input type="range" id="speed-slider" min="0.1" max="5" step="0.1" value="1" oninput="setSpeed(this.value)">
+        <span id="speed-label">1.0x</span>
+      </div>
+      <span style="margin-left:8px">SCENARIO:</span>
+      <div id="phase-bar">
+        <button class="active" onclick="setScenario('initial')">Initial Attack</button>
+        <button onclick="setScenario('extended')">Extended Attack</button>
+        <button onclick="setScenario('crisis')">Crisis / Type 1</button>
+        <button onclick="setScenario('full')">Full ICS</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="tooltip"></div>
+<div id="legend">
+  <h3>NODE TYPES</h3>
+  <div class="leg-row"><div class="leg-dot" style="background:#EF4444"></div> Command (IC / Unified Command)</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#A78BFA"></div> General Staff (Section Chiefs)</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#FBBF24"></div> Branch / Division / Group</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#22D3EE"></div> Tactical Resources (Engines, Crews, Aircraft)</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#34D399"></div> External Systems (Satellites, RAWS, Dispatch)</div>
+  <div class="leg-row"><div class="leg-dot" style="background:#F472B6"></div> AI Agents (FireSight augmentation)</div>
+  <h3 style="margin-top:10px">EDGE TYPES</h3>
+  <div class="leg-row"><div class="leg-line" style="background:#FBBF24"></div> Command / Orders (IC → down)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#22D3EE"></div> Intelligence / Reports (up → IC)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#34D399"></div> Coordination (lateral)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#F472B6"></div> AI Augmentation (agent → ICS role)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#EF4444;opacity:.5"></div> Safety / Life Safety (priority)</div>
+</div>
+<div id="stats">
+  <h3>SIMULATION</h3>
+  <div class="stat-row"><span>Sim Time</span><span class="stat-val" id="s-time">T+0:00</span></div>
+  <div class="stat-row"><span>Active Nodes</span><span class="stat-val" id="s-nodes">0</span></div>
+  <div class="stat-row"><span>Active Edges</span><span class="stat-val" id="s-edges">0</span></div>
+  <div class="stat-row"><span>Messages/sec</span><span class="stat-val" id="s-msgs">0</span></div>
+  <div class="stat-row"><span>Scenario</span><span class="stat-val" id="s-scenario">Initial Attack</span></div>
+  <div class="stat-row"><span>Incident Type</span><span class="stat-val" id="s-type">Type 3</span></div>
+</div>
+<div id="msg-log">
+  <h3>MESSAGE FLOW</h3>
+  <div id="messages"></div>
+</div>
+<div id="event-banner"><div class="ev-time"></div><div class="ev-text"></div><div class="ev-detail"></div></div>
+<div id="timeline-bar"><div id="timeline-progress"></div></div>
+
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const tooltip=document.getElementById('tooltip');
+const msgEl=document.getElementById('messages');
+let W,H;
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+resize();window.addEventListener('resize',resize);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// NODE DEFINITIONS — Full ICS + AI augmentation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const NODES={
+  // ── COMMAND ──
+  ic:{label:'Incident Commander',short:'IC',tier:'command',color:'#EF4444',size:28,
+    role:'Overall authority. Sets objectives, strategies, priorities. Approves all actions affecting life safety.',
+    realWorld:'On first-arriving engine, captain becomes IC until relieved by higher-qualified officer.',
+    icsForm:'All ICS forms flow through IC',
+    inputs:'Situation reports from all sections, weather forecasts, political/media pressure',
+    outputs:'Incident objectives, strategies, priorities, IAP approval',
+    scenarios:['initial','extended','crisis','full']},
+  safety:{label:'Safety Officer',short:'SAFETY',tier:'command',color:'#EF4444',size:18,
+    role:'Monitors safety conditions. Has authority to STOP any unsafe operation immediately. Reports directly to IC.',
+    realWorld:'Checks 10 Standard Firefighting Orders and 18 Watch Out Situations for every crew assignment.',
+    inputs:'Crew positions, fire behavior, weather, terrain, Watch Out situations',
+    outputs:'Safety alerts, STOP orders, LCES verification, risk assessments',
+    scenarios:['initial','extended','crisis','full']},
+  pio:{label:'Public Info Officer',short:'PIO',tier:'command',color:'#EF4444',size:16,
+    role:'Single point of contact for media. Coordinates public messaging. Manages community alerts.',
+    inputs:'Incident status, evacuation orders, IC directives',
+    outputs:'Press releases, social media, community updates',
+    scenarios:['extended','crisis','full']},
+  liaison:{label:'Liaison Officer',short:'LIAS',tier:'command',color:'#EF4444',size:16,
+    role:'Coordinates with assisting/cooperating agencies not in Unified Command.',
+    inputs:'Multi-agency needs, resource requests from outside agencies',
+    outputs:'Agency coordination, mutual aid agreements',
+    scenarios:['crisis','full']},
+
+  // ── OPERATIONS SECTION ──
+  ops_chief:{label:'Operations Section Chief',short:'OPS',tier:'staff',color:'#A78BFA',size:24,
+    role:'Manages ALL tactical operations. Develops ops portion of IAP. Majority of incident personnel work under Operations.',
+    realWorld:'Directly supervises Branch Directors, Division/Group Supervisors. Has the most resources.',
+    icsForm:'ICS-204 Assignment List, ICS-215 Operational Planning Worksheet',
+    inputs:'IC objectives, fire predictions, resource availability, safety constraints',
+    outputs:'Tactical assignments, division/group orders, resource requests',
+    scenarios:['initial','extended','crisis','full']},
+  fire_branch:{label:'Fire Suppression Branch',short:'FIRE BR',tier:'branch',color:'#FBBF24',size:18,
+    role:'Directs all ground and air fire suppression operations.',
+    inputs:'Ops Chief orders, fire behavior intel, resource positions',
+    outputs:'Division assignments, fireline tactics, progress reports',
+    scenarios:['extended','crisis','full']},
+  air_ops:{label:'Air Operations Branch',short:'AIR OPS',tier:'branch',color:'#FBBF24',size:18,
+    role:'Coordinates all aircraft: tankers, helicopters, lead planes, drones.',
+    realWorld:'ATGS flies OV-10A Bronco overhead, directs all air operations via multiple radio channels.',
+    inputs:'Ops Chief orders, fire predictions, TFR boundaries, drone positions',
+    outputs:'Air tanker sequencing, drop zone coordinates, airspace deconfliction',
+    scenarios:['extended','crisis','full']},
+  div_alpha:{label:'Division Alpha (Head)',short:'DIV-A',tier:'branch',color:'#FBBF24',size:14,
+    role:'Supervises resources on the fire head (most aggressive front). Direct/indirect attack.',
+    inputs:'Branch orders, fire behavior at head, crew safety status',
+    outputs:'Crew assignments, progress reports, safety concerns',
+    scenarios:['extended','crisis','full']},
+  div_bravo:{label:'Division Bravo (Flanks)',short:'DIV-B',tier:'branch',color:'#FBBF24',size:14,
+    role:'Supervises fireline construction and holding on flanks.',
+    inputs:'Branch orders, flank fire behavior',
+    outputs:'Fireline progress, flank containment %',
+    scenarios:['crisis','full']},
+  struct_group:{label:'Structure Protection Group',short:'STRUCT',tier:'branch',color:'#FBBF24',size:14,
+    role:'Triage structures for defensibility. Deploy engines for protection. Bump-and-run between structures.',
+    inputs:'Structure assessments, fire arrival time, engine availability',
+    outputs:'Triage report (defensible/marginal/non-defensible), engine assignments',
+    scenarios:['crisis','full']},
+
+  // ── PLANNING SECTION ──
+  plan_chief:{label:'Planning Section Chief',short:'PLAN',tier:'staff',color:'#A78BFA',size:22,
+    role:'Collects, evaluates, disseminates situation info. Forecasts probable course. Prepares alternate strategies.',
+    realWorld:'Has 4 units: Resources, Situation, Documentation, Demobilization. Runs the P-meeting.',
+    icsForm:'ICS-201 Briefing, ICS-202 Objectives, ICS-209 Status Summary',
+    inputs:'All situation reports, weather, fire behavior, resource status',
+    outputs:'Incident status summaries, predictions, alternate strategies, IAP drafts',
+    scenarios:['initial','extended','crisis','full']},
+  sit_unit:{label:'Situation Unit',short:'SIT',tier:'branch',color:'#FBBF24',size:14,
+    role:'Maintains current situation display. Prepares maps, projections, forecasts.',
+    inputs:'Field reports, satellite imagery, FIRIS aerial IR, GIS data',
+    outputs:'Situation maps, fire perimeter plots, projections',
+    scenarios:['extended','crisis','full']},
+  fban:{label:'Fire Behavior Analyst',short:'FBAN',tier:'branch',color:'#FBBF24',size:16,
+    role:'Specialist. Runs fire spread models (Technosylva, FARSITE). Predicts fire behavior, ROS, flame length, spotting.',
+    realWorld:'Manually configures and runs Wildfire Analyst. Interprets satellite/FIRIS. Briefs IC with spot forecast. 30-60 min cycle.',
+    inputs:'RAWS weather, fuel moisture, terrain DEM, current perimeter, satellite feeds',
+    outputs:'Spread predictions (15min/1h/3h/6h), ROS, flame length, spot fire probability, crown fire risk',
+    scenarios:['extended','crisis','full']},
+  res_unit:{label:'Resources Unit',short:'RESU',tier:'branch',color:'#FBBF24',size:12,
+    role:'Tracks check-in, status, and location of all assigned resources.',
+    inputs:'Check-in records, AVL GPS, crew timekeeping',
+    outputs:'Resource status boards, T-cards, availability reports',
+    scenarios:['crisis','full']},
+
+  // ── LOGISTICS SECTION ──
+  log_chief:{label:'Logistics Section Chief',short:'LOG',tier:'staff',color:'#A78BFA',size:20,
+    role:'Provides facilities, services, materials. Communications, medical, food, supplies.',
+    inputs:'Resource needs from Ops, supply requests, facility requirements',
+    outputs:'Supply chain, base camp, medical, communications infrastructure',
+    scenarios:['extended','crisis','full']},
+  comms:{label:'Communications Unit',short:'COMMS',tier:'branch',color:'#FBBF24',size:14,
+    role:'P25 radio infrastructure. Manages frequencies, repeaters, interoperability gateways.',
+    realWorld:'Different agencies on different frequencies (VHF/UHF/800MHz). Requires gateway hardware.',
+    inputs:'Agency radio plans, terrain blockage, cell tower status',
+    outputs:'Radio frequencies, repeater deployment, interop bridges',
+    scenarios:['crisis','full']},
+  medical:{label:'Medical Unit',short:'MED',tier:'branch',color:'#FBBF24',size:12,
+    role:'Emergency medical services along fireline and evacuation routes.',
+    inputs:'Crew positions, injury reports, evacuation route locations',
+    outputs:'Ambulance positioning, medevac helicopter requests',
+    scenarios:['crisis','full']},
+
+  // ── FINANCE / ADMIN ──
+  fin_chief:{label:'Finance/Admin Chief',short:'FIN',tier:'staff',color:'#A78BFA',size:16,
+    role:'Tracks costs, contracts, compensation, procurement. Critical for Type 1/2 incidents.',
+    inputs:'Resource hours, equipment costs, contract invoices',
+    outputs:'Cost projections, contract management, compensation claims',
+    scenarios:['full']},
+
+  // ── TACTICAL RESOURCES ──
+  engines:{label:'Type 3 Wildland Engines',short:'ENG×3',tier:'tactical',color:'#22D3EE',size:14,
+    role:'3-person crew, 500gal tank+pump. Direct attack: hose lines on fire edge. Pump-and-roll.',
+    inputs:'Division assignments, water tender resupply, fire behavior at position',
+    outputs:'Fireline progress, water usage, position reports',
+    scenarios:['initial','extended','crisis','full']},
+  hotshots:{label:'Hotshot Crew (IHC)',short:'IHC×1',tier:'tactical',color:'#22D3EE',size:14,
+    role:'20-person elite crew. Hand line construction, burnout/backfire with drip torches. Most versatile ground resource.',
+    inputs:'Division assignments, fire behavior, anchor points, escape routes',
+    outputs:'Fireline feet/hour, burnout progress, crew fatigue, safety status',
+    scenarios:['extended','crisis','full']},
+  hand_crew:{label:'Type 2 Hand Crew',short:'T2×1',tier:'tactical',color:'#22D3EE',size:12,
+    role:'20-person crew. Manual fireline, mop-up, cold trailing.',
+    inputs:'Division assignments, fireline location, mop-up areas',
+    outputs:'Fireline progress, mop-up completion',
+    scenarios:['extended','crisis','full']},
+  dozer:{label:'Dozer (Cat D8)',short:'DZR',tier:'tactical',color:'#22D3EE',size:12,
+    role:'Cuts 10-20ft firebreak with blade. Fast but needs road access.',
+    inputs:'Firebreak coordinates, transport route, terrain slope',
+    outputs:'Firebreak progress (chains/hour), fuel consumption',
+    scenarios:['extended','crisis','full']},
+  vlat:{label:'VLAT Air Tanker (DC-10)',short:'VLAT',tier:'tactical',color:'#22D3EE',size:16,
+    role:'11,600gal Phos-Chek retardant. Drops AHEAD of fire (not on flames). 35min turnaround.',
+    inputs:'Drop zone coords from Lead Plane, wind direction, fire front location',
+    outputs:'Drop confirmation, retardant coverage area, turnaround ETA',
+    scenarios:['extended','crisis','full']},
+  seat:{label:'SEAT Air Tractor',short:'SEAT',tier:'tactical',color:'#22D3EE',size:12,
+    role:'800gal retardant. Faster turnaround. Initial attack + reinforcing retardant lines.',
+    inputs:'Drop zone, fire flank location',
+    outputs:'Drop confirmation, retardant line location',
+    scenarios:['extended','crisis','full']},
+  lead_plane:{label:'Lead Plane (Baron)',short:'LEAD',tier:'tactical',color:'#22D3EE',size:12,
+    role:'Scouts drop zone, marks with smoke, guides tanker approach. Air safety critical.',
+    inputs:'Fire front location, terrain, air traffic',
+    outputs:'Drop zone marking, tanker guidance, air safety clearance',
+    scenarios:['extended','crisis','full']},
+  heli:{label:'Helitack Type 1 (Chinook)',short:'HELI',tier:'tactical',color:'#22D3EE',size:14,
+    role:'2,600gal Bambi Bucket. Dips from lakes. Cools hot spots for ground crews. Also carries crew/dragon eggs.',
+    inputs:'Hot spot locations, dip site coords, crew positions',
+    outputs:'Water drop confirmation, crew transport, aerial ignition',
+    scenarios:['initial','extended','crisis','full']},
+  tender:{label:'Water Tender (4000gal)',short:'WTR',tier:'tactical',color:'#22D3EE',size:10,
+    role:'Shuttles water to engines on fireline. Gravity feed or nurse to engine tanks.',
+    inputs:'Engine water levels, fill site location',
+    outputs:'Water delivery schedule, supply status',
+    scenarios:['initial','extended','crisis','full']},
+  struct_eng:{label:'Structure Engine (Type 1)',short:'STRC',tier:'tactical',color:'#22D3EE',size:12,
+    role:'Structure protection: triage, sprinklers, gel coating, engine standby.',
+    inputs:'Structure triage list, fire arrival time, foam supply',
+    outputs:'Protection status per structure, foam usage',
+    scenarios:['crisis','full']},
+
+  // ── EXTERNAL SYSTEMS / DATA SOURCES ──
+  raws:{label:'RAWS Weather Stations',short:'RAWS',tier:'external',color:'#34D399',size:12,
+    role:'Remote Automated Weather Stations. Wind speed/direction, temp, humidity, fuel moisture calculations.',
+    inputs:'Atmospheric sensors (automated)',
+    outputs:'Wind speed/dir, temp, RH, precipitation — every 10min',
+    scenarios:['initial','extended','crisis','full']},
+  satellite:{label:'Satellites (GOES/VIIRS)',short:'SAT',tier:'external',color:'#34D399',size:14,
+    role:'GOES geostationary (5-15min), VIIRS polar-orbiting (2x daily). Fire detection + perimeter.',
+    inputs:'Orbital sensors (automated)',
+    outputs:'Hot spot detections, fire radiative power, perimeter estimates',
+    scenarios:['initial','extended','crisis','full']},
+  alert_cam:{label:'ALERTCalifornia Cameras',short:'CAMS',tier:'external',color:'#34D399',size:12,
+    role:'1,200+ AI cameras. 360° sweep every 2min. AI smoke detection. 38% of fires detected before 911.',
+    inputs:'Camera feeds (automated)',
+    outputs:'Smoke detections, bearing estimates, confirmation imagery',
+    scenarios:['initial','extended','crisis','full']},
+  dispatch:{label:'CAD / Dispatch',short:'DISP',tier:'external',color:'#34D399',size:14,
+    role:'Computer-Aided Dispatch. Routes equipment. Integrates with GIS, IROC, FireGuard.',
+    inputs:'911 calls, AI camera alerts, satellite detections, resource requests',
+    outputs:'Initial dispatch, resource orders, mutual aid requests',
+    scenarios:['initial','extended','crisis','full']},
+  iroc:{label:'IROC Resource Ordering',short:'IROC',tier:'external',color:'#34D399',size:12,
+    role:'Interagency Resource Ordering. Cloud-based (ServiceNow). Manages 10,000+ personnel peak season across 50 states.',
+    inputs:'Resource requests from Logistics, qualification databases',
+    outputs:'Resource orders, ETA, tracking, qualification verification',
+    scenarios:['extended','crisis','full']},
+  genasys:{label:'Genasys Protect',short:'GNSY',tier:'external',color:'#34D399',size:12,
+    role:'Zone-based evacuation management. Pre-defined zones. Multi-channel alerts (WEA, app, reverse-911).',
+    inputs:'Zone status updates, evacuation orders',
+    outputs:'WEA alerts, zone status displays, public-facing evacuation maps',
+    scenarios:['extended','crisis','full']},
+  firis:{label:'FIRIS Aerial IR',short:'FIRIS',tier:'external',color:'#34D399',size:12,
+    role:'2 IR-equipped aircraft (statewide). Maps fire perimeters from the air. 7 days/week.',
+    inputs:'Flight tasking, fire location',
+    outputs:'IR perimeter maps, hot spot locations, GIS layers',
+    scenarios:['extended','crisis','full']},
+  nws:{label:'NWS Spot Forecast',short:'NWS',tier:'external',color:'#34D399',size:10,
+    role:'National Weather Service issues spot forecasts on request from FBAN. Wind shift predictions.',
+    inputs:'FBAN request with location, time period',
+    outputs:'Spot weather forecast, red flag warnings, wind shift timing',
+    scenarios:['extended','crisis','full']},
+
+  // ── AI AGENTS (FireSight augmentation) ──
+  ai_overwatch:{label:'OVERWATCH Agent',short:'OW-AI',tier:'ai',color:'#F472B6',size:18,
+    role:'AI orchestrator. Augments Planning Section + Situation Unit. Maintains living COP. Detects conflicts. Generates Decision Points.',
+    realWorld:'Replaces 12-24hr IAP paper cycle with continuous digital IAP. Checks 10 Orders + 18 Watch Outs automatically.',
+    icsForm:'Augments ICS-201, 202, 204, 209, 215',
+    inputs:'All agent outputs, all sensor feeds, IC objectives',
+    outputs:'Decision Points, conflict alerts, event feed, confidence scores, living IAP',
+    scenarios:['initial','extended','crisis','full']},
+  ai_predict:{label:'PREDICT Agent',short:'PR-AI',tier:'ai',color:'#F472B6',size:16,
+    role:'AI fire behavior analyst. Runs continuous Rothermel+Huygens spread predictions. Ensemble uncertainty with 50 scenarios.',
+    realWorld:'Augments FBAN. Reduces 30-60min update cycle to continuous. Auto-calibrates from drone IR feeds.',
+    inputs:'RAWS weather, satellite, drone IR, terrain DEM, fuel models',
+    outputs:'15min/1h/3h/6h spread predictions, ROS, confidence, crown fire risk, spot fire probability',
+    scenarios:['initial','extended','crisis','full']},
+  ai_swarm:{label:'SWARM Agent',short:'SW-AI',tier:'ai',color:'#F472B6',size:16,
+    role:'AI drone fleet coordinator. K-means clustering. TFR deconfliction. Battery management. Crew safety overwatch.',
+    realWorld:'Augments ATGS + FIRIS. Treats entire aerial sensor network as single coordinated platform.',
+    inputs:'Fire predictions, crew positions, TFR, manned aircraft ADS-B, drone telemetry',
+    outputs:'Drone assignments, coverage maps, spot fire confirmations, route verification, air deconfliction',
+    scenarios:['initial','extended','crisis','full']},
+  ai_evac:{label:'EVAC Agent',short:'EV-AI',tier:'ai',color:'#F472B6',size:16,
+    role:'AI evacuation routing. Zone threat classification. Traffic modeling. Vulnerable population tracking.',
+    realWorld:'Augments Law Enforcement Branch + OES. Compresses decision-to-alert from hours to minutes.',
+    inputs:'Fire predictions, road status (from SWARM), zone demographics, traffic flow, shelter capacity',
+    outputs:'Zone status recommendations, route optimization, contraflow requests, vulnerable pop alerts, clearance ETAs',
+    scenarios:['initial','extended','crisis','full']},
+  ai_deploy:{label:'DEPLOY Agent',short:'DP-AI',tier:'ai',color:'#F472B6',size:16,
+    role:'AI resource optimizer. Pre-positions based on predictions. LCES verification. Crew fatigue tracking. Structure triage.',
+    realWorld:'Augments Ops Chief + Logistics. Unifies all resource management. Checks 10 Orders for every assignment.',
+    inputs:'Fire predictions, drone coverage, evacuation needs, resource positions/status, terrain, safety constraints',
+    outputs:'Crew assignments, air tanker sequencing, staging recommendations, safety flags, mutual aid triggers',
+    scenarios:['initial','extended','crisis','full']},
+
+  // ── EVACUATION ──
+  le_branch:{label:'Law Enforcement Branch',short:'LE BR',tier:'branch',color:'#FBBF24',size:14,
+    role:'Executes evacuation orders. Door-to-door notification. Traffic control. Zone enforcement.',
+    inputs:'Evacuation orders from IC, zone assignments, route plans',
+    outputs:'Evacuation progress, zone compliance, route blockages',
+    scenarios:['crisis','full']},
+  traffic:{label:'Traffic Control Units',short:'TRAF',tier:'tactical',color:'#22D3EE',size:10,
+    role:'Law enforcement at key intersections. Contraflow operations. Route management.',
+    inputs:'Intersection assignments, contraflow orders',
+    outputs:'Traffic flow rates, congestion reports',
+    scenarios:['crisis','full']},
+
+  // ── DRONES ──
+  drones:{label:'UAS Fleet (12 drones)',short:'UAS×12',tier:'tactical',color:'#22D3EE',size:14,
+    role:'ISR Recon (IR+RGB), Ember Spotters, Comms Relay, Safety Watch, Aerial Ignition (dragon eggs).',
+    inputs:'SWARM flight plans, patrol patterns, battery status',
+    outputs:'IR imagery, spot fire detections, crew safety feeds, comms relay, dragon egg deployment',
+    scenarios:['initial','extended','crisis','full']},
+  atgs:{label:'Air Tactical (OV-10A)',short:'ATGS',tier:'tactical',color:'#22D3EE',size:14,
+    role:'Flies at 2000-2500ft. Directs all air ops via multiple radios. Has override authority on all drone positions.',
+    realWorld:'CAL FIRE OV-10A Bronco. Aerial coordination hub.',
+    inputs:'Air tanker ETAs, helicopter positions, drop zone requests, TFR',
+    outputs:'Air traffic control, drop sequencing, "DRONES DOWN" orders',
+    scenarios:['extended','crisis','full']},
+};
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EDGE DEFINITIONS — Information flows
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const EDGES=[
+  // COMMAND FLOWS (IC ↔ Staff)
+  {from:'ic',to:'ops_chief',type:'command',label:'Objectives + strategy',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ic',to:'plan_chief',type:'command',label:'Planning direction',freq:0.2,scenarios:['initial','extended','crisis','full']},
+  {from:'ic',to:'log_chief',type:'command',label:'Logistics priorities',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'ic',to:'fin_chief',type:'command',label:'Budget authority',freq:0.05,scenarios:['full']},
+  {from:'safety',to:'ic',type:'safety',label:'Safety alerts, STOP orders',freq:0.1,scenarios:['initial','extended','crisis','full']},
+  {from:'pio',to:'ic',type:'intel',label:'Media situation, public concerns',freq:0.08,scenarios:['extended','crisis','full']},
+  {from:'liaison',to:'ic',type:'intel',label:'Multi-agency coordination',freq:0.06,scenarios:['crisis','full']},
+
+  // OPS → BRANCHES → TACTICAL
+  {from:'ops_chief',to:'fire_branch',type:'command',label:'Suppression tactics + assignments',freq:0.4,scenarios:['extended','crisis','full']},
+  {from:'ops_chief',to:'air_ops',type:'command',label:'Air support requests',freq:0.25,scenarios:['extended','crisis','full']},
+  {from:'ops_chief',to:'div_alpha',type:'command',label:'Head attack assignments',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'ops_chief',to:'engines',type:'command',label:'Direct attack orders (IA)',freq:0.5,scenarios:['initial']},
+  {from:'fire_branch',to:'div_alpha',type:'command',label:'Division orders',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'fire_branch',to:'div_bravo',type:'command',label:'Flank assignments',freq:0.2,scenarios:['crisis','full']},
+  {from:'fire_branch',to:'struct_group',type:'command',label:'Structure protection triage',freq:0.15,scenarios:['crisis','full']},
+  {from:'div_alpha',to:'hotshots',type:'command',label:'Fireline + burnout assignments',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'div_alpha',to:'engines',type:'command',label:'Direct attack assignments',freq:0.4,scenarios:['extended','crisis','full']},
+  {from:'div_bravo',to:'hand_crew',type:'command',label:'Flank fireline construction',freq:0.25,scenarios:['crisis','full']},
+  {from:'div_bravo',to:'dozer',type:'command',label:'Firebreak construction',freq:0.2,scenarios:['crisis','full']},
+  {from:'struct_group',to:'struct_eng',type:'command',label:'Structure assignments',freq:0.15,scenarios:['crisis','full']},
+  {from:'air_ops',to:'atgs',type:'command',label:'Air mission tasking',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'atgs',to:'vlat',type:'command',label:'Drop zone + approach',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'atgs',to:'seat',type:'command',label:'Retardant drop coords',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'atgs',to:'lead_plane',type:'command',label:'Scout + mark drop zone',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'atgs',to:'heli',type:'command',label:'Water drop + crew transport',freq:0.25,scenarios:['initial','extended','crisis','full']},
+  {from:'atgs',to:'drones',type:'command',label:'"DRONES DOWN" / airspace',freq:0.15,scenarios:['extended','crisis','full']},
+
+  // INTEL FLOWS (up the chain)
+  {from:'engines',to:'div_alpha',type:'intel',label:'Progress, water usage, conditions',freq:0.5,scenarios:['extended','crisis','full']},
+  {from:'engines',to:'ops_chief',type:'intel',label:'Progress reports (IA)',freq:0.5,scenarios:['initial']},
+  {from:'hotshots',to:'div_alpha',type:'intel',label:'Fireline ft/hr, burnout progress, safety',freq:0.35,scenarios:['extended','crisis','full']},
+  {from:'hand_crew',to:'div_bravo',type:'intel',label:'Fireline progress, mop-up',freq:0.2,scenarios:['crisis','full']},
+  {from:'dozer',to:'div_bravo',type:'intel',label:'Firebreak progress',freq:0.15,scenarios:['crisis','full']},
+  {from:'heli',to:'atgs',type:'intel',label:'Drop confirmation, position',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'vlat',to:'atgs',type:'intel',label:'Drop confirmation, turnaround ETA',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'lead_plane',to:'atgs',type:'intel',label:'Drop zone assessment, air safety',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'drones',to:'atgs',type:'intel',label:'Position, battery, imagery',freq:0.4,scenarios:['extended','crisis','full']},
+  {from:'div_alpha',to:'fire_branch',type:'intel',label:'Division situation report',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'div_alpha',to:'ops_chief',type:'intel',label:'Division sitrep (IA)',freq:0.3,scenarios:['initial']},
+  {from:'fire_branch',to:'ops_chief',type:'intel',label:'Suppression progress',freq:0.25,scenarios:['extended','crisis','full']},
+  {from:'air_ops',to:'ops_chief',type:'intel',label:'Air ops status',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'ops_chief',to:'plan_chief',type:'intel',label:'Ops situation to Planning',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ops_chief',to:'ic',type:'intel',label:'Ops summary + recommendations',freq:0.25,scenarios:['initial','extended','crisis','full']},
+  {from:'plan_chief',to:'ic',type:'intel',label:'Situation summary, predictions, alt strategies',freq:0.2,scenarios:['initial','extended','crisis','full']},
+  {from:'log_chief',to:'ic',type:'intel',label:'Supply status, facility needs',freq:0.1,scenarios:['extended','crisis','full']},
+  {from:'struct_eng',to:'struct_group',type:'intel',label:'Protection status, foam usage',freq:0.15,scenarios:['crisis','full']},
+
+  // PLANNING SECTION FLOWS
+  {from:'plan_chief',to:'sit_unit',type:'command',label:'Situation display tasks',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'plan_chief',to:'fban',type:'command',label:'Fire behavior analysis tasks',freq:0.25,scenarios:['extended','crisis','full']},
+  {from:'plan_chief',to:'res_unit',type:'command',label:'Resource tracking tasks',freq:0.1,scenarios:['crisis','full']},
+  {from:'sit_unit',to:'plan_chief',type:'intel',label:'Situation maps, perimeter plots',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'fban',to:'plan_chief',type:'intel',label:'Spread predictions, fire behavior',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'fban',to:'ops_chief',type:'intel',label:'Fire behavior brief to Ops',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'res_unit',to:'plan_chief',type:'intel',label:'Resource status, availability',freq:0.1,scenarios:['crisis','full']},
+
+  // LOGISTICS FLOWS
+  {from:'log_chief',to:'comms',type:'command',label:'Comms infrastructure tasks',freq:0.1,scenarios:['crisis','full']},
+  {from:'log_chief',to:'medical',type:'command',label:'Medical positioning',freq:0.08,scenarios:['crisis','full']},
+  {from:'comms',to:'log_chief',type:'intel',label:'Radio status, interop issues',freq:0.1,scenarios:['crisis','full']},
+  {from:'log_chief',to:'iroc',type:'coord',label:'Resource ordering',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'tender',to:'engines',type:'coord',label:'Water resupply',freq:0.4,scenarios:['initial','extended','crisis','full']},
+
+  // EXTERNAL DATA FLOWS
+  {from:'raws',to:'fban',type:'intel',label:'Wind, temp, RH every 10min',freq:0.6,scenarios:['initial','extended','crisis','full']},
+  {from:'satellite',to:'sit_unit',type:'intel',label:'Hot spots, perimeter estimates',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'satellite',to:'fban',type:'intel',label:'Fire radiative power',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'alert_cam',to:'dispatch',type:'intel',label:'Smoke detection alerts',freq:0.4,scenarios:['initial','extended','crisis','full']},
+  {from:'dispatch',to:'ic',type:'intel',label:'Initial dispatch, 911 reports',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'dispatch',to:'ops_chief',type:'intel',label:'Resource dispatch status',freq:0.2,scenarios:['initial','extended','crisis','full']},
+  {from:'iroc',to:'log_chief',type:'intel',label:'Resource ETA, qualifications',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'genasys',to:'le_branch',type:'coord',label:'Zone alert delivery status',freq:0.15,scenarios:['crisis','full']},
+  {from:'firis',to:'sit_unit',type:'intel',label:'Aerial IR perimeter maps',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'nws',to:'fban',type:'intel',label:'Spot forecast, red flag warnings',freq:0.1,scenarios:['extended','crisis','full']},
+
+  // EVACUATION FLOWS
+  {from:'ic',to:'le_branch',type:'command',label:'Evacuation orders',freq:0.1,scenarios:['crisis','full']},
+  {from:'le_branch',to:'genasys',type:'command',label:'Zone status updates',freq:0.12,scenarios:['crisis','full']},
+  {from:'le_branch',to:'traffic',type:'command',label:'Intersection assignments',freq:0.1,scenarios:['crisis','full']},
+  {from:'le_branch',to:'ic',type:'intel',label:'Evacuation progress, compliance',freq:0.1,scenarios:['crisis','full']},
+  {from:'traffic',to:'le_branch',type:'intel',label:'Traffic flow, congestion',freq:0.1,scenarios:['crisis','full']},
+
+  // SAFETY FLOWS
+  {from:'safety',to:'ops_chief',type:'safety',label:'Watch Out situations, crew safety',freq:0.15,scenarios:['initial','extended','crisis','full']},
+  {from:'safety',to:'hotshots',type:'safety',label:'LCES verification',freq:0.1,scenarios:['extended','crisis','full']},
+  {from:'drones',to:'safety',type:'intel',label:'Crew safety overwatch feeds',freq:0.2,scenarios:['extended','crisis','full']},
+
+  // ── AI AGENT FLOWS ──
+  {from:'ai_overwatch',to:'ic',type:'ai',label:'Decision Points, living IAP, conflict alerts',freq:0.35,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_overwatch',to:'plan_chief',type:'ai',label:'Augments COP, situation synthesis',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_predict',to:'ai_overwatch',type:'ai',label:'Fire predictions, confidence scores',freq:0.5,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_predict',to:'fban',type:'ai',label:'Continuous fire behavior augmentation',freq:0.4,scenarios:['extended','crisis','full']},
+  {from:'ai_swarm',to:'ai_overwatch',type:'ai',label:'Coverage status, spot fire confirmations',freq:0.4,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_swarm',to:'air_ops',type:'ai',label:'Drone fleet coordination, deconfliction',freq:0.3,scenarios:['extended','crisis','full']},
+  {from:'ai_swarm',to:'drones',type:'ai',label:'Flight plans, patrol patterns',freq:0.5,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_swarm',to:'safety',type:'ai',label:'Crew safety overwatch alerts',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'ai_evac',to:'ai_overwatch',type:'ai',label:'Zone recommendations, route status',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_evac',to:'le_branch',type:'ai',label:'Evacuation zone recommendations',freq:0.15,scenarios:['crisis','full']},
+  {from:'ai_evac',to:'genasys',type:'ai',label:'Pre-computed zone alerts for IC approval',freq:0.15,scenarios:['crisis','full']},
+  {from:'ai_deploy',to:'ai_overwatch',type:'ai',label:'Resource recommendations, safety flags',freq:0.35,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_deploy',to:'ops_chief',type:'ai',label:'Optimal crew positioning, pre-staging',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_deploy',to:'log_chief',type:'ai',label:'Mutual aid triggers, supply forecasts',freq:0.15,scenarios:['extended','crisis','full']},
+  {from:'raws',to:'ai_predict',type:'intel',label:'Weather data feed',freq:0.5,scenarios:['initial','extended','crisis','full']},
+  {from:'satellite',to:'ai_predict',type:'intel',label:'Hot spot + perimeter data',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'drones',to:'ai_swarm',type:'intel',label:'Telemetry, IR imagery, battery',freq:0.6,scenarios:['initial','extended','crisis','full']},
+  {from:'drones',to:'ai_predict',type:'intel',label:'IR fire perimeter calibration',freq:0.3,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_predict',to:'ai_evac',type:'ai',label:'Fire prediction → zone threat calc',freq:0.4,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_predict',to:'ai_deploy',type:'ai',label:'Fire prediction → resource positioning',freq:0.4,scenarios:['initial','extended','crisis','full']},
+  {from:'ai_swarm',to:'ai_evac',type:'ai',label:'Route verification, road conditions',freq:0.2,scenarios:['extended','crisis','full']},
+  {from:'ai_swarm',to:'ai_deploy',type:'ai',label:'Crew safety feeds, coverage gaps',freq:0.2,scenarios:['extended','crisis','full']},
+];
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LAYOUT ENGINE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let scenario='initial';
+let positions={};
+let velocities={};
+let activeNodes=new Set();
+let activeEdges=[];
+let particles=[];
+let frame=0;
+let hoveredNode=null;
+let msgCount=0;
+let lastMsgCountReset=Date.now();
+
+// ━━━━ SIMULATION STATE ━━━━
+let playing=false;
+let simSpeed=1.0;
+let simTime=0; // seconds elapsed in simulation
+let lastFrameTime=0;
+let litNodes=new Set(); // nodes that have been "activated" by info reaching them
+let eventIndex=0;
+let bannerTimeout=null;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCRIPTED EVENT TIMELINE — Realistic ICS cascade
+// Each event: {t: seconds, from, to, msg, banner?, phase?}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const TIMELINE=[
+  // ── T+0: DETECTION ──
+  {t:0, activate:['alert_cam'], banner:'WILDFIRE DETECTED', detail:'ALERTCalifornia AI camera detects smoke plume — bearing 247°, 3.2 miles NE of community', phase:'initial'},
+  {t:2, from:'alert_cam',to:'dispatch', msg:'SMOKE DETECTION: Camera ID CAM-1247, bearing 247°, confidence 94%, multiple frames confirmed'},
+  {t:3, activate:['satellite'], banner:null},
+  {t:4, from:'satellite',to:'dispatch', msg:'GOES-18 hot spot confirm: 34.412°N 118.591°W, FRP 12 MW, growing'},
+  {t:5, activate:['raws']},
+  {t:5, from:'raws',to:'dispatch', msg:'RAWS stn #042: Wind SW 18mph gusting 28, temp 94°F, RH 8%, 10hr FM 3%'},
+
+  // ── T+6: DISPATCH ──
+  {t:6, activate:['dispatch'], banner:'911 DISPATCH ACTIVATED', detail:'CAD auto-generates response — Initial Attack assignment dispatched'},
+  {t:8, from:'dispatch',to:'ic', msg:'INITIAL DISPATCH: Vegetation fire, ¼ acre fast-moving. 3 engines, 1 heli, 1 water tender assigned. IC designation: Engine 51 Captain.'},
+  {t:9, activate:['ic'], banner:'INCIDENT COMMANDER ASSIGNED', detail:'Engine 51 Captain assumes IC — establishes command, gives size-up'},
+
+  // ── T+10: IC SIZE-UP ──
+  {t:10, from:'ic',to:'ops_chief', msg:'SIZE-UP: ¼ acre brush, running uphill with wind. Rate of spread HIGH. Spot fire potential. Requesting immediate air support.'},
+  {t:11, activate:['ops_chief','safety']},
+  {t:11, from:'ic',to:'safety', msg:'SAFETY: Wind-driven head fire, slope alignment. Verify LCES for all incoming crews.'},
+  {t:12, from:'safety',to:'ic', msg:'SAFETY ALERT: Watch Out #4 — uninformed of fire behavior. NWS Red Flag warning in effect. 10 Standard Orders verified.'},
+
+  // ── T+14: INITIAL ATTACK DEPLOYMENT ──
+  {t:14, from:'ops_chief',to:'engines', msg:'ENGINE ASSIGNMENT: E51 & E52 direct attack on right flank. E53 structure protection standby on Oak Ridge Dr. Pump-and-roll authorized.'},
+  {t:15, activate:['engines','tender'], banner:'ENGINES ROLLING', detail:'3 Type 3 wildland engines begin direct attack — hose lines on fire edge'},
+  {t:16, from:'ops_chief',to:'heli', msg:'HELI ORDER: Helitack 1 — bucket drops on head of fire. Dip site: Castaic Lake 2.1mi south. Cool hot spots for ground crews.'},
+  {t:17, activate:['heli']},
+  {t:18, from:'tender',to:'engines', msg:'WATER SUPPLY: Tender staged at turnout 0.4mi behind E51. 4000gal ready. Gravity feed connection established.'},
+  {t:19, from:'engines',to:'ops_chief', msg:'PROGRESS: E51 holding right flank, 200ft hose lay. Fire making uphill run. Estimate 2 acres now.'},
+  {t:20, from:'heli',to:'ops_chief', msg:'HELI REPORT: First bucket drop on head. Fire spotting 100ft ahead. Cannot contain with air alone.'},
+
+  // ── T+22: ESCALATION TO EXTENDED ATTACK ──
+  {t:22, from:'ops_chief',to:'ic', msg:'RECOMMENDATION: Fire exceeding IA capability. 5+ acres, spotting, alignment. Recommend Extended Attack — request hotshots, air tankers, dozer.'},
+  {t:23, activate:['plan_chief'], banner:'EXTENDED ATTACK ORDERED', detail:'IC orders transition to Extended Attack — additional resources requested', phase:'extended'},
+  {t:24, from:'ic',to:'plan_chief', msg:'PLANNING: Extended Attack authorized. Begin situation assessment. Need fire behavior prediction ASAP.'},
+  {t:25, from:'ic',to:'ops_chief', msg:'EA AUTHORIZED: Request hotshot crew, 2 SEAT, 1 VLAT, dozer, additional hand crew. Establish divisions.'},
+
+  // ── T+26: AI AGENTS ACTIVATE ──
+  {t:26, activate:['ai_overwatch','ai_predict','ai_swarm'], banner:'FIRESIGHT AI AGENTS ONLINE', detail:'OVERWATCH, PREDICT, and SWARM agents initialize — augmenting ICS chain'},
+  {t:27, from:'raws',to:'ai_predict', msg:'WEATHER FEED: Continuous — SW 18-28mph, temp 94, RH 8%, trending drier. Diurnal shift expected 1800.'},
+  {t:28, from:'satellite',to:'ai_predict', msg:'PERIMETER UPDATE: VIIRS overpass confirms 8 acres, FRP 45 MW, rapid growth trajectory.'},
+  {t:29, from:'ai_predict',to:'ai_overwatch', msg:'PREDICTION: 15min → 12 acres, 1hr → 35 acres, 3hr → 120 acres. Crown fire risk HIGH in north sector. Spot probability 60%.'},
+  {t:30, from:'ai_overwatch',to:'ic', msg:'DECISION POINT: Fire will reach Oak Ridge subdivision in ~45 min at current ROS. Recommend: immediate structure triage + evacuation warning for zones OR-1, OR-2.'},
+  {t:31, activate:['drones']},
+  {t:31, from:'ai_swarm',to:'drones', msg:'DRONE DEPLOY: 4 ISR drones to fire perimeter (K-means clusters). 2 ember spotters downwind. 1 comms relay. 1 safety overwatch on ground crews.'},
+  {t:32, from:'drones',to:'ai_swarm', msg:'TELEMETRY: All 8 UAS airborne. IR showing spot fire 200m NE of main front. Crew positions confirmed safe.'},
+  {t:33, from:'ai_swarm',to:'safety', msg:'CREW SAFETY: Drone overwatch confirms LCES for E51, E52. E53 escape route clear. Wind shift in 22 min — will need route update.'},
+
+  // ── T+35: EXTENDED ATTACK RESOURCES ARRIVE ──
+  {t:35, activate:['fire_branch','air_ops','div_alpha','fban','sit_unit'], banner:'EXTENDED ATTACK STRUCTURE ESTABLISHED', detail:'Fire Branch, Air Ops Branch, Division Alpha activated — full Ops structure'},
+  {t:36, from:'ops_chief',to:'fire_branch', msg:'BRANCH ORDER: Assume control of all ground suppression. Division Alpha on head. Engines reassigned under divisions.'},
+  {t:37, from:'ops_chief',to:'air_ops', msg:'AIR OPS: Coordinate all aircraft. VLAT ETA 18 min. 2 SEAT inbound. Deconflict with drone fleet.'},
+  {t:38, from:'fire_branch',to:'div_alpha', msg:'DIV-A: You have the head. Hotshots arriving in 10 min for burnout from anchor point. Engines continue direct attack flanks.'},
+  {t:39, from:'plan_chief',to:'fban', msg:'FBAN TASKING: Run Wildfire Analyst spread model. Need 1hr/3hr/6hr predictions. Spot forecast requested from NWS.'},
+  {t:40, from:'plan_chief',to:'sit_unit', msg:'SIT UNIT: Establish situation display. Compile all perimeter data — satellite, drone IR, ground reports.'},
+
+  // ── T+41: AIR TANKERS ──
+  {t:41, activate:['atgs','lead_plane','seat'], banner:'AIR TANKERS INBOUND', detail:'ATGS assumes aerial coordination — Lead Plane scouting drop zone'},
+  {t:42, from:'air_ops',to:'atgs', msg:'AIR MISSION: ATGS take control. VLAT 12 min out. 2 SEAT ready. Lead Plane scout the north flank drop zone. DRONES DOWN in TFR.'},
+  {t:43, from:'atgs',to:'lead_plane', msg:'LEAD: Scout drop zone north flank. Mark approach for VLAT. Wind from SW — left-to-right run. Report terrain and smoke conditions.'},
+  {t:44, from:'lead_plane',to:'atgs', msg:'DROP ZONE CLEAR: North flank ridgeline, 2400ft run. Wind favorable. Smoke moderate. Marking with smoke now.'},
+  {t:45, from:'atgs',to:'seat', msg:'SEAT 1 & 2: Retardant on east flank. 800ft drops, stagger 200ft. Protect structure corridor.'},
+  {t:46, from:'seat',to:'atgs', msg:'SEAT 1 drop complete. Good coverage. SEAT 2 on approach.'},
+  {t:47, from:'ai_swarm',to:'air_ops', msg:'DECONFLICTION: All drones holding at 400ft AGL. TFR active for tanker ops. Will resume ISR pattern when cleared.'},
+
+  // ── T+48: HOTSHOTS + DOZER ──
+  {t:48, activate:['hotshots','dozer'], banner:'HOTSHOT CREW & DOZER ON SCENE', detail:'IHC-1 begins burnout from anchor point — Dozer cutting firebreak ahead of fire'},
+  {t:49, from:'div_alpha',to:'hotshots', msg:'IHC ASSIGNMENT: Burnout operation from anchor point at road junction. Drip torch authorized. Backfire into wind. Safety zones at parking area.'},
+  {t:50, from:'div_alpha',to:'engines', msg:'ENGINES: E51, E52 reposition to hold burnout line. Hose lays on handline edge. E53 structure standby continues.'},
+  {t:51, from:'hotshots',to:'div_alpha', msg:'IHC-1 REPORT: Burnout initiated. 200ft/hr handline. Backfire taking — burning into SW wind. Crew fatigue Level 1. LCES confirmed.'},
+  {t:52, from:'dozer',to:'div_alpha', msg:'DOZER REPORT: Firebreak started on north ridge. 15ft wide. Progress 6 chains/hour. Terrain steep — slow going.'},
+
+  // ── T+54: VLAT ARRIVES ──
+  {t:54, activate:['vlat'], banner:'VLAT DC-10 ON STATION', detail:'11,600 gallons Phos-Chek retardant — laying line AHEAD of fire'},
+  {t:55, from:'atgs',to:'vlat', msg:'VLAT: North ridge, heading 045, 200ft AGL. 2400ft run. Drop AHEAD of fire on Lead Plane smoke. All aircraft hold. DRONES DOWN.'},
+  {t:56, from:'vlat',to:'atgs', msg:'VLAT DROP COMPLETE: Full load, good coverage. Retardant line on ridge. RTB for reload — 35 min turnaround.'},
+  {t:57, from:'atgs',to:'drones', msg:'TFR CLEAR: Drones resume ISR. Verify retardant line coverage with IR.'},
+  {t:58, from:'drones',to:'ai_predict', msg:'IR SCAN: Retardant line holding on north ridge. Fire intensity reduced 60% in treated zone. Spot fire NE confirmed contained.'},
+
+  // ── T+60: PLANNING CYCLE ──
+  {t:60, activate:['nws'], banner:'PLANNING CYCLE — SITUATION BRIEFING', detail:'FBAN delivers fire behavior brief — NWS spot forecast received'},
+  {t:61, from:'nws',to:'fban', msg:'SPOT FORECAST: Wind shift to NW expected 1800hrs. Gusts to 35mph. RH recovery to 15% overnight. Critical fire weather continues.'},
+  {t:62, from:'fban',to:'plan_chief', msg:'FIRE BEHAVIOR BRIEF: ROS 120 ch/hr at head. Flame length 15ft. Crown fire in chaparral. Wind shift at 1800 will push fire EAST toward subdivision.'},
+  {t:63, from:'fban',to:'ops_chief', msg:'FBAN TO OPS: Wind shift in 2 hours will redirect head toward Oak Ridge. Recommend pre-positioning on east flank NOW.'},
+  {t:64, from:'ai_predict',to:'fban', msg:'AI AUGMENT: Ensemble model (50 scenarios) confirms wind shift impact. 85% probability fire reaches structures by 1900 if no intervention on east.'},
+  {t:65, from:'sit_unit',to:'plan_chief', msg:'SITUATION MAP: Fire at 25 acres. 10% contained (south flank). Retardant line holding north. East flank UNCONTAINED — approaching WUI.'},
+  {t:66, from:'plan_chief',to:'ic', msg:'PLANNING BRIEF: 25 acres, 10% contained. Wind shift in 2hr will push east. FBAN + AI predict structures at risk by 1900. Recommend: escalate to Type 1, evacuate OR zones.'},
+
+  // ── T+68: CRISIS / TYPE 1 TRANSITION ──
+  {t:68, banner:'IC ORDERS TYPE 1 ESCALATION', detail:'Wind shift threatening subdivision — evacuation ordered, structure protection activated', phase:'crisis'},
+  {t:69, activate:['pio','le_branch','struct_group','struct_eng','ai_evac','ai_deploy']},
+  {t:70, from:'ic',to:'pio', msg:'PIO: Issue evacuation WARNING for zones OR-1, OR-2, OR-3. Coordinate with county OES. Press briefing in 30 min.'},
+  {t:71, from:'ic',to:'le_branch', msg:'EVACUATION ORDER: Zones OR-1 and OR-2 mandatory evacuation effective immediately. Zone OR-3 evacuation WARNING. Door-to-door notification.'},
+  {t:72, from:'ai_evac',to:'ai_overwatch', msg:'ZONE ANALYSIS: OR-1 (450 residents, 2 exits), OR-2 (320 residents, 1 exit — BOTTLENECK). Vulnerable: 12 mobility-impaired, 1 assisted living facility.'},
+  {t:73, from:'ai_evac',to:'le_branch', msg:'ROUTE RECOMMENDATION: OR-2 single exit — request contraflow on Pine Ridge Rd. Assisted living facility needs bus transport. ETA to clear: 45 min.'},
+  {t:74, from:'ai_deploy',to:'ops_chief', msg:'RESOURCE OPTIMIZATION: Reposition E53 + 2 struct engines to east flank. Pre-stage foam. Structure triage: 23 defensible, 8 marginal, 4 non-defensible.'},
+
+  // ── T+76: EVACUATION + STRUCTURE PROTECTION ──
+  {t:76, activate:['genasys','traffic','hand_crew','div_bravo'], banner:'EVACUATION IN PROGRESS', detail:'Door-to-door notification — traffic control established — structure engines deploying'},
+  {t:77, from:'le_branch',to:'genasys', msg:'ZONE UPDATE: OR-1 = MANDATORY EVAC, OR-2 = MANDATORY EVAC, OR-3 = WARNING. Trigger WEA, reverse-911, app push.'},
+  {t:78, from:'le_branch',to:'traffic', msg:'TRAFFIC CONTROL: Contraflow on Pine Ridge Rd. Officers at Oak/Main and Ridge/Highway intersections. No entry enforcement.'},
+  {t:79, from:'struct_group',to:'struct_eng', msg:'STRUCTURE ASSIGNMENT: Triage complete. Priority 1: Sunset View (23 homes). Gel coating on exposures. Foam standby. Bump-and-run if fire arrives.'},
+  {t:80, from:'fire_branch',to:'div_bravo', msg:'DIV-B ACTIVATED: East flank. Hand crew fireline construction from anchor at road. Dozer redirected to east ridge.'},
+  {t:81, from:'div_bravo',to:'hand_crew', msg:'HAND CREW: Begin fireline east flank from road anchor. 2ft wide to mineral soil. Work toward ridge. Safety zone at parking lot.'},
+  {t:82, from:'traffic',to:'le_branch', msg:'TRAFFIC: Contraflow active. OR-1 clearing at ~200 vehicles/hr. OR-2 bottleneck — 35 min to clear. Assisted living bus en route.'},
+
+  // ── T+84: FULL ICS ACTIVATION ──
+  {t:84, activate:['log_chief','iroc','comms','res_unit','liaison'], banner:'FULL ICS ACTIVATION — TYPE 1 INCIDENT', detail:'All ICS sections staffed — mutual aid requested — IROC resource ordering', phase:'full'},
+  {t:85, from:'ic',to:'log_chief', msg:'LOGISTICS: Full activation. Communications unit needed — agencies on 3 different freq systems. Medical standby on fireline. Supply chain for 200+ personnel.'},
+  {t:86, from:'log_chief',to:'comms', msg:'COMMS: Deploy P25 gateway — bridge CAL FIRE VHF, county UHF, federal 800MHz. Repeater on south ridge for dead zone.'},
+  {t:87, from:'log_chief',to:'iroc', msg:'RESOURCE ORDER: 4 additional engines, 2 hand crews, 1 hotshot crew, 2 dozers, medical unit. Type 1 team requested for AM transition.'},
+  {t:88, from:'ic',to:'liaison', msg:'LIAISON: Coordinate with county OES, Red Cross (sheltering), utility companies (power shutoff), school district (closures).'},
+  {t:89, from:'iroc',to:'log_chief', msg:'IROC CONFIRM: Resources ordered. 4 engines ETA 2hr. Hand crews ETA 4hr from Sequoia NF. Type 1 team ETA tomorrow 0600.'},
+
+  // ── T+91: FULL OPERATIONS ──
+  {t:91, activate:['medical','fin_chief'], banner:'ALL SECTIONS OPERATIONAL', detail:'Finance tracking costs — Medical positioned — full information flow active'},
+  {t:92, from:'log_chief',to:'medical', msg:'MEDICAL: Position ambulance at staging area. ALS capability. Medevac helicopter on standby at helibase.'},
+  {t:93, from:'ai_deploy',to:'log_chief', msg:'SUPPLY FORECAST: At current burn rate — need 12,000gal water resupply by 2100. Foam supply critical for structure protection. MREs for 200 personnel.'},
+  {t:94, from:'ai_overwatch',to:'ic', msg:'DECISION POINT: Wind shift beginning. East flank fireline 40% complete. Structure engines in position. Evacuation 70% complete. Confidence: MODERATE — recommend holding current strategy.'},
+  {t:95, from:'ai_overwatch',to:'plan_chief', msg:'LIVING IAP UPDATE: All 10 Standard Orders verified. Watch Out #1 (unfamiliar area) flagged for incoming mutual aid crews. Watch Out #8 (terrain/fuels not seen) for east div.'},
+  {t:96, from:'engines',to:'div_alpha', msg:'E51: Direct attack holding on south flank. Water at 40%. Tender resupply requested. Fire behavior moderate here — flanking fire.'},
+  {t:97, from:'hotshots',to:'div_alpha', msg:'IHC-1: Burnout 60% complete. 1200ft handline. Good black. Backfire holding. Crew rotating — fatigue Level 2. Need relief in 4 hours.'},
+  {t:98, from:'hand_crew',to:'div_bravo', msg:'T2 CREW: East flank fireline 800ft complete. Difficult terrain — loose rock. Fire 30 min away at current ROS. Requesting dozer support.'},
+  {t:99, from:'struct_eng',to:'struct_group', msg:'STRUCTURE RPT: 15/23 homes gel-coated. Foam lines on 8 priority exposures. Fire ETA to first structure: 45 min.'},
+  {t:100, from:'le_branch',to:'ic', msg:'EVACUATION STATUS: OR-1 cleared (100%). OR-2 at 85% — assisted living loaded. OR-3 warning issued, voluntary departure 40%.'},
+  {t:102, from:'drones',to:'ai_swarm', msg:'DRONE ALERT: Wind shift detected — head fire turning east as predicted. New spot fire 400m east of containment line. IR confirms active crowning.'},
+  {t:103, from:'ai_swarm',to:'ai_overwatch', msg:'CRITICAL: Spot fire east of line. Drone IR shows crowning in chaparral. Threatening containment strategy. Recommend immediate VLAT retardant on spot.'},
+  {t:104, from:'ai_overwatch',to:'ic', msg:'URGENT DECISION POINT: Spot fire east of line, wind shift active. Options: (A) VLAT retardant on spot + accelerate east fireline, (B) Pull crews to safety zones + defend structures only.'},
+  {t:106, from:'ic',to:'ops_chief', msg:'IC DECISION: Option A. VLAT on spot fire. Accelerate east fireline. Structure engines hold position. ALL CREWS verify escape routes NOW.'},
+  {t:107, from:'safety',to:'ops_chief', msg:'SAFETY MANDATORY: Wind shift active. ALL crews recheck LCES. E52 escape route may be compromised — verify immediately. Watch Out #10: attempt structure protection.'},
+  {t:108, from:'safety',to:'hotshots', msg:'LCES CHECK: IHC-1 — confirm escape route and safety zone with wind shift. Current wind NW 22 gusting 32.'},
+  {t:109, from:'ai_swarm',to:'safety', msg:'DRONE OVERWATCH: E52 escape route CLEAR — confirmed by IR. IHC-1 safety zone parking lot ACCESSIBLE. All ground crews accounted for.'},
+  {t:110, from:'plan_chief',to:'ic', msg:'UPDATED BRIEF: 55 acres, 15% contained. Spot fire being targeted. Evacuation near-complete. Next planning period: 2100-0600. Type 1 team arrives 0600.'},
+
+  // ── CONTINUOUS FLOW (loops after timeline ends) ──
+  {t:115, banner:'ICS INFORMATION FLOW — CONTINUOUS OPERATIONS', detail:'All sections active — information flowing through complete ICS chain'},
+];
+
+function formatSimTime(t){
+  const h=Math.floor(t/3600);
+  const m=Math.floor((t%3600)/60);
+  const s=Math.floor(t%60);
+  if(h>0)return `T+${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `T+${m}:${String(s).padStart(2,'0')}`;
+}
+
+function getActiveNodes(){
+  const s=new Set();
+  // During simulation, show ALL nodes (unlit ones will be dimmed)
+  const showAll=playing||simTime>0;
+  for(const[id,n]of Object.entries(NODES)){
+    if(showAll||n.scenarios.includes(scenario))s.add(id);
+  }
+  return s;
+}
+
+function getActiveEdges(){
+  const simRunning=playing||simTime>0;
+  if(simRunning){
+    // Only show edges between lit nodes
+    return EDGES.filter(e=>litNodes.has(e.from)&&litNodes.has(e.to));
+  }
+  return EDGES.filter(e=>e.scenarios.includes(scenario)&&activeNodes.has(e.from)&&activeNodes.has(e.to));
+}
+
+function initPositions(){
+  const cx=W/2,cy=H/2;
+  // Hierarchical layout by tier
+  const tiers={command:{y:cy-280},staff:{y:cy-140},branch:{y:cy+20},tactical:{y:cy+160},external:{y:cy+300},ai:{y:cy-60}};
+  const tierCounts={};
+  for(const[id,n]of Object.entries(NODES)){
+    if(!activeNodes.has(id))continue;
+    const t=n.tier;
+    if(!tierCounts[t])tierCounts[t]=0;
+    tierCounts[t]++;
+  }
+  const tierIdx={};
+  for(const[id,n]of Object.entries(NODES)){
+    if(!activeNodes.has(id))continue;
+    const t=n.tier;
+    if(!tierIdx[t])tierIdx[t]=0;
+    const count=tierCounts[t];
+    const spacing=Math.min(140,W*.8/count);
+    const startX=cx-(count-1)*spacing/2;
+    // AI agents go to the right side
+    let x,y;
+    if(t==='ai'){
+      const aiCount=tierCounts.ai||5;
+      const aiSpacing=60;
+      y=tiers.ai.y+tierIdx[t]*aiSpacing-((aiCount-1)*aiSpacing/2);
+      x=cx+380;
+    } else {
+      x=startX+tierIdx[t]*spacing;
+      y=tiers[t]?.y||cy;
+    }
+    if(!positions[id]){
+      positions[id]={x:x+(Math.random()-.5)*20,y:y+(Math.random()-.5)*20};
+      velocities[id]={x:0,y:0};
+    }
+    tierIdx[t]++;
+  }
+}
+
+function setScenario(s){
+  scenario=s;
+  activeNodes=getActiveNodes();
+  activeEdges=getActiveEdges();
+  positions={};velocities={};
+  initPositions();
+  particles=[];
+  msgEl.innerHTML='';
+  document.querySelectorAll('#phase-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelector(`#phase-bar button[onclick="setScenario('${s}')"]`)?.classList.add('active');
+  const labels={initial:'Initial Attack',extended:'Extended Attack',crisis:'Crisis / Type 1',full:'Full ICS'};
+  const types={initial:'Type 3',extended:'Type 2',crisis:'Type 1',full:'Type 1'};
+  document.getElementById('s-scenario').textContent=labels[s]||s;
+  document.getElementById('s-type').textContent=types[s]||'Type 3';
+}
+
+function togglePlay(){
+  playing=!playing;
+  const btn=document.getElementById('play-btn');
+  if(playing){
+    btn.textContent='PAUSE';btn.classList.add('playing');
+    lastFrameTime=performance.now();
+    if(simTime===0){
+      // Reset everything for fresh start
+      litNodes=new Set();
+      eventIndex=0;
+      particles=[];
+      msgEl.innerHTML='';
+      scenario='initial';
+      activeNodes=getActiveNodes();
+      activeEdges=getActiveEdges();
+      positions={};velocities={};
+      initPositions();
+      document.querySelectorAll('#phase-bar button').forEach(b=>b.classList.remove('active'));
+      document.querySelector(`#phase-bar button[onclick="setScenario('initial')"]`)?.classList.add('active');
+    }
+  } else {
+    btn.textContent='PLAY';btn.classList.remove('playing');
+  }
+}
+
+function resetSim(){
+  playing=false;
+  simTime=0;
+  eventIndex=0;
+  litNodes=new Set();
+  particles=[];
+  msgEl.innerHTML='';
+  const btn=document.getElementById('play-btn');
+  btn.textContent='PLAY';btn.classList.remove('playing');
+  document.getElementById('timeline-progress').style.width='0%';
+  setScenario('initial');
+}
+
+function setSpeed(v){
+  simSpeed=parseFloat(v);
+  document.getElementById('speed-label').textContent=simSpeed.toFixed(1)+'x';
+}
+
+function showBanner(time,text,detail){
+  const banner=document.getElementById('event-banner');
+  banner.querySelector('.ev-time').textContent=formatSimTime(time);
+  banner.querySelector('.ev-text').textContent=text;
+  banner.querySelector('.ev-detail').textContent=detail||'';
+  banner.style.opacity='1';
+  if(bannerTimeout)clearTimeout(bannerTimeout);
+  bannerTimeout=setTimeout(()=>{banner.style.opacity='0'},4000/simSpeed);
+}
+
+function activateNode(id){
+  if(litNodes.has(id))return;
+  litNodes.add(id);
+  // Make sure node is in active set
+  if(!activeNodes.has(id)){
+    activeNodes.add(id);
+    if(!positions[id]){
+      // Position new node
+      const n=NODES[id];if(!n)return;
+      const cx=W/2,cy=H/2;
+      const tierY={command:cy-280,staff:cy-140,branch:cy+20,tactical:cy+160,external:cy+300,ai:cy-60};
+      if(n.tier==='ai'){
+        positions[id]={x:cx+380+(Math.random()-.5)*40,y:(tierY.ai||cy)+(Math.random()-.5)*80};
+      } else {
+        positions[id]={x:cx+(Math.random()-.5)*300,y:(tierY[n.tier]||cy)+(Math.random()-.5)*30};
+      }
+      velocities[id]={x:0,y:0};
+    }
+    activeEdges=getActiveEdges();
+  }
+}
+
+function fireMessage(from,to,msg){
+  const fromN=NODES[from],toN=NODES[to];
+  if(!fromN||!toN)return;
+  // Ensure both nodes are lit
+  activateNode(from);activateNode(to);
+  // Find matching edge or create particle along direct line
+  const edge=activeEdges.find(e=>e.from===from&&e.to===to);
+  const typeColors={command:'#FBBF24',intel:'#22D3EE',coord:'#34D399',ai:'#F472B6',safety:'#EF4444'};
+  const color=edge?typeColors[edge.type]:'#94A3B8';
+  // Spawn several particles for visibility
+  for(let i=0;i<3;i++){
+    particles.push({
+      from,to,progress:-i*0.08,speed:0.012+Math.random()*0.004,
+      color:color||'#94A3B8',edge,size:3+Math.random()*2
+    });
+  }
+  // Log message
+  msgCount++;
+  const div=document.createElement('div');
+  div.className='msg';
+  const timeStr=formatSimTime(simTime);
+  div.innerHTML=`<span style="color:#64748B;font-size:8px">[${timeStr}]</span> <span class="msg-from" style="color:${fromN.color}">${fromN.short}</span><span class="msg-to">→ ${toN.short}</span><span class="msg-text">${msg}</span>`;
+  msgEl.prepend(div);
+  if(msgEl.children.length>40)msgEl.removeChild(msgEl.lastChild);
+}
+
+function processTimeline(){
+  if(!playing)return;
+  const maxT=TIMELINE[TIMELINE.length-1].t;
+  // Update timeline bar
+  document.getElementById('timeline-progress').style.width=Math.min(100,simTime/maxT*100)+'%';
+
+  while(eventIndex<TIMELINE.length){
+    const ev=TIMELINE[eventIndex];
+    if(ev.t>simTime)break;
+    // Process event
+    if(ev.activate){
+      ev.activate.forEach(id=>activateNode(id));
+    }
+    if(ev.banner){
+      showBanner(ev.t,ev.banner,ev.detail);
+    }
+    if(ev.phase){
+      // Transition scenario
+      scenario=ev.phase;
+      activeNodes=getActiveNodes();
+      // But only show lit nodes + the ones in scenario
+      activeEdges=getActiveEdges();
+      const labels={initial:'Initial Attack',extended:'Extended Attack',crisis:'Crisis / Type 1',full:'Full ICS'};
+      const types={initial:'Type 3',extended:'Type 2',crisis:'Type 1',full:'Type 1'};
+      document.getElementById('s-scenario').textContent=labels[ev.phase]||ev.phase;
+      document.getElementById('s-type').textContent=types[ev.phase]||'';
+      document.querySelectorAll('#phase-bar button').forEach(b=>b.classList.remove('active'));
+      document.querySelector(`#phase-bar button[onclick="setScenario('${ev.phase}')"]`)?.classList.add('active');
+    }
+    if(ev.from&&ev.to){
+      fireMessage(ev.from,ev.to,ev.msg);
+    }
+    eventIndex++;
+  }
+
+  // After timeline ends, continue with ambient flow on active edges
+  if(eventIndex>=TIMELINE.length&&frame%Math.max(2,Math.round(12/simSpeed))===0){
+    spawnParticle();
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FORCE-DIRECTED PHYSICS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function simulate(){
+  const damping=0.85;
+  const repulsion=8000;
+  const attraction=0.003;
+  const idealDist=120;
+  const ids=[...activeNodes];
+
+  // Repulsion between all nodes
+  for(let i=0;i<ids.length;i++){
+    for(let j=i+1;j<ids.length;j++){
+      const a=positions[ids[i]],b=positions[ids[j]];
+      if(!a||!b)continue;
+      let dx=a.x-b.x,dy=a.y-b.y;
+      let dist=Math.sqrt(dx*dx+dy*dy)||1;
+      let force=repulsion/(dist*dist);
+      let fx=dx/dist*force,fy=dy/dist*force;
+      velocities[ids[i]].x+=fx;velocities[ids[i]].y+=fy;
+      velocities[ids[j]].x-=fx;velocities[ids[j]].y-=fy;
+    }
+  }
+
+  // Attraction along edges
+  for(const e of activeEdges){
+    const a=positions[e.from],b=positions[e.to];
+    if(!a||!b)continue;
+    let dx=b.x-a.x,dy=b.y-a.y;
+    let dist=Math.sqrt(dx*dx+dy*dy)||1;
+    let force=(dist-idealDist)*attraction;
+    let fx=dx/dist*force,fy=dy/dist*force;
+    velocities[e.from].x+=fx;velocities[e.from].y+=fy;
+    velocities[e.to].x-=fx;velocities[e.to].y-=fy;
+  }
+
+  // Tier gravity (keep nodes in their tier bands)
+  const cx=W/2,cy=H/2;
+  const tierY={command:cy-280,staff:cy-140,branch:cy+20,tactical:cy+160,external:cy+300,ai:cy-60};
+  for(const id of ids){
+    const n=NODES[id];if(!n||!positions[id])continue;
+    const targetY=tierY[n.tier]||cy;
+    velocities[id].y+=(targetY-positions[id].y)*0.01;
+    if(n.tier==='ai'){
+      velocities[id].x+=(cx+380-positions[id].x)*0.008;
+    } else {
+      velocities[id].x+=(cx-positions[id].x)*0.001;
+    }
+  }
+
+  // Apply velocities with damping
+  for(const id of ids){
+    if(!velocities[id]||!positions[id])continue;
+    velocities[id].x*=damping;velocities[id].y*=damping;
+    positions[id].x+=velocities[id].x;
+    positions[id].y+=velocities[id].y;
+    // Bounds
+    const m=40;
+    positions[id].x=Math.max(m,Math.min(W-m,positions[id].x));
+    positions[id].y=Math.max(m+50,Math.min(H-m,positions[id].y));
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MESSAGE PARTICLES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function spawnParticle(){
+  if(activeEdges.length===0)return;
+  // Weight by frequency
+  const totalFreq=activeEdges.reduce((s,e)=>s+e.freq,0);
+  let r=Math.random()*totalFreq;
+  let edge=activeEdges[0];
+  for(const e of activeEdges){
+    r-=e.freq;if(r<=0){edge=e;break}
+  }
+  const typeColors={command:'#FBBF24',intel:'#22D3EE',coord:'#34D399',ai:'#F472B6',safety:'#EF4444'};
+  particles.push({
+    from:edge.from,to:edge.to,
+    progress:0,speed:0.008+Math.random()*0.006,
+    color:typeColors[edge.type]||'#94A3B8',
+    edge,size:2+Math.random()*2
+  });
+  // Log message
+  msgCount++;
+  if(particles.length%3===0){
+    const fromN=NODES[edge.from],toN=NODES[edge.to];
+    const div=document.createElement('div');
+    div.className='msg';
+    div.innerHTML=`<span class="msg-from" style="color:${fromN.color}">${fromN.short}</span><span class="msg-to">→ ${toN.short}</span><span class="msg-text">${edge.label}</span>`;
+    msgEl.prepend(div);
+    if(msgEl.children.length>30)msgEl.removeChild(msgEl.lastChild);
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RENDER
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function draw(){
+  frame++;
+  const now=performance.now();
+  if(playing){
+    const dt=(now-lastFrameTime)/1000*simSpeed;
+    simTime+=dt;
+    processTimeline();
+  }
+  lastFrameTime=now;
+
+  ctx.fillStyle='#0A0E17';ctx.fillRect(0,0,W,H);
+  simulate();
+
+  // Spawn ambient particles only after timeline or when not in scripted mode
+  if(!playing&&eventIndex===0){
+    // Not started yet — no particles
+  } else if(eventIndex>=TIMELINE.length){
+    if(frame%4===0)spawnParticle();
+    if(frame%6===0&&scenario!=='initial')spawnParticle();
+    if(frame%8===0&&(scenario==='crisis'||scenario==='full'))spawnParticle();
+  }
+
+  // Sim state
+  const simStarted=eventIndex>0||simTime>0;
+
+  // Draw edges
+  for(const e of activeEdges){
+    const a=positions[e.from],b=positions[e.to];
+    if(!a||!b)continue;
+    const bothLit=!simStarted||(litNodes.has(e.from)&&litNodes.has(e.to));
+    if(!bothLit)continue;
+    const typeColors={command:'#FBBF2415',intel:'#22D3EE12',coord:'#34D39910',ai:'#F472B615',safety:'#EF444418'};
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=typeColors[e.type]||'#1E263640';
+    ctx.lineWidth=e===hoveredEdge?2:0.5;
+    ctx.stroke();
+  }
+
+  // Draw particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.progress+=p.speed;
+    if(p.progress>=1){particles.splice(i,1);continue}
+    const a=positions[p.from],b=positions[p.to];
+    if(!a||!b){particles.splice(i,1);continue}
+    const x=a.x+(b.x-a.x)*p.progress;
+    const y=a.y+(b.y-a.y)*p.progress;
+    const alpha=p.progress<0.1?p.progress*10:p.progress>0.9?(1-p.progress)*10:1;
+    ctx.beginPath();ctx.arc(x,y,p.size,0,Math.PI*2);
+    ctx.fillStyle=p.color+Math.round(alpha*200).toString(16).padStart(2,'0');
+    ctx.fill();
+    // Trail
+    const tx=a.x+(b.x-a.x)*Math.max(0,p.progress-0.08);
+    const ty=a.y+(b.y-a.y)*Math.max(0,p.progress-0.08);
+    ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(x,y);
+    ctx.strokeStyle=p.color+Math.round(alpha*80).toString(16).padStart(2,'0');
+    ctx.lineWidth=p.size*.6;ctx.stroke();
+  }
+
+  // Draw nodes
+  for(const id of activeNodes){
+    const n=NODES[id],pos=positions[id];
+    if(!n||!pos)continue;
+    const isHovered=hoveredNode===id;
+    const isLit=!simStarted||litNodes.has(id);
+    const dim=!isLit;
+    const r=n.size*(isHovered?1.3:1);
+
+    // Activation pulse (when node just got lit)
+    if(isLit&&!dim){
+      // Glow
+      if(isHovered||n.tier==='command'){
+        ctx.beginPath();ctx.arc(pos.x,pos.y,r+8,0,Math.PI*2);
+        ctx.fillStyle=n.color+'15';ctx.fill();
+      }
+      // Body
+      ctx.beginPath();ctx.arc(pos.x,pos.y,r,0,Math.PI*2);
+      ctx.fillStyle=n.color+(isHovered?'40':'20');ctx.fill();
+      ctx.strokeStyle=n.color+(isHovered?'FF':'80');
+      ctx.lineWidth=isHovered?2:1;ctx.stroke();
+      // AI nodes get dashed border
+      if(n.tier==='ai'){
+        ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(pos.x,pos.y,r+3,0,Math.PI*2);
+        ctx.strokeStyle=n.color+'40';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
+      }
+      // Label
+      ctx.fillStyle=isHovered?'#FFFFFF':n.color;
+      ctx.font=`${isHovered?'bold ':''}${r<14?8:10}px -apple-system,sans-serif`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(n.short,pos.x,pos.y);
+      // Sub-label
+      if(isHovered||r>=18){
+        ctx.fillStyle='#64748B';ctx.font='7px -apple-system,sans-serif';
+        ctx.fillText(n.label.length>25?n.label.substring(0,22)+'...':n.label,pos.x,pos.y+r+10);
+      }
+    } else {
+      // Dimmed / inactive node
+      ctx.beginPath();ctx.arc(pos.x,pos.y,r*0.7,0,Math.PI*2);
+      ctx.fillStyle='#1E263640';ctx.fill();
+      ctx.strokeStyle='#1E263680';ctx.lineWidth=0.5;ctx.stroke();
+      ctx.fillStyle='#1E2636';
+      ctx.font=`${r<14?7:8}px -apple-system,sans-serif`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(n.short,pos.x,pos.y);
+    }
+  }
+
+  // Tier labels
+  const cx=W/2;
+  ctx.fillStyle='#1E2636';ctx.font='bold 9px -apple-system,sans-serif';ctx.textAlign='left';
+  const tierLabels={command:'COMMAND',staff:'GENERAL STAFF',branch:'BRANCHES / DIVISIONS',tactical:'TACTICAL RESOURCES',external:'EXTERNAL SYSTEMS',ai:'AI AGENTS'};
+  const tierY={command:H/2-280,staff:H/2-140,branch:H/2+20,tactical:H/2+160,external:H/2+300,ai:H/2-100};
+  for(const[t,label]of Object.entries(tierLabels)){
+    const y=tierY[t]-2;
+    if(t==='ai'){
+      ctx.fillText(label,cx+300,y);
+      // Dashed separator
+      ctx.setLineDash([4,6]);ctx.beginPath();ctx.moveTo(cx+280,tierY.command-20);
+      ctx.lineTo(cx+280,tierY.external+30);ctx.strokeStyle='#F472B620';ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
+    } else {
+      ctx.fillText(label,30,y);
+    }
+  }
+
+  // Update stats
+  if(frame%30===0){
+    document.getElementById('s-time').textContent=formatSimTime(simTime);
+    const litCount=simStarted?litNodes.size:activeNodes.size;
+    document.getElementById('s-nodes').textContent=litCount;
+    document.getElementById('s-edges').textContent=activeEdges.length;
+    const now=Date.now();
+    const elapsed=(now-lastMsgCountReset)/1000;
+    if(elapsed>2){
+      document.getElementById('s-msgs').textContent=Math.round(msgCount/elapsed);
+      msgCount=0;lastMsgCountReset=now;
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERACTION
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let hoveredEdge=null;
+canvas.addEventListener('mousemove',function(e){
+  const mx=e.clientX,my=e.clientY;
+  hoveredNode=null;hoveredEdge=null;
+  // Check nodes
+  for(const id of activeNodes){
+    const pos=positions[id];if(!pos)continue;
+    const dx=pos.x-mx,dy=pos.y-my;
+    if(Math.sqrt(dx*dx+dy*dy)<NODES[id].size+8){
+      hoveredNode=id;break;
+    }
+  }
+  if(hoveredNode){
+    const n=NODES[hoveredNode];
+    let html=`<div class="tt-title" style="color:${n.color}">${n.label}</div>`;
+    html+=`<div class="tt-role">${n.role}</div>`;
+    if(n.realWorld){html+=`<div class="tt-section"><div class="tt-label">Real-World Context</div><div class="tt-flow">${n.realWorld}</div></div>`}
+    if(n.icsForm){html+=`<div class="tt-section"><div class="tt-label">ICS Forms</div><div class="tt-flow">${n.icsForm}</div></div>`}
+    // Show connected edges
+    const incoming=activeEdges.filter(e=>e.to===hoveredNode);
+    const outgoing=activeEdges.filter(e=>e.from===hoveredNode);
+    if(incoming.length>0){
+      html+=`<div class="tt-section"><div class="tt-label">Receives From (${incoming.length})</div>`;
+      incoming.slice(0,5).forEach(e=>{
+        html+=`<div class="tt-flow" style="color:${NODES[e.from]?.color||'#94A3B8'}">← ${NODES[e.from]?.short}: ${e.label}</div>`;
+      });
+      if(incoming.length>5)html+=`<div class="tt-flow">...and ${incoming.length-5} more</div>`;
+      html+=`</div>`;
+    }
+    if(outgoing.length>0){
+      html+=`<div class="tt-section"><div class="tt-label">Sends To (${outgoing.length})</div>`;
+      outgoing.slice(0,5).forEach(e=>{
+        html+=`<div class="tt-flow" style="color:${NODES[e.to]?.color||'#94A3B8'}">→ ${NODES[e.to]?.short}: ${e.label}</div>`;
+      });
+      if(outgoing.length>5)html+=`<div class="tt-flow">...and ${outgoing.length-5} more</div>`;
+      html+=`</div>`;
+    }
+    tooltip.innerHTML=html;tooltip.style.display='block';
+    tooltip.style.left=Math.min(mx+16,W-340)+'px';
+    tooltip.style.top=Math.max(my-10,4)+'px';
+  } else {
+    tooltip.style.display='none';
+  }
+});
+
+// Drag nodes
+let dragging=null,dragOff={x:0,y:0};
+canvas.addEventListener('mousedown',function(e){
+  if(hoveredNode){
+    dragging=hoveredNode;
+    dragOff.x=positions[hoveredNode].x-e.clientX;
+    dragOff.y=positions[hoveredNode].y-e.clientY;
+  }
+});
+canvas.addEventListener('mousemove',function(e){
+  if(dragging&&positions[dragging]){
+    positions[dragging].x=e.clientX+dragOff.x;
+    positions[dragging].y=e.clientY+dragOff.y;
+    velocities[dragging].x=0;velocities[dragging].y=0;
+  }
+});
+canvas.addEventListener('mouseup',()=>{dragging=null});
+
+// ━━ INIT ━━
+// Show ALL nodes dimmed before play — waiting state
+for(const id of Object.keys(NODES)) activeNodes.add(id);
+initPositions();
+activeEdges=[];
+document.querySelectorAll('#phase-bar button').forEach(b=>b.classList.remove('active'));
+document.querySelector(`#phase-bar button[onclick="setScenario('initial')"]`)?.classList.add('active');
+draw();
+</script>
+</body>
+</html>

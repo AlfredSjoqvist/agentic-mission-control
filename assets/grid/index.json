@@ -1,0 +1,74 @@
+{
+  "4254_-14818": {
+    "state": "ready",
+    "worldId": "66542f5c-8f03-47f4-ae9c-eef976b7e017",
+    "splatUrl": "/assets/grid/4254_-14818.spz",
+    "splatFile": "4254_-14818.spz",
+    "lat": 34.036,
+    "lng": -118.54,
+    "sizeMB": "5.6"
+  },
+  "4254_-14817": {
+    "state": "ready",
+    "worldId": "90b094cf-ddde-4e98-b84a-a8c2008b383f",
+    "splatUrl": "/assets/grid/4254_-14817.spz",
+    "splatFile": "4254_-14817.spz",
+    "lat": 34.036,
+    "lng": -118.532,
+    "sizeMB": "5.8"
+  },
+  "4254_-14816": {
+    "state": "ready",
+    "worldId": "d1d73e1f-9afc-4b85-aed2-6e8a6f3c393b",
+    "splatUrl": "/assets/grid/4254_-14816.spz",
+    "splatFile": "4254_-14816.spz",
+    "lat": 34.036,
+    "lng": -118.524,
+    "sizeMB": "5.7"
+  },
+  "4255_-14818": {
+    "state": "ready",
+    "worldId": "cbe90bd0-8426-4cc2-9b23-9e7991450957",
+    "splatUrl": "/assets/grid/4255_-14818.spz",
+    "splatFile": "4255_-14818.spz",
+    "lat": 34.044000000000004,
+    "lng": -118.54,
+    "sizeMB": "6.0"
+  },
+  "4255_-14816": {
+    "state": "ready",
+    "worldId": "4054ff1a-9bc4-43ff-88d5-c4e266437cb4",
+    "splatUrl": "/assets/grid/4255_-14816.spz",
+    "splatFile": "4255_-14816.spz",
+    "lat": 34.044000000000004,
+    "lng": -118.524,
+    "sizeMB": "5.9"
+  },
+  "4256_-14818": {
+    "state": "ready",
+    "worldId": "4ecc040c-7909-4b3e-958d-8019ff18bc43",
+    "splatUrl": "/assets/grid/4256_-14818.spz",
+    "splatFile": "4256_-14818.spz",
+    "lat": 34.052,
+    "lng": -118.54,
+    "sizeMB": "5.7"
+  },
+  "4256_-14817": {
+    "state": "ready",
+    "worldId": "b72498e4-d9b1-4e88-9f0f-86882ce4b534",
+    "splatUrl": "/assets/grid/4256_-14817.spz",
+    "splatFile": "4256_-14817.spz",
+    "lat": 34.052,
+    "lng": -118.532,
+    "sizeMB": "5.7"
+  },
+  "4256_-14816": {
+    "state": "ready",
+    "worldId": "dcdc4d3a-1d41-4d0b-8a73-83e3137b0e1a",
+    "splatUrl": "/assets/grid/4256_-14816.spz",
+    "splatFile": "4256_-14816.spz",
+    "lat": 34.052,
+    "lng": -118.524,
+    "sizeMB": "5.9"
+  }
+}

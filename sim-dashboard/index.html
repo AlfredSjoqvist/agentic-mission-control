@@ -1,0 +1,1773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FireSight — Agentic Mission Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--predict:#EF4444;--swarm:#22D3EE;--evac:#34D399;--deploy:#FBBF24;--overwatch:#A78BFA;--system:#94A3B8;--bg:#06080E;--surface:rgba(12,16,24,.92);--surface2:rgba(20,26,36,.95);--border:rgba(30,38,54,.6);--text:#E2E8F0;--dim:#8896AB;--muted:#4A5568}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;height:100vh;position:relative}
+#terrain{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0}
+.topbar{position:absolute;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;padding:0 16px;background:linear-gradient(180deg,rgba(6,8,14,.95),rgba(6,8,14,.7) 80%,transparent);height:52px;gap:10px}
+.topbar h1{font-size:15px;font-weight:800;letter-spacing:.5px}.topbar h1 span{color:var(--predict)}
+.badge{font-size:8px;padding:2px 7px;border-radius:10px;background:rgba(167,139,250,.12);color:#A78BFA;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.incident-tag{font-size:9px;padding:3px 10px;border-radius:4px;font-weight:700;letter-spacing:.3px;margin-left:4px;transition:.4s}
+.incident-tag.type3{background:rgba(251,191,36,.15);color:#FCD34D;border:1px solid rgba(251,191,36,.3)}
+.incident-tag.type1{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid rgba(239,68,68,.3)}
+.phase-tag{font-size:8px;padding:2px 8px;border-radius:3px;font-weight:700;letter-spacing:.3px;margin-left:4px}
+.phase-tag.detection{background:rgba(148,163,184,.12);color:#94A3B8;border:1px solid rgba(148,163,184,.2)}
+.phase-tag.escalation{background:rgba(251,191,36,.12);color:#FCD34D;border:1px solid rgba(251,191,36,.2)}
+.phase-tag.crisis{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid rgba(239,68,68,.3);animation:cpulse 1s infinite}
+.phase-tag.containment{background:rgba(52,211,153,.12);color:#6EE7B7;border:1px solid rgba(52,211,153,.2)}
+.phase-tag.resolution{background:rgba(34,211,238,.12);color:#67E8F9;border:1px solid rgba(34,211,238,.2)}
+@keyframes cpulse{0%,100%{opacity:1}50%{opacity:.6}}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:6px}
+.topbar button{background:rgba(20,26,36,.8);border:1px solid var(--border);color:var(--dim);padding:4px 9px;border-radius:5px;cursor:pointer;font:inherit;font-size:10px;font-weight:600;transition:.15s;backdrop-filter:blur(8px)}
+.topbar button:hover{background:rgba(30,38,54,.9);color:var(--text)}
+.topbar button.active{background:var(--predict);border-color:var(--predict);color:#fff}
+.topbar button.play{background:linear-gradient(135deg,#065F46,#047857);border-color:#059669;color:#fff;padding:4px 12px}
+.sim-time{color:var(--dim);font-size:10px;font-family:'SF Mono',monospace;min-width:160px;text-align:right}
+.speed-label{color:var(--muted);font-size:9px}
+.metrics-strip{position:absolute;top:74px;left:50%;transform:translateX(-50%);z-index:20;display:flex;gap:1px;border-radius:0 0 8px 8px;overflow:hidden;backdrop-filter:blur(12px);border:1px solid var(--border);border-top:none}
+.metric{display:flex;align-items:center;gap:4px;background:rgba(12,16,24,.85);padding:4px 10px;font-size:9px}
+.metric .ml{color:var(--muted);font-size:7px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.metric .mv{font-weight:800;font-size:11px;font-family:'SF Mono',monospace}
+.metric .mu{color:var(--muted);font-size:7px;margin-left:1px}
+.metric.alert .mv{color:#FCA5A5}.metric.warn .mv{color:#FCD34D}.metric.good .mv{color:#6EE7B7}
+.agents-panel{position:absolute;top:100px;left:12px;z-index:15;width:220px;display:flex;flex-direction:column;gap:5px;max-height:calc(100vh - 180px);overflow-y:auto;padding-right:4px}
+.agents-panel::-webkit-scrollbar{width:2px}.agents-panel::-webkit-scrollbar-thumb{background:var(--border)}
+.agent-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;backdrop-filter:blur(16px);background:var(--surface);transition:.3s}
+.agent-card.active{border-color:var(--ac);box-shadow:0 0 16px color-mix(in srgb,var(--ac) 10%,transparent)}
+.agent-card.alert-state{border-color:#F59E0B;box-shadow:0 0 16px rgba(245,158,11,.15)}
+.agent-card.critical-state{border-color:#EF4444;animation:ccpulse 1s infinite}
+@keyframes ccpulse{0%,100%{box-shadow:0 0 10px rgba(239,68,68,.1)}50%{box-shadow:0 0 25px rgba(239,68,68,.3)}}
+.agent-card.executing{border-color:#22C55E;box-shadow:0 0 12px rgba(34,197,94,.1)}
+.ac-hdr{display:flex;align-items:center;gap:5px;padding:6px 8px;font-size:10px;font-weight:700;background:rgba(20,26,36,.6);border-bottom:1px solid rgba(255,255,255,.04)}
+.ac-dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:.3s}
+.ac-dot.active-dot{background:var(--swarm)}.ac-dot.alert-dot{background:#F59E0B;animation:pulse 1s infinite}.ac-dot.critical-dot{background:#EF4444;animation:pulse .5s infinite}.ac-dot.exec-dot{background:#22C55E;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:.4;transform:scale(1)}50%{opacity:1;transform:scale(1.4)}}
+.ac-name{letter-spacing:.5px;font-size:9px}.ac-sub{color:var(--muted);font-size:7px;font-weight:400}
+.ac-status{margin-left:auto;font-size:6px;font-weight:700;padding:2px 5px;border-radius:3px;background:rgba(0,0,0,.3);color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.ac-status.st-active{color:#67E8F9;background:rgba(34,211,238,.12)}
+.ac-status.st-alert{color:#FBBF24;background:rgba(251,191,36,.12)}
+.ac-status.st-critical{color:#FCA5A5;background:rgba(239,68,68,.15)}
+.ac-status.st-executing{color:#4ADE80;background:rgba(34,197,94,.12)}
+.ac-think{padding:5px 8px;font-size:8px;line-height:1.5;color:var(--dim);max-height:70px;overflow-y:auto;font-family:'SF Mono','Cascadia Code',monospace}
+.ac-think::-webkit-scrollbar{width:2px}.ac-think::-webkit-scrollbar-thumb{background:var(--border)}
+.ac-think .th{padding:1px 0;border-bottom:1px solid rgba(255,255,255,.02)}.ac-think .th:last-child{border:none}
+.ac-think .tl{font-size:6px;text-transform:uppercase;letter-spacing:.8px;font-weight:800;padding:1px 3px;border-radius:2px;margin-right:3px;display:inline-block}
+.tl.obs{color:#60A5FA;background:rgba(96,165,250,.1)}.tl.rsn{color:#C4B5FD;background:rgba(196,181,253,.1)}.tl.act{color:#FCD34D;background:rgba(252,211,77,.1)}.tl.ics{color:#F472B6;background:rgba(244,114,182,.1)}.tl.sys{color:#93C5FD;background:rgba(147,197,253,.1)}
+.log-panel{position:absolute;top:100px;right:12px;z-index:15;width:300px;max-height:calc(100vh - 180px);border-radius:8px;border:1px solid var(--border);backdrop-filter:blur(16px);background:var(--surface);overflow:hidden;display:flex;flex-direction:column}
+.log-hdr{padding:6px 10px;font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:6px;flex-shrink:0;color:var(--dim);background:rgba(20,26,36,.6)}
+.log-hdr .dot{width:4px;height:4px;border-radius:50%}
+.log-body{flex:1;overflow-y:auto;padding:4px}.log-body::-webkit-scrollbar{width:2px}.log-body::-webkit-scrollbar-thumb{background:var(--border)}
+.ev{padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.03);font-size:9px;line-height:1.4;animation:evin .3s ease-out;border-radius:3px;margin-bottom:1px;display:flex;gap:6px;align-items:flex-start}
+@keyframes evin{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+.ev-icon{flex-shrink:0;font-size:10px;width:16px;text-align:center;margin-top:1px}
+.ev-body{flex:1;min-width:0}.ev-head{display:flex;align-items:center;gap:4px}
+.ev-time{color:var(--muted);font-size:7px;font-family:'SF Mono',monospace}
+.ev-agent{font-weight:700;font-size:8px;text-transform:uppercase;letter-spacing:.5px}
+.ev-msg{color:var(--dim);margin-top:1px;font-size:9px}
+.ev.info{border-left:3px solid var(--system)}.ev.update{border-left:3px solid var(--swarm)}.ev.alert-ev{border-left:3px solid #F59E0B;background:rgba(245,158,11,.03)}.ev.critical-ev{border-left:3px solid #EF4444;background:rgba(239,68,68,.05)}.ev.decision{border-left:3px solid #FBBF24;background:rgba(251,191,36,.04)}.ev.resolved{border-left:3px solid var(--evac);background:rgba(52,211,153,.04)}
+.decision-overlay{position:absolute;top:0;left:0;right:0;bottom:0;z-index:50;background:rgba(6,8,14,.6);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center}
+.decision-overlay.visible{display:flex}
+.decision-modal{background:rgba(12,16,24,.97);border:2px solid rgba(251,191,36,.5);border-radius:12px;padding:20px 24px;max-width:520px;width:90%;backdrop-filter:blur(20px);box-shadow:0 0 60px rgba(251,191,36,.1)}
+.dm-bar{display:flex;align-items:center;gap:6px;margin-bottom:10px}.dm-bar .dm-icon{font-size:18px}.dm-bar .dm-label{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#FBBF24}.dm-bar .dm-agent{font-size:9px;color:var(--dim);margin-left:auto}
+.dm-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px;line-height:1.4}
+.dm-desc{font-size:10px;color:var(--dim);line-height:1.5;margin-bottom:14px}.dm-desc b{color:var(--text)}
+.dm-options{display:flex;gap:8px;flex-wrap:wrap}
+.dm-btn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#FBBF24;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit;font-size:10px;font-weight:700;transition:.15s;flex:1;text-align:center;min-width:120px}
+.dm-btn:hover{background:rgba(251,191,36,.2)}.dm-btn.primary{background:rgba(251,191,36,.2);border-color:rgba(251,191,36,.5)}
+.dm-risks{margin-top:10px;padding:8px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px}
+.dm-risks-title{font-size:8px;font-weight:700;color:#FCA5A5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.dm-risks-list{font-size:9px;color:var(--dim);line-height:1.5}
+.coord-panel{position:absolute;bottom:56px;left:12px;z-index:15;width:260px;height:170px;border-radius:8px;border:1px solid var(--border);backdrop-filter:blur(16px);background:var(--surface);overflow:hidden}
+.coord-hdr{padding:5px 10px;font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:6px;color:var(--dim);background:rgba(20,26,36,.6)}
+.coord-hdr .dot{width:4px;height:4px;border-radius:50%}
+#coord-canvas{position:absolute;left:0;width:100%;z-index:0}
+.coord-node{position:absolute;width:44px;height:44px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px solid var(--ac);background:color-mix(in srgb,var(--ac) 6%,rgba(12,16,24,.9));font-size:7px;font-weight:800;letter-spacing:.4px;transition:.4s;z-index:2;backdrop-filter:blur(8px)}
+.coord-node.active{box-shadow:0 0 20px color-mix(in srgb,var(--ac) 25%,transparent);transform:scale(1.1);border-width:3px}
+.coord-node .nl{font-size:5px;color:var(--muted);margin-top:1px;font-weight:400}
+.msg-bubble{position:absolute;padding:2px 6px;border-radius:3px;font-size:7px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:10;pointer-events:none;font-weight:600;animation:bubin .3s ease-out,bubout .3s ease-in 2.5s forwards;border:1px solid;backdrop-filter:blur(8px)}
+@keyframes bubin{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}@keyframes bubout{from{opacity:1}to{opacity:0}}
+.steps-panel{position:absolute;bottom:56px;right:12px;z-index:15;width:260px;max-height:170px;border-radius:8px;border:1px solid var(--border);backdrop-filter:blur(16px);background:var(--surface);overflow:hidden;display:flex;flex-direction:column}
+.steps-hdr{padding:5px 10px;font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:6px;flex-shrink:0;color:var(--dim);background:rgba(20,26,36,.6)}
+.steps-hdr .dot{width:4px;height:4px;border-radius:50%}
+.steps-body{flex:1;overflow-y:auto;padding:3px 5px}.steps-body::-webkit-scrollbar{width:2px}.steps-body::-webkit-scrollbar-thumb{background:var(--border)}
+.step{display:flex;align-items:center;gap:5px;padding:2px 5px;border-radius:3px;font-size:8px;color:var(--muted);transition:.3s}
+.step.current{background:rgba(255,255,255,.05);color:var(--text)}.step.done .sd{background:#059669}.step.current .sd{background:var(--predict);animation:pulse 1s infinite}
+.step.decision-step{color:#FBBF24}.step.decision-step .sd{background:#FBBF24}
+.sd{width:4px;height:4px;border-radius:50%;background:var(--border);flex-shrink:0}
+.sa{font-weight:700;text-transform:uppercase;font-size:6px;letter-spacing:.4px;min-width:44px}
+.st{color:var(--dim);font-size:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.terrain-hud{position:absolute;top:78px;left:234px;z-index:10;background:rgba(12,16,24,.8);backdrop-filter:blur(8px);padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:9px}
+.terrain-hud .loc{font-weight:700;font-size:11px;margin-bottom:1px}.terrain-hud .coords{color:var(--muted);font-size:8px}
+.terrain-legend{position:absolute;top:78px;right:320px;z-index:10;background:rgba(12,16,24,.8);backdrop-filter:blur(8px);padding:6px 8px;border-radius:6px;border:1px solid var(--border);display:flex;flex-direction:column;gap:3px}
+.legend-title{font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:8px;color:var(--dim)}.legend-sw{width:14px;height:3px;border-radius:1px}
+.spatial-label{position:absolute;pointer-events:none;font-size:8px;color:var(--text);padding:2px 6px;border-radius:3px;background:rgba(12,16,24,.8);border:1px solid var(--border);white-space:nowrap;opacity:0;transition:opacity .5s;backdrop-filter:blur(4px);z-index:5}
+.spatial-label.visible{opacity:1}.spatial-label.fire{border-color:rgba(239,68,68,.4);color:#FCA5A5}.spatial-label.evac{border-color:rgba(52,211,153,.4);color:#6EE7B7}.spatial-label.deploy{border-color:rgba(251,191,36,.4);color:#FCD34D}.spatial-label.drone{border-color:rgba(34,211,238,.4);color:#67E8F9}
+.spatial-label .sl-dot{width:3px;height:3px;border-radius:50%;display:inline-block;margin-right:3px}
+.retardant-timer{position:absolute;top:50%;left:35%;z-index:10;background:rgba(12,16,24,.85);backdrop-filter:blur(8px);padding:5px 10px;border-radius:5px;border:1px solid rgba(244,114,182,.3);font-size:9px;color:#F472B6;display:none;pointer-events:none}
+.retardant-timer.visible{display:flex;align-items:center;gap:6px}
+.rt-label{font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}.rt-time{font-size:14px;font-weight:800;font-family:'SF Mono',monospace}
+.cascade-chain{position:absolute;bottom:56px;left:280px;z-index:10;background:rgba(12,16,24,.85);backdrop-filter:blur(8px);padding:5px 8px;border-radius:5px;border:1px solid var(--border);font-size:8px;color:var(--dim);display:flex;align-items:center;gap:4px;pointer-events:none;opacity:0;transition:opacity .5s}
+.cascade-chain.visible{opacity:1}.cascade-chain .cc-node{padding:1px 5px;border-radius:3px;font-weight:700;font-size:7px;letter-spacing:.3px}.cascade-chain .cc-arrow{color:var(--muted);font-size:10px}
+.voice-bar{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(12,16,24,.88);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:20px;padding:7px 16px;display:flex;align-items:center;gap:8px;min-width:360px}
+.fire-tool{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);z-index:25;display:flex;align-items:center;gap:8px;background:rgba(12,16,24,.88);backdrop-filter:blur(16px);border:1px solid rgba(239,68,68,.25);border-radius:12px;padding:6px 14px;cursor:grab;user-select:none;touch-action:none;transition:border-color .2s,box-shadow .2s}
+.fire-tool:hover{border-color:rgba(239,68,68,.5);box-shadow:0 0 16px rgba(239,68,68,.15)}
+.fire-tool.dragging{opacity:.4;cursor:grabbing}
+.fire-tool .ft-icon{font-size:18px;filter:drop-shadow(0 0 4px rgba(239,68,68,.5))}
+.fire-tool .ft-label{font-size:8px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--predict)}
+.fire-ghost{position:fixed;pointer-events:none;z-index:9999;font-size:28px;filter:drop-shadow(0 2px 12px rgba(239,68,68,.6));transform:translate(-50%,-50%);display:none}
+.fire-ghost.visible{display:block}
+.timeline-bar{position:absolute;top:52px;left:0;right:0;z-index:19;height:22px;background:rgba(6,8,14,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 8px;gap:0;user-select:none}
+.tl-track{flex:1;height:6px;background:rgba(20,26,36,.9);border-radius:3px;position:relative;overflow:visible;border:1px solid var(--border)}
+.tl-fill{position:absolute;top:0;left:0;height:100%;border-radius:3px;background:linear-gradient(90deg,#A78BFA,#EF4444 40%,#FBBF24 70%,#34D399);width:0}
+.tl-head{position:absolute;top:-4px;width:2px;height:14px;background:#fff;border-radius:1px;box-shadow:0 0 6px rgba(255,255,255,.4);z-index:3}
+.tl-ticks{position:absolute;top:0;left:0;right:0;bottom:0}
+.tl-tick{position:absolute;top:-2px;width:1px;height:10px;background:rgba(255,255,255,.1)}
+.tl-tick.major{background:rgba(255,255,255,.2);height:12px;top:-3px}
+.tl-tick-label{position:absolute;top:10px;font-size:5px;color:var(--muted);transform:translateX(-50%);font-family:'SF Mono',monospace;letter-spacing:.3px;white-space:nowrap}
+.tl-phase-marker{position:absolute;top:-8px;font-size:5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;transform:translateX(-50%);padding:1px 3px;border-radius:2px;white-space:nowrap;z-index:2}
+.tl-elapsed{font-size:8px;font-weight:700;color:var(--text);font-family:'SF Mono',monospace;min-width:42px;text-align:right;margin-left:6px}
+.tl-total{font-size:7px;color:var(--muted);margin-left:2px;font-family:'SF Mono',monospace}
+.fire-tip{position:fixed;pointer-events:none;z-index:60;background:rgba(6,8,14,.92);backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:9px;line-height:1.5;color:var(--dim);max-width:240px;display:none;font-family:'SF Mono','Cascadia Code',monospace}
+.fire-tip.visible{display:block}
+.fire-tip .ft-state{font-weight:700;font-size:10px;margin-bottom:2px}
+.fire-tip .ft-state.burning{color:#EF4444}.fire-tip .ft-state.ash{color:#9CA3AF}.fire-tip .ft-state.pred{color:#F97316}.fire-tip .ft-state.pred3{color:#EAB308}.fire-tip .ft-state.retardant{color:#F472B6}
+.fire-tip .ft-state.unit{color:#FBBF24}.fire-tip .ft-state.drone{color:#22D3EE}.fire-tip .ft-state.heli{color:#EC4899}.fire-tip .ft-state.air{color:#F472B6}
+.fire-tip .ft-tactic{margin-top:3px;padding-top:3px;border-top:1px solid rgba(255,255,255,.06);color:var(--dim);font-size:8px;line-height:1.4;font-style:italic}
+.voice-dot{width:7px;height:7px;border-radius:50%;background:var(--swarm);flex-shrink:0;animation:pulse 1.5s infinite}
+.voice-text{font-size:10px;color:var(--dim);font-style:italic}.voice-text .cmd{color:var(--text);font-style:normal;font-weight:500}
+.vignette{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:1;background:radial-gradient(ellipse at center,transparent 55%,rgba(6,8,14,.5) 100%);transition:background 1s}
+.vignette.crisis{background:radial-gradient(ellipse at center,transparent 35%,rgba(239,68,68,.06) 65%,rgba(6,8,14,.6) 100%)}
+.zone-label{position:absolute;pointer-events:none;font-size:7px;font-weight:700;padding:2px 6px;border-radius:3px;z-index:4;opacity:0;transition:opacity .5s;text-transform:uppercase;letter-spacing:.3px}
+.zone-label.visible{opacity:1}
+.zone-label.clear{background:rgba(52,211,153,.1);color:#6EE7B7;border:1px solid rgba(52,211,153,.2)}
+.zone-label.advisory{background:rgba(251,191,36,.1);color:#FCD34D;border:1px solid rgba(251,191,36,.2)}
+.zone-label.warning{background:rgba(239,68,68,.1);color:#FCA5A5;border:1px solid rgba(239,68,68,.2)}
+.zone-label.order{background:rgba(239,68,68,.2);color:#FCA5A5;border:1px solid rgba(239,68,68,.4);animation:cpulse 1s infinite}
+</style>
+</head>
+<body>
+<canvas id="terrain"></canvas>
+<div class="vignette" id="vignette"></div>
+<div class="topbar">
+  <h1><span>FIRE</span>SIGHT</h1>
+  <span class="badge">Agentic Mission Control</span>
+  <span class="incident-tag type3" id="incident-type">Type 3</span>
+  <span class="phase-tag detection" id="phase-tag">Detection</span>
+  <div class="topbar-right">
+    <span class="speed-label">Speed</span>
+    <button id="speed-1x" class="active" onclick="setSpeed(1)">1x</button>
+    <button id="speed-3x" onclick="setSpeed(3)">3x</button>
+    <button id="speed-10x" onclick="setSpeed(10)">10x</button>
+    <button id="btn-play" class="play" onclick="togglePlay()">&#9654; Play</button>
+    <button onclick="resetSim()">Reset</button>
+    <span class="sim-time" id="sim-time">T+00:00</span>
+  </div>
+</div>
+<div class="timeline-bar" id="timeline-bar">
+  <div class="tl-track" id="tl-track">
+    <div class="tl-fill" id="tl-fill"></div>
+    <div class="tl-head" id="tl-head"></div>
+    <div class="tl-ticks" id="tl-ticks"></div>
+  </div>
+  <div class="tl-elapsed" id="tl-elapsed">00:00</div>
+  <div class="tl-total">/15:00</div>
+</div>
+<div class="metrics-strip">
+  <div class="metric warn" id="m-acres"><span class="ml">Acres</span><span class="mv" id="mv-acres">5</span></div>
+  <div class="metric" id="m-contain"><span class="ml">Contain</span><span class="mv" id="mv-contain">0</span><span class="mu">%</span></div>
+  <div class="metric" id="m-struct"><span class="ml">Struct</span><span class="mv" id="mv-struct">0</span><span class="mu">thr</span></div>
+  <div class="metric" id="m-evac"><span class="ml">Evac</span><span class="mv" id="mv-evac">0</span></div>
+  <div class="metric" id="m-drones"><span class="ml">UAS</span><span class="mv" id="mv-drones">0/12</span></div>
+  <div class="metric" id="m-decisions"><span class="ml">IC Decisions</span><span class="mv" id="mv-decisions">0</span></div>
+  <div class="metric" id="m-actions"><span class="ml">Actions</span><span class="mv" id="mv-actions">0</span></div>
+</div>
+<div class="terrain-hud"><div class="loc">PALISADES FIRE</div><div class="coords">34.045&deg;N, 118.529&deg;W &bull; Pacific Palisades, CA</div></div>
+<div class="terrain-legend">
+  <div class="legend-title">Fire</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#EF4444"></div>Active</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#9CA3AF"></div>Ash</div>
+  <div class="legend-item"><div class="legend-sw" style="background:linear-gradient(90deg,rgba(249,115,22,.2),#F97316)"></div>Prediction</div>
+  <div class="legend-title" style="margin-top:3px">Zones</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#FBBF24"></div>Warning</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#EF4444"></div>Order</div>
+  <div class="legend-title" style="margin-top:3px">Routes</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#34D399"></div>Clear</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#FBBF24"></div>Congested</div>
+  <div class="legend-item"><div class="legend-sw" style="background:#EF4444"></div>Blocked</div>
+</div>
+<div class="agents-panel" id="agents-panel"></div>
+<div class="log-panel"><div class="log-hdr"><div class="dot" style="background:var(--overwatch)"></div>Event Feed</div><div class="log-body" id="event-log"></div></div>
+<div class="coord-panel" id="coord-panel"><div class="coord-hdr"><div class="dot" style="background:var(--overwatch)"></div>Agent Network</div><canvas id="coord-canvas"></canvas></div>
+<div class="steps-panel"><div class="steps-hdr"><div class="dot" style="background:var(--predict)"></div>Timeline</div><div class="steps-body" id="steps"></div></div>
+<div class="retardant-timer" id="retardant-timer"><div><div class="rt-label">Retardant</div><div class="rt-time" id="rt-time">30:00</div></div></div>
+<div class="cascade-chain" id="cascade-chain"><span style="color:var(--muted);font-weight:600">CHAIN:</span><span id="cascade-nodes"></span></div>
+<div class="decision-overlay" id="decision-overlay"><div class="decision-modal" id="decision-modal"></div></div>
+<div class="fire-tip" id="fire-tip"></div>
+<div class="fire-tool" id="fire-tool"><span class="ft-icon">&#x1F525;</span><span class="ft-label">Drag to Ignite</span></div>
+<div class="fire-ghost" id="fire-ghost">&#x1F525;</div>
+<div class="voice-bar"><div class="voice-dot"></div><div class="voice-text"><span class="cmd" id="voice-cmd">OVERWATCH online. Awaiting IC commands.</span></div></div>
+
+<script type="module">
+import { FireSpreadEngine, GRID_ROWS, GRID_COLS, BURNING, BURNED, RETARDANT, UNBURNED } from './fireSpreadEngine.js';
+
+let fireEngine = null;
+let currentSnap = null;
+let fireStepAccum = 0;
+let fireStepsPerFrame = 0;
+
+function initFireEngine() {
+  fireEngine = new FireSpreadEngine({ windSpeed:25, windDirection:315, humidity:12, temperature:94 });
+  currentSnap = fireEngine.snapshot();
+  fireStepAccum = 0;
+  fireStepsPerFrame = 0;
+}
+
+function igniteAt(row, col, radius) {
+  if (!fireEngine) return;
+  fireEngine.ignite(row, col, radius || 3);
+  currentSnap = fireEngine.snapshot();
+}
+
+function igniteAtLatLng(lat, lng, radius) {
+  if (!fireEngine) return;
+  fireEngine.igniteAtLatLng(lat, lng, radius || 3);
+  currentSnap = fireEngine.snapshot();
+}
+
+function tickFireEngine(frameNum) {
+  if (!fireEngine || fireStepsPerFrame <= 0) return;
+  fireStepAccum += fireStepsPerFrame;
+  const wholePart = Math.floor(fireStepAccum);
+  if (wholePart > 0) {
+    fireStepAccum -= wholePart;
+    fireEngine.runSteps(wholePart);
+    currentSnap = fireEngine.snapshot();
+  }
+}
+
+function setFireRate(rate) { fireStepsPerFrame = rate * 1.7; }
+function setFireWeather(opts) { if (fireEngine) fireEngine.setWeather(opts); }
+
+window.initFireEngine = initFireEngine;
+window.igniteAt = igniteAt;
+window.igniteAtLatLng = igniteAtLatLng;
+window.tickFireEngine = tickFireEngine;
+window.setFireRate = setFireRate;
+window.setFireWeather = setFireWeather;
+window.getFireSnapshot = () => currentSnap;
+window.getFireEngine = () => fireEngine;
+window.GRID_ROWS = GRID_ROWS;
+window.GRID_COLS = GRID_COLS;
+
+initFireEngine();
+</script>
+<script>
+
+const AG={overwatch:{name:'OVERWATCH',label:'Orchestration',color:'#A78BFA',role:'Planning Section'},predict:{name:'PREDICT',label:'Fire Behavior Analyst',color:'#EF4444',role:'Fire Intel'},swarm:{name:'SWARM',label:'Aerial Recon / FIRIS',color:'#22D3EE',role:'Drone Fleet'},evac:{name:'EVAC',label:'Evacuation / Genasys',color:'#34D399',role:'Routing'},deploy:{name:'DEPLOY',label:'Ops / IROC',color:'#FBBF24',role:'Resources'}};
+const LOCATIONS={fire_origin:{x:.22,y:.20,name:'Fire Origin'},ne_front:{x:.38,y:.12,name:'NE Front'},zone_b3:{x:.52,y:.42,name:'Zone B3'},zone_b4:{x:.42,y:.30,name:'Zone B4'},zone_c1:{x:.62,y:.55,name:'Zone C1'},pch:{x:.78,y:.80,name:'PCH South'},staging:{x:.82,y:.52,name:'Staging'},safety_alpha:{x:.70,y:.35,name:'Safety Zone \u03B1'},sunset_blvd:{x:.68,y:.60,name:'Sunset Blvd'},ridge_rd:{x:.45,y:.22,name:'Ridge Rd'},spot_fire:{x:.34,y:.10,name:'Spot Fire'},drop_zone:{x:.40,y:.16,name:'Drop Zone'},topanga:{x:.35,y:.65,name:'Topanga Canyon'}};
+const DRONE_TYPES={
+  recon:{name:'ISR Recon',color:'#22D3EE',desc:'FLIR IR + RGB 4K. Maps fire perimeter, hotspot detection, feeds PREDICT model.',speed:'45 kts',endurance:'4h',sensor:'FLIR IR + RGB 4K'},
+  spotter:{name:'Ember Spotter',color:'#60A5FA',desc:'Dual IR + UV. Detects spot fires and ember showers downwind before ground crews can see them.',speed:'40 kts',endurance:'3h',sensor:'Dual IR + UV ember detect'},
+  relay:{name:'Comms Relay',color:'#A78BFA',desc:'Mesh radio relay. Maintains crew communications in canyon terrain where line-of-sight is broken.',speed:'35 kts',endurance:'6h',sensor:'Mesh radio relay'},
+  safety:{name:'Safety Watch',color:'#34D399',desc:'Wide-angle IR + crew GPS. Monitors escape routes, verifies LCES (Lookouts, Communications, Escape routes, Safety zones).',speed:'40 kts',endurance:'4h',sensor:'Wide-angle IR + crew tracker'},
+  ignition:{name:'Aerial Ignition',color:'#F97316',desc:'Dragon egg dispenser. Drops PSD (Plastic Sphere Dispenser) incendiary spheres for large-scale burnout operations.',speed:'35 kts',endurance:'3h',sensor:'GPS-guided PSD'},
+};
+const DRONES=[];
+const droneTypeAssign=['recon','recon','recon','spotter','spotter','relay','relay','safety','safety','safety','ignition','ignition'];
+for(let i=1;i<=12;i++)DRONES.push({id:`D-${String(i).padStart(2,'0')}`,x:.80+Math.random()*.08,y:.48+Math.random()*.08,dtype:droneTypeAssign[i-1]});
+
+const UNIT_TYPES={
+  engine:{name:'Type 3 Wildland Engine',color:'#FBBF24',crew:3,capacity:'500 gal + pump',
+    desc:'3-person crew with 500gal tank and pump. Direct attack: hose lines on fire edge. Also sprays Class A foam on structures/vegetation.',
+    tactic:'Direct attack — hose line on fire edge. Pump-and-roll along fireline. Resupplied by water tender.'},
+  tender:{name:'Water Tender (T1)',color:'#F59E0B',crew:2,capacity:'4,000 gal',
+    desc:'Resupply truck. Shuttles water to engines on the fireline. No pump — gravity feed or nurse to engine tanks.',
+    tactic:'Resupply — parks at water source, fills, shuttles to engines. Keeps direct attack sustained.'},
+  hotshot:{name:'Interagency Hotshot Crew',color:'#F97316',crew:20,capacity:'Pulaskis, McLeods, drip torches',
+    desc:'20-person elite IHC crew. Hand line construction, burnout/backfire operations. Most versatile ground resource.',
+    tactic:'Indirect attack — cut 2-3ft hand line to mineral soil. Execute burnout with drip torches from control line toward main fire.'},
+  crew:{name:'Type 2 Hand Crew',color:'#FB923C',crew:20,capacity:'Hand tools, shovels',
+    desc:'20-person crew. Manual fireline construction, mop-up, cold trailing. Less experienced than hotshots.',
+    tactic:'Fireline construction on flanks. Mop-up: dig out burning roots/stumps. Cold trail: feel for heat, extinguish smoldering.'},
+  dozer:{name:'Dozer (Cat D8)',color:'#A3E635',crew:1,capacity:'12ft blade',
+    desc:'Bulldozer cuts 10-20ft wide firebreak. Fast but needs road access for transport. Cannot operate on steep slopes.',
+    tactic:'Firebreak — blade removes all vegetation down to mineral soil. Anchored from road or previous burn.'},
+  air:{name:'VLAT Air Tanker (DC-10)',color:'#F472B6',crew:2,capacity:'11,600 gal Phos-Chek',
+    desc:'Very Large Air Tanker. Drops red retardant slurry AHEAD of fire (not on flames). Coats vegetation to prevent ignition. 35+ min turnaround.',
+    tactic:'Retardant line — laid on unburned vegetation ahead of fire front. Buys 30-60min. Does NOT extinguish active fire.'},
+  seat:{name:'SEAT (Air Tractor)',color:'#E879F9',crew:1,capacity:'800 gal retardant',
+    desc:'Single Engine Air Tanker. Faster turnaround than VLAT. Initial attack on smaller fires or reinforcing retardant lines.',
+    tactic:'Tactical retardant drops — fills gaps in retardant lines, supports initial attack before VLAT arrives.'},
+  heli:{name:'Helitack Type 1 (Chinook)',color:'#EC4899',crew:4,capacity:'2,600 gal Bambi Bucket',
+    desc:'CH-47 with 2,600gal Bambi Bucket. Dips from lakes/portable tanks ("pumpkins"). Fast turnaround, precise drops on hot spots.',
+    tactic:'Water drop on hot spots and flare-ups. Does NOT put out large fires — cools them to let ground crews work. Also carries dragon eggs for aerial ignition.'},
+  lead:{name:'Lead Plane (Beech Baron)',color:'#D946EF',crew:2,capacity:'Smoke markers',
+    desc:'Flies ahead of air tanker. Marks drop zone with smoke, clears flight path, guides tanker in. Critical for air safety.',
+    tactic:'Scouts terrain, marks drop zone, radio-guides tanker on approach. Confirms drop accuracy.'},
+  structeng:{name:'Structure Engine (Type 1)',color:'#38BDF8',crew:4,capacity:'750 gal + foam',
+    desc:'Structure protection. Assesses defensibility, deploys sprinklers, sprays gel coating, stands by during fire front passage.',
+    tactic:'Structure triage → sprinkler deployment → gel/foam coating → engine standby ("bump and run" between structures).'},
+};
+const ROUTES=[{id:'R1',points:[[.55,.50],[.62,.54],[.68,.60],[.78,.68],[.85,.78]]},{id:'R2',points:[[.55,.50],[.60,.58],[.68,.66],[.78,.80]]},{id:'R3',points:[[.55,.50],[.48,.56],[.35,.65],[.25,.78]]}];
+const UNITS=[
+  // Initial Attack resources (available immediately)
+  {id:'E-1',x:.82,y:.52,type:'engine'},{id:'E-2',x:.84,y:.54,type:'engine'},{id:'E-3',x:.86,y:.52,type:'engine'},
+  {id:'WT-1',x:.88,y:.54,type:'tender'},
+  {id:'H-1',x:.88,y:.38,type:'heli'},
+  {id:'LP-1',x:.90,y:.36,type:'lead'},
+  // Extended Attack resources (arrive later)
+  {id:'HC-1',x:.80,y:.48,type:'hotshot'},
+  {id:'C-1',x:.88,y:.56,type:'crew'},
+  {id:'AT-1',x:.92,y:.35,type:'air'},
+  {id:'SE-1',x:.91,y:.37,type:'seat'},
+  {id:'DZ-1',x:.92,y:.50,type:'dozer'},
+  // Structure protection (activated when structures threatened)
+  {id:'SP-1',x:.86,y:.56,type:'structeng'},
+];
+
+// ── Active firefighting operations visualization ──
+const fireOps={
+  waterDrops:[],     // {x,y,startTime,duration} — heli water bucket drops
+  retardantDrops:[], // {x1,y1,x2,y2,startTime,duration} — air tanker retardant lines
+  handLines:[],      // {points:[{x,y}],progress} — hand crew fireline (brown)
+  dozerLines:[],     // {x1,y1,x2,y2} — dozer cut firebreaks (wide brown)
+  backfireLines:[],  // {x1,y1,x2,y2,startTime,duration} — burnout operations
+  hoseLines:[],      // {ux,uy,fx,fy} — engine hose to fire edge
+  structProtect:[],  // {x,y,type} — structure protection markers
+};
+const spatialLabels=[],zoneLabels=[];
+let metrics={acres:5,contain:0,struct:0,evac:0,drones:'0/12',decisions:0,actions:0};
+function updateMetrics(u){Object.assign(metrics,u);document.getElementById('mv-acres').textContent=metrics.acres;document.getElementById('mv-contain').textContent=metrics.contain;document.getElementById('mv-struct').textContent=metrics.struct;document.getElementById('mv-evac').textContent=metrics.evac;document.getElementById('mv-drones').textContent=metrics.drones;document.getElementById('mv-decisions').textContent=metrics.decisions;document.getElementById('mv-actions').textContent=metrics.actions;document.getElementById('m-acres').className=metrics.acres>200?'metric alert':metrics.acres>50?'metric warn':'metric';document.getElementById('m-struct').className=metrics.struct>5000?'metric alert':metrics.struct>0?'metric warn':'metric good';document.getElementById('m-contain').className=metrics.contain>=20?'metric good':'metric'}
+const EV_ICONS={INFO:'\u25CB',UPDATE:'\u25C6',ALERT:'\u25B2',CRITICAL:'\u26A0',DECISION:'\u2605',RESOLVED:'\u2713'};
+const EV_COLORS={INFO:'var(--system)',UPDATE:'var(--swarm)',ALERT:'#F59E0B',CRITICAL:'#EF4444',DECISION:'#FBBF24',RESOLVED:'var(--evac)'};
+const EV_CLASS={INFO:'info',UPDATE:'update',ALERT:'alert-ev',CRITICAL:'critical-ev',DECISION:'decision',RESOLVED:'resolved'};
+
+const SCENARIO=[
+// PHASE 1: DETECTION
+{time:0,phase:'Ignition & Detection',phaseClass:'detection',agent:'system',evType:'INFO',msg:'Fire reported at 34.045\u00b0N, 118.529\u00b0W. Brush fire, est. 5 acres.',spatial:[{loc:'fire_origin',text:'Fire Origin \u2014 5 acres',cls:'fire'}],metrics:{acres:5,actions:1},incidentType:'type3',fireIgnite:{lat:34.045,lng:-118.529,radius:3},fireGrow:.05},
+{time:5000,agent:'overwatch',evType:'INFO',msg:'Incident initialized: PALISADES FIRE. Type 3. IC: Commander (you).',thinking:{sys:'Initializing incident. 5 agents online.',act:'Activating PREDICT, SWARM, EVAC, DEPLOY.'},agentStates:{overwatch:'active',predict:'active',swarm:'active',evac:'active',deploy:'active'},metrics:{actions:2}},
+{time:8000,agent:'predict',evType:'UPDATE',msg:'Initial: Chaparral, 3% moisture, 25mph NW, 32\u00b0 slope. ROS 2.4 ch/hr. Spotting: EXTREME.',thinking:{obs:'RAWS: 25mph NW gusting 45. RH 12%. Fuel moisture 3%.',rsn:'Rothermel: ROS 2.4 ch/hr. Huygens shows NE spread.',act:'Running 100-scenario ensemble.'},metrics:{actions:3},fireGrow:.08},
+{time:10000,agent:'predict',evType:'UPDATE',msg:'1h prediction: 210 acres. 3h: 480 acres. Confidence: 87%.',spatial:[{loc:'zone_b3',text:'1h: 210ac',cls:'fire'}],metrics:{actions:4},fireGrow:.12},
+{time:20000,agent:'overwatch',evType:'INFO',msg:'Agents autonomous. SWARM deploying to fire fronts. DEPLOY staging units.',metrics:{actions:5}},
+{time:25000,agent:'overwatch',evType:'INFO',msg:'All agents active. IA in progress. No decisions needed.',metrics:{actions:9}},
+
+// PHASE 2: ESCALATION
+{time:60000,phase:'Escalation',phaseClass:'escalation',agent:'predict',evType:'ALERT',msg:'Fire 45 acres. ROS 3.1 ch/hr (+29%). Recalculating.',metrics:{acres:45,actions:12},fireGrow:.18,agentStates:{predict:'alert'}},
+{time:90000,agent:'predict',evType:'ALERT',msg:'\u26A0 Ember model: high spot fire probability downwind.',metrics:{actions:14},chain:['predict','overwatch','swarm']},
+{time:120000,agent:'predict',evType:'ALERT',msg:'Revised: 1h 260ac (+24%). 3h 580ac (+21%). Confidence 74%.',metrics:{actions:18},chain:['predict','overwatch','evac']},
+
+// DECISION 1
+{time:125000,agent:'overwatch',evType:'DECISION',isDecision:true,msg:'Spot fire NE. Zone B3 in 3h perimeter.',decisionData:{title:'Zone B3 Evacuation Escalation',desc:'Spot fire confirmed 400m NE. 1h prediction revised to 260 acres. Zone B3 (pop 2,847) boundary reached in ~47 min.\n\nCurrent status: ADVISORY.',risks:'Population 2,847. Exit window ~47 min. Evacuation takes ~35 min. Margin: 12 min.',recommender:'EVAC recommends upgrade to WARNING',options:['Approve WARNING','Upgrade to ORDER','Hold']},metrics:{decisions:1},agentStates:{overwatch:'critical'}},
+
+// Post-decision
+{time:130000,agent:'overwatch',evType:'INFO',msg:'Agents adapting to fire progression. EVAC monitoring zones autonomously.',metrics:{actions:22},agentStates:{overwatch:'active'}},
+{time:210000,agent:'predict',evType:'CRITICAL',msg:'\u26A0 WIND SHIFT NW\u2192NE in ~90min (73% conf).',metrics:{actions:28},chain:['predict','overwatch','evac','deploy'],agentStates:{predict:'critical'}},
+
+// DECISION 2
+{time:225000,agent:'overwatch',evType:'DECISION',isDecision:true,msg:'Wind shift forecast. B4 at risk. R3 may be cut.',decisionData:{title:'Preemptive Action \u2014 Wind Shift',desc:'PREDICT forecasts wind shift NW\u2192NE in ~90 min (73% conf).\n\nIf confirmed:\n\u2022 Zone B4 (pop 1,560) at risk within 1.5h\n\u2022 Route R3 (Topanga) may be cut by fire',risks:'B4 pop 1,560. R3 is only direct route for B4. If cut, PCH becomes sole option at 34% capacity.',recommender:'EVAC recommends preemptive ADVISORY for B4',options:['Approve ADVISORY','Wait for Confirmation','Full ORDER B3+B4']},metrics:{decisions:2},agentStates:{overwatch:'critical'}},
+
+// PHASE 3: CRISIS
+{time:240000,phase:'Crisis',phaseClass:'crisis',agent:'overwatch',evType:'INFO',msg:'Entering crisis phase. Agents operating autonomously.',metrics:{actions:32},crisis:true,agentStates:{overwatch:'active'}},
+{time:270000,agent:'predict',evType:'CRITICAL',msg:'WIND SHIFT CONFIRMED. NE 30mph, gusts 50. Full recalc.',metrics:{actions:34},fireGrow:.28,agentStates:{predict:'critical'},weather:{windDirection:45,windSpeed:30}},
+{time:275000,agent:'predict',evType:'CRITICAL',msg:'\u26A0\u26A0 CROWN FIRE detected. ROS accelerating. Agents re-tasking.',metrics:{actions:36},fireGrow:.35,chain:['predict','overwatch','evac','deploy','swarm']},
+
+// DECISION 3 — CRITICAL
+{time:285000,agent:'overwatch',evType:'DECISION',isDecision:true,msg:'CRITICAL: Crown fire + route blocked + crew at risk.',decisionData:{title:'CRITICAL \u2014 Multiple Cascading Risks',desc:'Crown fire on NE slope (4.8 ch/hr). Three simultaneous crises:\n\n1. Zone B4 reached in 52 min (ADVISORY)\n2. R3 blocked. R2 at 89%.\n3. HC-3 on NE fireline \u2014 escape route cut in 22 min.',risks:'CREW SAFETY: HC-3 escape threatened. CIVILIAN: 4,407 in B3+B4. ROUTES: only R1 + congested R2.',recommender:'EVAC: ORDER B3+B4. DEPLOY: Withdraw HC-3. DEPLOY: Air tanker on NE.',options:['Approve ALL','Evac Only','Withdrawal Only']},metrics:{decisions:3},agentStates:{overwatch:'critical',predict:'critical',evac:'alert',deploy:'alert'},incidentType:'type1'},
+
+// Post-decision
+{time:300000,agent:'overwatch',evType:'INFO',msg:'All agents operating autonomously. Resources dynamically positioned.',metrics:{actions:42}},
+
+// PHASE 4: CONTAINMENT
+{time:480000,phase:'Containment',phaseClass:'containment',agent:'predict',evType:'UPDATE',msg:'340 acres. NE slowed. Western line holding. 12% contained.',metrics:{acres:340,contain:12,actions:60},fireGrow:.32,crisis:false,agentStates:{predict:'active',overwatch:'active'}},
+{time:495000,agent:'deploy',evType:'INFO',msg:'Mutual aid arriving. Resources auto-assigned by DEPLOY.',metrics:{actions:62}},
+
+// DECISION 4
+{time:500000,agent:'overwatch',evType:'DECISION',isDecision:true,msg:'3 new engines available. Where to deploy?',decisionData:{title:'Resource Allocation \u2014 Mutual Aid',desc:'Western line holding. NE front slowed (retardant expiring 15min). Southern quiet.\n\n3 engine companies + 1 crew available.',risks:'NE retardant expires in 15 min. Southern flank 30% activation chance.',recommender:'DEPLOY recommends reinforcing NE front',options:['NE Front','Western Line','Southern Staging']},metrics:{decisions:4}},
+
+{time:570000,agent:'deploy',evType:'ALERT',msg:'\u26A0 RETARDANT EXPIRED. ROS increasing.',metrics:{actions:68},expireRetardant:true,agentStates:{deploy:'alert'}},
+{time:720000,agent:'overwatch',evType:'INFO',msg:'Stabilizing. 24% contained. Evac 94%. LCES verified.',metrics:{contain:24,actions:78},agentStates:{overwatch:'active'}},
+
+// PHASE 5: RESOLUTION
+{time:750000,phase:'Resolution',phaseClass:'resolution',agent:'overwatch',evType:'RESOLVED',msg:'Entering resolution phase. All autonomous agents stabilizing.',metrics:{actions:82},agentStates:{evac:'active'}},
+{time:780000,agent:'predict',evType:'UPDATE',msg:'31% contained. Growth slowing. Wind 15mph. RH 18%. Improving.',metrics:{acres:420,contain:31,actions:86}},
+{time:840000,agent:'deploy',evType:'INFO',msg:'Night shift arriving. DEPLOY auto-assigning resources.',metrics:{actions:90}},
+{time:870000,agent:'swarm',evType:'INFO',msg:'Night ops: IR-only mode. Drones auto-repositioned to perimeter.',metrics:{actions:92}},
+
+// FINAL
+{time:900000,agent:'overwatch',evType:'RESOLVED',msg:'SIMULATION COMPLETE. 420ac | 31% contained | 0 structures lost | 4,264 evacuated | 0 injuries | 5 decisions | 847 actions.',thinking:{sys:'Duration: 15h. Acres: 420. Containment: 31%.\nStructures lost: 0. Evacuated: 4,264/4,407. Injuries: 0.\nIC decisions: 5. Agent actions: 847. Drone hours: 142.\n\nWITHOUT FIRESIGHT (Palisades actual):\nStructures lost: 6,837. Lives lost: 11.\nEvac delay: 4+ hours. Damage: $76B+.'},metrics:{decisions:5,actions:847},agentStates:{overwatch:'active',predict:'active',swarm:'active',evac:'active',deploy:'active'}}
+];
+
+let simRunning=false,simSpeed=1,simStart=0,stepIdx=-1,timeouts=[];
+let fireRadius=.05,targetFireRadius=.05,routeStates={},dronePos={},unitPos={};
+let retardantActive=false,retardantStart=0;
+DRONES.forEach(d=>{dronePos[d.id]={x:d.x,y:d.y,tx:d.x,ty:d.y}});
+UNITS.forEach(u=>{unitPos[u.id]={x:u.x,y:u.y,tx:u.x,ty:u.y}});
+
+// TERRAIN — cached base + dynamic fire overlay via ImageData for perf
+const tc=document.getElementById('terrain'),tx=tc.getContext('2d');let TW,TH,frame=0;
+let baseR,baseG,baseB,tCols,tRows;
+function noise(x,y){const n=Math.sin(x*12.9898+y*78.233)*43758.5453;return n-Math.floor(n)}
+function fbm(x,y){let v=0,a=.5;for(let i=0;i<4;i++){v+=a*noise(x,y);x*=2;y*=2;a*=.5}return v}
+function buildBase(){const c=5;tCols=Math.ceil(TW/c);tRows=Math.ceil(TH/c);const n=tCols*tRows;baseR=new Uint8Array(n);baseG=new Uint8Array(n);baseB=new Uint8Array(n);
+for(let row=0;row<tRows;row++)for(let col=0;col<tCols;col++){
+  const nx=col*c/TW, ny=row*c/TH, i=row*tCols+col;
+  const e1=fbm(nx*4+.5,ny*4+.5);
+  const e2=fbm(nx*7+1.2,ny*7+3.7);
+  const e3=fbm(nx*12+2.1,ny*12+0.9);
+  const fine=fbm(nx*20+5.3,ny*20+2.8);
+
+  // ── Coastline ──
+  const coast=0.68+nx*0.28+Math.sin(nx*5)*.015+e3*.012;
+  const isOcean=ny>coast;
+
+  // Start with base terrain color (chaparral — dry sage/olive)
+  const veg=0.4+e1*0.35+e2*0.15;
+  let r=(28+veg*26+fine*10)|0;
+  let g=(48+veg*40+fine*8)|0;
+  let b=(20+veg*14+fine*4)|0;
+
+  if(isOcean){
+    const depth=Math.min(1,(ny-coast)*4);
+    const wave=Math.sin(nx*35+ny*18)*.02+Math.sin(nx*12-ny*20)*.015;
+    r=(8+depth*4)|0;
+    g=(25+depth*20+wave*10)|0;
+    b=(55+depth*45+wave*18)|0;
+  } else {
+    const dCoast=coast-ny;
+
+    // ── Elevation ──
+    const ridgeCenter=0.22+Math.sin(nx*2.8)*.05;
+    const ridgeDist=Math.abs(ny-ridgeCenter);
+    const elev=Math.max(0,1-ridgeDist*2.5)*(0.5+e1*0.5);
+
+    // ── Canyons — darken into the base ──
+    const topCyn=Math.exp(-Math.pow((nx-0.22)*14,2))*(ny>0.15&&ny<0.58?1:0);
+    const temCyn=Math.exp(-Math.pow((nx-0.46)*16,2))*(ny>0.20&&ny<0.55?1:0);
+    const syCyn=Math.exp(-Math.pow((nx-0.56)*13,2))*(ny>0.18&&ny<0.48?1:0);
+    const canyon=Math.max(topCyn,temCyn,syCyn)*0.6;
+
+    // Darken canyons
+    if(canyon>0.05){ const cd=canyon*0.4; r=r*(1-cd)|0; g=(g*(1-cd*0.3))|0; b=b*(1-cd)|0; }
+
+    // ── Elevation blending — ridge gets tan/brown ──
+    if(elev>0.25){
+      const t=Math.min(1,(elev-0.25)/0.4);
+      const rr=48+e2*35+fine*10, rg=40+e2*28+fine*6, rb=26+e2*15+fine*4;
+      r=(r*(1-t)+rr*t)|0; g=(g*(1-t)+rg*t)|0; b=(b*(1-t)+rb*t)|0;
+    }
+
+    // ── Urban zones — additive blend, never replace ──
+    const paliD=Math.sqrt(Math.pow((nx-0.43)*3,2)+Math.pow((ny-0.52)*4,2));
+    const pali=Math.max(0,1-paliD*1.1);
+    const brentD=Math.sqrt(Math.pow((nx-0.68)*3.5,2)+Math.pow((ny-0.46)*4.5,2));
+    const brent=Math.max(0,1-brentD*1.3);
+    const urban=Math.min(0.55,Math.max(pali,brent)*0.6);
+    if(urban>0.02){
+      const u=urban*urban;
+      r=(r*(1-u)+(48+e1*20+fine*8)*u)|0;
+      g=(g*(1-u)+(44+e1*16+fine*6)*u)|0;
+      b=(b*(1-u)+(38+e1*10+fine*4)*u)|0;
+    }
+
+    // ── Beach strip ──
+    if(dCoast<0.018){
+      const t=1-dCoast/0.018;
+      const sr=68+e3*20, sg=62+e3*16, sb=42+e3*10;
+      r=(r*(1-t*0.7)+sr*t*0.7)|0; g=(g*(1-t*0.7)+sg*t*0.7)|0; b=(b*(1-t*0.7)+sb*t*0.7)|0;
+    }
+
+    // ── Roads — lighter lines ──
+    const pchY=coast-0.028+Math.sin(nx*7)*.005;
+    if(Math.abs(ny-pchY)<0.003){r=70;g=66;b=58;}
+    const sunsetY=0.48+Math.sin(nx*4)*.008;
+    if(Math.abs(ny-sunsetY)<0.0022&&nx>0.28&&nx<0.82){r=66;g=62;b=56;}
+    const topRd=0.22+Math.sin(ny*5)*.008;
+    if(Math.abs(nx-topRd)<0.0022&&ny>0.12&&ny<0.58){r=64;g=60;b=54;}
+    const mulhY=0.24+Math.sin(nx*3)*.025+e1*.015;
+    if(Math.abs(ny-mulhY)<0.002&&nx>0.15&&nx<0.75){r=60;g=57;b=52;}
+  }
+
+  baseR[i]=Math.max(0,Math.min(255,r));
+  baseG[i]=Math.max(0,Math.min(255,g));
+  baseB[i]=Math.max(0,Math.min(255,b));
+}}
+function resizeT(){const d=window.devicePixelRatio||1;TW=window.innerWidth;TH=window.innerHeight;tc.width=TW*d;tc.height=TH*d;tc.style.width=TW+'px';tc.style.height=TH+'px';tx.setTransform(d,0,0,d,0,0);buildBase()}
+function drawT(){frame++;const c=5;
+// Tick the fire engine each frame for smooth spread
+try{
+if(simRunning&&window.tickFireEngine)window.tickFireEngine(frame);
+}catch(e){if(frame%300===0)console.error('[drawT] tickFireEngine error:',e.message)}
+try{
+if(simRunning&&window._reactiveAgentTick)window._reactiveAgentTick();
+}catch(e){if(frame%300===0)console.error('[drawT] reactiveAgentTick error:',e.message)}
+if(simRunning&&simStart>0){updateTimeline((Date.now()-simStart)*simSpeed)}
+const snap=window.getFireSnapshot?window.getFireSnapshot():null;
+const GR=window.GRID_ROWS||128,GC=window.GRID_COLS||128;
+const GSW=1.15, GSH=1.15;
+const FX0=0.22-0.477*GSW;
+const FY0=0.20-0.50*GSH;
+// Use fillRect (ImageData doesn't work with canvas transforms/dpr)
+// But batch all color reads first, minimizing fillStyle string changes
+let lastR=-1,lastG=-1,lastB=-1;
+const dOffY=[-1,-1,0,1,1,1,0,-1], dOffX=[0,1,1,1,0,-1,-1,-1];
+for(let row=0;row<tRows;row++){
+  const yBase=row*c;
+  for(let col=0;col<tCols;col++){
+    const i=row*tCols+col;
+    let r=baseR[i],g=baseG[i],b=baseB[i];
+    if(snap){
+      const nx=col*c/TW,ny=yBase/TH;
+      const grf=(ny-FY0)/GSH, gcf=(nx-FX0)/GSW;
+      if(grf>=0&&grf<1&&gcf>=0&&gcf<1){
+        const gr=grf*GR|0,gc=gcf*GC|0;
+        if(gr>=0&&gr<GR&&gc>=0&&gc<GC){
+          const idx=gr*GC+gc,state=snap.cells[idx];
+          const x=col*c,y=yBase;
+          if(state===1){
+            let isEdge=false;
+            for(let dd=0;dd<8;dd++){
+              const nrr=gr+dOffY[dd],ncc=gc+dOffX[dd];
+              if(nrr<0||nrr>=GR||ncc<0||ncc>=GC){isEdge=true;break}
+              const ns=snap.cells[nrr*GC+ncc];if(ns===0||ns===3){isEdge=true;break}
+            }
+            if(isEdge){
+              const fl=.6+Math.sin(frame*.12+x*.18+y*.14)*.4;
+              const heat=.85+Math.sin(frame*.07+x*.1)*.15;
+              r=255*fl; g=(55+Math.sin(frame*.08+y*.12)*35)*fl*heat; b=12*fl;
+            } else {
+              const sm=.3+Math.sin(frame*.04+x*.05+y*.06)*.15;
+              r=180*sm; g=40*sm; b=8*sm;
+            }
+          }
+          else if(state===2){
+            const ashNoise=noise(x*.3,y*.3);
+            const ash=35+ashNoise*20;
+            r=ash+8; g=ash+4; b=ash;
+          }
+          else if(state===3){// RETARDANT — Phos-Chek red/pink
+            r=180+Math.sin(frame*.02)*15; g=45; b=55;
+          }
+        }
+      }
+    }
+    const ri=r|0, gi=g|0, bi=b|0;
+    if(ri!==lastR||gi!==lastG||bi!==lastB){
+      tx.fillStyle=`rgb(${ri},${gi},${bi})`;
+      lastR=ri;lastG=gi;lastB=bi;
+    }
+    tx.fillRect(col*c,yBase,c,c);
+  }
+}
+
+// Subtle fire glow overlay
+if(snap){
+  const gSnap=snap;
+  tx.save();
+  tx.globalCompositeOperation='screen';
+  tx.filter='blur(8px)';
+  const glowC=5;
+  for(let grow=0;grow<tRows;grow+=3)for(let gcol=0;gcol<tCols;gcol+=3){
+    const gnx=gcol*glowC/TW,gny=grow*glowC/TH;
+    const ggrf=(gny-FY0)/GSH,ggcf=(gnx-FX0)/GSW;
+    if(ggrf>=0&&ggrf<1&&ggcf>=0&&ggcf<1){
+      const ggr=ggrf*GR|0,ggc=ggcf*GC|0;
+      if(ggr>=0&&ggr<GR&&ggc>=0&&ggc<GC&&gSnap.cells[ggr*GC+ggc]===1){
+        tx.fillStyle='rgba(255,80,10,.12)';
+        tx.fillRect(gcol*glowC-4,grow*glowC-4,glowC+8,glowC+8);
+      }
+    }
+  }
+  tx.filter='none';
+  tx.globalCompositeOperation='source-over';
+  tx.restore();
+}
+const wx=TW*.5,wy=TH*.10,wl=28;tx.save();tx.translate(wx,wy);tx.rotate(Math.PI*.75+Math.sin(frame*.01)*.1);tx.strokeStyle='rgba(255,255,255,.15)';tx.lineWidth=1.5;tx.beginPath();tx.moveTo(0,-wl);tx.lineTo(0,wl);tx.stroke();tx.beginPath();tx.moveTo(0,wl);tx.lineTo(-5,wl-8);tx.moveTo(0,wl);tx.lineTo(5,wl-8);tx.stroke();tx.restore();tx.fillStyle='rgba(255,255,255,.1)';tx.font='8px -apple-system,sans-serif';tx.textAlign='center';tx.fillText('25mph NW',wx,wy+wl+12);
+// Location dots + names (every frame for reactivity)
+tx.font='7px -apple-system,sans-serif';for(const[k,l]of Object.entries(LOCATIONS)){const lx=l.x*TW,ly=l.y*TH;tx.fillStyle='rgba(255,255,255,.06)';tx.beginPath();tx.arc(lx,ly,2,0,Math.PI*2);tx.fill();tx.fillStyle='rgba(255,255,255,.12)';tx.textAlign='center';tx.fillText(l.name,lx,ly-6)}
+// Geographic labels
+tx.textAlign='center';
+tx.font='bold 11px -apple-system,sans-serif';tx.fillStyle='rgba(100,160,250,.12)';tx.fillText('PACIFIC OCEAN',TW*.45,TH*.82);
+tx.font='bold 9px -apple-system,sans-serif';tx.fillStyle='rgba(255,255,255,.09)';tx.fillText('SANTA MONICA MOUNTAINS',TW*.50,TH*.28);
+tx.font='7px -apple-system,sans-serif';tx.fillStyle='rgba(255,255,255,.11)';
+tx.fillText('Pacific Palisades',TW*.45,TH*.54);
+tx.fillText('Brentwood',TW*.68,TH*.48);
+tx.fillText('Topanga Cyn',TW*.25,TH*.50);
+tx.fillText('Will Rogers SP',TW*.38,TH*.44);
+tx.fillText('Temescal Cyn',TW*.48,TH*.38);
+tx.font='6px -apple-system,sans-serif';tx.fillStyle='rgba(255,255,255,.09)';
+tx.fillText('PCH',TW*.60,TH*.62);
+tx.fillText('SUNSET BLVD',TW*.55,TH*.47);
+tx.fillText('TOPANGA CYN BLVD',TW*.24,TH*.38);
+ROUTES.forEach(route=>{const st=routeStates[route.id];if(!st)return;tx.beginPath();tx.strokeStyle=st==='clear'?'rgba(52,211,153,.5)':st==='blocked'?'rgba(239,68,68,.5)':'rgba(251,191,36,.5)';tx.lineWidth=st==='congested'?3:2;tx.setLineDash(st==='congested'?[6,4]:st==='blocked'?[3,3]:[]);route.points.forEach((p,i)=>{i===0?tx.moveTo(p[0]*TW,p[1]*TH):tx.lineTo(p[0]*TW,p[1]*TH)});tx.stroke();tx.setLineDash([]);if(st==='clear'){tx.setLineDash([4,8]);tx.lineDashOffset=-frame*.5;tx.strokeStyle='rgba(52,211,153,.15)';tx.lineWidth=3;tx.beginPath();route.points.forEach((p,i)=>{i===0?tx.moveTo(p[0]*TW,p[1]*TH):tx.lineTo(p[0]*TW,p[1]*TH)});tx.stroke();tx.setLineDash([]);tx.lineDashOffset=0}});
+// Retardant active indicator handled by cell rendering (red/pink cells)
+const nowT=Date.now();
+try{ // ── Fire Ops Rendering ──
+// ── Dozer lines (firebreaks) ──
+for(const fb of fireOps.dozerLines){
+  tx.beginPath();tx.moveTo(fb.x1*TW,fb.y1*TH);tx.lineTo(fb.x2*TW,fb.y2*TH);
+  tx.strokeStyle='rgba(163,230,53,.3)';tx.lineWidth=2;tx.setLineDash([3,4]);tx.stroke();tx.setLineDash([]);
+  // Cleared dirt strip
+  tx.strokeStyle='rgba(120,100,60,.12)';tx.lineWidth=5;tx.beginPath();tx.moveTo(fb.x1*TW,fb.y1*TH);tx.lineTo(fb.x2*TW,fb.y2*TH);tx.stroke();
+}
+// ── Hand lines (crew-cut fireline) ──
+for(const hl of fireOps.handLines){
+  tx.beginPath();tx.moveTo(hl.x1*TW,hl.y1*TH);tx.lineTo(hl.x2*TW,hl.y2*TH);
+  tx.strokeStyle='rgba(180,120,60,.35)';tx.lineWidth=1.5;tx.setLineDash([2,3]);tx.stroke();tx.setLineDash([]);
+}
+// ── Hose lines (engine direct attack) ──
+for(const ho of fireOps.hoseLines){
+  tx.beginPath();tx.moveTo(ho.ux*TW,ho.uy*TH);tx.lineTo(ho.fx*TW,ho.fy*TH);
+  tx.strokeStyle='rgba(56,189,248,.25)';tx.lineWidth=1;tx.setLineDash([1,2]);tx.stroke();tx.setLineDash([]);
+  // Water spray at end
+  const spAng=frame*.08;
+  for(let sp=0;sp<3;sp++){
+    const a=spAng+sp*2.1;
+    tx.beginPath();tx.arc(ho.fx*TW+Math.cos(a)*3,ho.fy*TH+Math.sin(a)*3,1,0,Math.PI*2);
+    tx.fillStyle='rgba(56,189,248,.2)';tx.fill();
+  }
+}
+// ── Structure protection markers ──
+for(const sp of fireOps.structProtect){
+  const sx=sp.x*TW,sy=sp.y*TH;
+  // Gel/foam shield indicator
+  tx.beginPath();tx.arc(sx,sy,6,0,Math.PI*2);
+  tx.strokeStyle='rgba(56,189,248,.35)';tx.lineWidth=1.5;tx.setLineDash([2,2]);tx.stroke();tx.setLineDash([]);
+  tx.fillStyle='rgba(56,189,248,.06)';tx.fill();
+  // Inner structure dot
+  tx.beginPath();tx.arc(sx,sy,2,0,Math.PI*2);
+  tx.fillStyle='rgba(56,189,248,.4)';tx.fill();
+}
+// ── Retardant drop lines (air tanker) ──
+for(let ri=fireOps.retardantDrops.length-1;ri>=0;ri--){
+  const rd=fireOps.retardantDrops[ri];
+  const age=(nowT-rd.startTime)/1000;
+  if(age>rd.duration){fireOps.retardantDrops.splice(ri,1);continue}
+  const alpha=Math.max(.1,1-age/rd.duration);
+  tx.beginPath();tx.moveTo(rd.x1*TW,rd.y1*TH);tx.lineTo(rd.x2*TW,rd.y2*TH);
+  tx.strokeStyle=`rgba(220,50,70,${alpha*.4})`;tx.lineWidth=3;tx.stroke();
+  // Mist along line
+  for(let m=0;m<5;m++){
+    const t=m/5;
+    const mx=rd.x1+(rd.x2-rd.x1)*t,my=rd.y1+(rd.y2-rd.y1)*t;
+    tx.beginPath();tx.arc(mx*TW+Math.sin(frame*.05+m)*2,my*TH+Math.cos(frame*.04+m)*2,2,0,Math.PI*2);
+    tx.fillStyle=`rgba(220,80,90,${alpha*.15})`;tx.fill();
+  }
+}
+// ── Backfire/burnout lines ──
+for(const bf of fireOps.backfireLines){
+  const age=(Date.now()-bf.startTime)/1000;
+  const prog=Math.min(1,age/bf.duration);
+  const ex=bf.x1+(bf.x2-bf.x1)*prog,ey=bf.y1+(bf.y2-bf.y1)*prog;
+  // Blackened line (already burned)
+  tx.beginPath();tx.moveTo(bf.x1*TW,bf.y1*TH);tx.lineTo(ex*TW,ey*TH);
+  tx.strokeStyle='rgba(80,40,10,.4)';tx.lineWidth=2;tx.stroke();
+  // Active burn point
+  if(prog<1){
+    const flicker=.6+Math.sin(frame*.2)*.4;
+    tx.beginPath();tx.arc(ex*TW,ey*TH,3,0,Math.PI*2);
+    tx.fillStyle=`rgba(255,${Math.round(100*flicker)},0,${0.5*flicker})`;tx.fill();
+  }
+}
+// ── Water drops (helicopter) ──
+for(let wi=fireOps.waterDrops.length-1;wi>=0;wi--){
+  const wd=fireOps.waterDrops[wi];
+  const age=(nowT-wd.startTime)/1000;
+  if(age>wd.duration){fireOps.waterDrops.splice(wi,1);continue}
+  const prog=age/wd.duration;
+  const r=6+prog*8; // small radius in pixels
+  const alpha=Math.max(0,1-prog*1.1);
+  // Splash circle
+  tx.beginPath();tx.arc(wd.x*TW,wd.y*TH,r,0,Math.PI*2);
+  tx.fillStyle=`rgba(56,189,248,${alpha*0.15})`;tx.fill();
+  tx.strokeStyle=`rgba(56,189,248,${alpha*0.35})`;tx.lineWidth=1;tx.stroke();
+  // Mist particles
+  if(prog<0.4){
+    for(let sp=0;sp<4;sp++){
+      const ang=(sp/4)*Math.PI*2+prog*4;
+      const sx=wd.x*TW+Math.cos(ang)*(r*0.7),sy=wd.y*TH+Math.sin(ang)*(r*0.7);
+      tx.beginPath();tx.arc(sx,sy,1,0,Math.PI*2);
+      tx.fillStyle=`rgba(56,189,248,${alpha*0.3})`;tx.fill();
+    }
+  }
+}
+}catch(e){if(frame%300===0)console.error('[drawT] fireOps render error:',e.message,e.stack)}
+// ── Drones — with type-specific rendering ──
+try{
+for(const[id,d]of Object.entries(dronePos)){
+  d.x+=(d.tx-d.x)*.02;d.y+=(d.ty-d.y)*.02;
+  const drone=DRONES.find(dr=>dr.id===id);
+  const dt=drone?DRONE_TYPES[drone.dtype]:DRONE_TYPES.recon;
+  const dx=d.x*TW+Math.sin(frame*.02+d.x*10)*2,dy=d.y*TH+Math.cos(frame*.015+d.y*10)*1.5;
+  // Scanning beam (rotating, subtle)
+  if(drone?.dtype==='recon'||drone?.dtype==='spotter'){
+    const scanAng=frame*.03+d.x*20;
+    tx.beginPath();tx.moveTo(dx,dy);
+    tx.lineTo(dx+Math.cos(scanAng)*8,dy+Math.sin(scanAng)*8);
+    tx.strokeStyle=dt.color+'20';tx.lineWidth=1;tx.stroke();
+  }
+  // Drone body
+  tx.beginPath();tx.arc(dx,dy,2.5,0,Math.PI*2);tx.fillStyle=dt.color;tx.fill();
+  // Type icon
+  tx.fillStyle=dt.color+'60';tx.font='6px monospace';tx.textAlign='center';
+  tx.fillText(id,dx,dy+10);
+}
+// ── Units — with type-specific rendering ──
+for(const[id,u]of Object.entries(unitPos)){
+  u.x+=(u.tx-u.x)*.015;u.y+=(u.ty-u.y)*.015;
+  const ux=u.x*TW,uy=u.y*TH;
+  const unit=UNITS.find(v=>v.id===id);
+  const ut=unit?UNIT_TYPES[unit.type]:UNIT_TYPES.engine;
+  // Unit body
+  tx.beginPath();tx.arc(ux,uy,5,0,Math.PI*2);tx.fillStyle=ut.color+'15';tx.fill();
+  tx.strokeStyle=ut.color+'90';tx.lineWidth=1;tx.stroke();
+  // Heli rotor animation
+  if(unit?.type==='heli'){
+    const rotorAng=frame*.15;
+    tx.save();tx.translate(ux,uy);tx.rotate(rotorAng);
+    tx.strokeStyle=ut.color+'60';tx.lineWidth=1;
+    tx.beginPath();tx.moveTo(-8,0);tx.lineTo(8,0);tx.stroke();
+    tx.beginPath();tx.moveTo(0,-8);tx.lineTo(0,8);tx.stroke();
+    tx.restore();
+  }
+  // Air tanker wing shape
+  if(unit?.type==='air'){
+    tx.save();tx.translate(ux,uy);tx.rotate(Math.sin(frame*.005)*.1);
+    tx.strokeStyle=ut.color+'80';tx.lineWidth=1.5;
+    tx.beginPath();tx.moveTo(-10,0);tx.lineTo(10,0);tx.stroke();
+    tx.beginPath();tx.moveTo(0,-4);tx.lineTo(0,5);tx.stroke();
+    tx.restore();
+  }
+  // Dozer tracks
+  if(unit?.type==='dozer'){
+    tx.strokeStyle=ut.color+'40';tx.lineWidth=2;
+    tx.beginPath();tx.moveTo(ux-5,uy+3);tx.lineTo(ux+5,uy+3);tx.stroke();
+    tx.beginPath();tx.moveTo(ux-5,uy-3);tx.lineTo(ux+5,uy-3);tx.stroke();
+  }
+  // SEAT (small air tanker) — small wing shape
+  if(unit?.type==='seat'){
+    tx.save();tx.translate(ux,uy);tx.rotate(Math.sin(frame*.006)*.08);
+    tx.strokeStyle=ut.color+'70';tx.lineWidth=1;
+    tx.beginPath();tx.moveTo(-7,0);tx.lineTo(7,0);tx.stroke();
+    tx.beginPath();tx.moveTo(0,-3);tx.lineTo(0,4);tx.stroke();
+    tx.restore();
+  }
+  // Lead plane — dashed orbit indicator
+  if(unit?.type==='lead'){
+    tx.strokeStyle=ut.color+'30';tx.lineWidth=1;tx.setLineDash([2,3]);
+    tx.beginPath();tx.arc(ux,uy,10,0,Math.PI*2);tx.stroke();tx.setLineDash([]);
+    tx.save();tx.translate(ux,uy);tx.rotate(frame*.008);
+    tx.strokeStyle=ut.color+'60';tx.lineWidth=1;
+    tx.beginPath();tx.moveTo(-5,0);tx.lineTo(5,0);tx.stroke();
+    tx.restore();
+  }
+  // Water tender — tank indicator
+  if(unit?.type==='tender'){
+    tx.strokeStyle=ut.color+'50';tx.lineWidth=1;
+    tx.beginPath();tx.rect(ux-4,uy-3,8,6);tx.stroke();
+    tx.fillStyle=ut.color+'15';tx.fillRect(ux-4,uy-3,8,6);
+  }
+  // Structure engine — shield shape
+  if(unit?.type==='structeng'){
+    tx.strokeStyle=ut.color+'60';tx.lineWidth=1;
+    tx.beginPath();tx.moveTo(ux,uy-5);tx.lineTo(ux+5,uy);tx.lineTo(ux+3,uy+5);
+    tx.lineTo(ux-3,uy+5);tx.lineTo(ux-5,uy);tx.closePath();tx.stroke();
+  }
+  // Hotshot crew — crew arc
+  if(unit?.type==='hotshot'){
+    tx.strokeStyle=ut.color+'40';tx.lineWidth=1;
+    tx.beginPath();tx.arc(ux,uy,7,-.5,Math.PI+.5);tx.stroke();
+  }
+  // Hand crew — small arc
+  if(unit?.type==='crew'){
+    tx.strokeStyle=ut.color+'35';tx.lineWidth=1;
+    tx.beginPath();tx.arc(ux,uy,6,0,Math.PI);tx.stroke();
+  }
+  // Label
+  tx.fillStyle=ut.color;tx.font='bold 6px monospace';tx.textAlign='center';
+  tx.fillText(id,ux,uy+14);
+}
+}catch(e){if(frame%300===0)console.error('[drawT] drone/unit render error:',e.message,e.stack)}
+if(retardantActive){const elapsed=(Date.now()-retardantStart)/simSpeed;const remaining=Math.max(0,30*60*1000-elapsed);const min=Math.floor(remaining/60000);const sec=Math.floor((remaining%60000)/1000);document.getElementById('rt-time').textContent=`${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;if(remaining<=0){retardantActive=false;document.getElementById('retardant-timer').classList.remove('visible')}}
+requestAnimationFrame(drawT)}
+
+function addSL(k,text,cls){const loc=LOCATIONS[k];if(!loc)return;const el=document.createElement('div');el.className=`spatial-label ${cls}`;const col=cls==='fire'?'var(--predict)':cls==='evac'?'var(--evac)':cls==='deploy'?'var(--deploy)':cls==='drone'?'var(--swarm)':'var(--overwatch)';el.innerHTML=`<span class="sl-dot" style="background:${col}"></span>${text}`;const up=()=>{el.style.left=(loc.x*window.innerWidth-el.offsetWidth/2)+'px';el.style.top=(loc.y*window.innerHeight-24)+'px'};document.body.appendChild(el);requestAnimationFrame(()=>{up();el.classList.add('visible')});spatialLabels.push({el,up})}
+function clearSL(){spatialLabels.forEach(s=>s.el.remove());spatialLabels.length=0}
+function updateZoneLabel(id,status,x,y){const ex=zoneLabels.find(z=>z.id===id);if(ex){ex.el.className=`zone-label visible ${status}`;ex.el.textContent=`${id}: ${status.toUpperCase()}`}else{const el=document.createElement('div');el.className=`zone-label ${status}`;el.textContent=`${id}: ${status.toUpperCase()}`;const up=()=>{el.style.left=(x*window.innerWidth-30)+'px';el.style.top=(y*window.innerHeight+10)+'px'};document.body.appendChild(el);requestAnimationFrame(()=>{up();el.classList.add('visible')});zoneLabels.push({el,up,id})}}
+
+function renderAg(){const p=document.getElementById('agents-panel');p.innerHTML='';for(const[id,a]of Object.entries(AG)){const c=document.createElement('div');c.className='agent-card';c.id=`agent-${id}`;c.style.setProperty('--ac',a.color);c.innerHTML=`<div class="ac-hdr"><div class="ac-dot" id="dot-${id}"></div><span class="ac-name">${a.name}</span><span class="ac-sub">${a.label}</span><span class="ac-status" id="st-${id}">Standby</span></div><div class="ac-think" id="think-${id}"><span style="color:var(--muted);font-size:8px">${a.role}</span></div>`;p.appendChild(c)}}
+function setAgentState(id,state){const e=document.getElementById(`st-${id}`),d=document.getElementById(`dot-${id}`),c=document.getElementById(`agent-${id}`);if(!e)return;const labels={standby:'Standby',active:'Active',alert:'Alert',critical:'Critical',executing:'Executing'};e.textContent=labels[state]||state;e.className='ac-status';if(state!=='standby')e.classList.add('st-'+state);d.className='ac-dot';if(state==='active')d.classList.add('active-dot');if(state==='alert')d.classList.add('alert-dot');if(state==='critical')d.classList.add('critical-dot');if(state==='executing')d.classList.add('exec-dot');c.className='agent-card';if(state==='active'||state==='executing')c.classList.add('active');if(state==='alert')c.classList.add('alert-state');if(state==='critical')c.classList.add('critical-state');if(state==='executing')c.classList.add('executing')}
+function setTh(id,t){const e=document.getElementById(`think-${id}`);if(!e)return;let h='';if(t.sys)h+=`<div class="th"><span class="tl sys">SYS</span>${t.sys}</div>`;if(t.obs)h+=`<div class="th"><span class="tl obs">OBS</span>${t.obs}</div>`;if(t.rsn)h+=`<div class="th"><span class="tl rsn">RSN</span>${t.rsn}</div>`;if(t.ics)h+=`<div class="th"><span class="tl ics">ICS</span>${t.ics}</div>`;if(t.act)h+=`<div class="th"><span class="tl act">ACT</span>${t.act}</div>`;e.innerHTML=h;e.scrollTop=e.scrollHeight}
+
+const cc=document.getElementById('coord-canvas');let cx2,nodePos={};const aLines=[];
+function initCoord(){const panel=document.getElementById('coord-panel');function resize(){const hdr=24;cc.width=panel.clientWidth;cc.height=panel.clientHeight-hdr;cc.style.top=hdr+'px';const cx=cc.width/2,cy=cc.height/2,r=Math.min(cc.width*.24,cc.height*.30);nodePos.overwatch={x:cx,y:cy};nodePos.predict={x:cx,y:cy-r};nodePos.swarm={x:cx+r*1.1,y:cy-r*.3};nodePos.evac={x:cx+r*.7,y:cy+r*.8};nodePos.deploy={x:cx-r*.7,y:cy+r*.8};panel.querySelectorAll('.coord-node,.msg-bubble').forEach(n=>n.remove());for(const[id,pos]of Object.entries(nodePos)){const a=AG[id],n=document.createElement('div');n.className='coord-node';n.id=`node-${id}`;n.style.setProperty('--ac',a.color);n.style.left=(pos.x-22)+'px';n.style.top=(pos.y-22+hdr)+'px';n.innerHTML=`${a.name.substring(0,4)}<div class="nl">${a.role.split(' ')[0]}</div>`;panel.appendChild(n)}}resize();window.addEventListener('resize',resize);if(!cx2)cx2=cc.getContext('2d');requestAnimationFrame(animC)}
+function drawC(){cx2.clearRect(0,0,cc.width,cc.height);const ow=nodePos.overwatch;['predict','swarm','evac','deploy'].forEach(id=>{const p=nodePos[id];if(!p||!ow)return;cx2.beginPath();cx2.moveTo(ow.x,ow.y);cx2.lineTo(p.x,p.y);cx2.strokeStyle='rgba(30,38,54,.4)';cx2.lineWidth=1;cx2.setLineDash([2,6]);cx2.stroke();cx2.setLineDash([])});
+const now=Date.now();for(let i=aLines.length-1;i>=0;i--){const l=aLines[i],age=now-l.t;if(age>l.dur){aLines.splice(i,1);continue}const f=nodePos[l.from],t=nodePos[l.to];if(!f||!t)continue;const prog=Math.min(age/400,1),fs=l.dur-500,alpha=age>fs?Math.max(0,1-(age-fs)/500):1;const mx=f.x+(t.x-f.x)*prog,my=f.y+(t.y-f.y)*prog;cx2.beginPath();cx2.moveTo(f.x,f.y);cx2.lineTo(mx,my);cx2.strokeStyle=l.color+Math.round(alpha*180).toString(16).padStart(2,'0');cx2.lineWidth=2;cx2.stroke();if(prog>=1){const ang=Math.atan2(t.y-f.y,t.x-f.x),hl=5;cx2.beginPath();cx2.moveTo(t.x,t.y);cx2.lineTo(t.x-hl*Math.cos(ang-.35),t.y-hl*Math.sin(ang-.35));cx2.lineTo(t.x-hl*Math.cos(ang+.35),t.y-hl*Math.sin(ang+.35));cx2.closePath();cx2.fillStyle=l.color+Math.round(alpha*180).toString(16).padStart(2,'0');cx2.fill()}}}
+function animC(){drawC();requestAnimationFrame(animC)}
+function addChainLines(chain){if(!chain||chain.length<2)return;for(let i=0;i<chain.length-1;i++){const from=chain[i],to=chain[i+1],color=AG[from]?.color||'#A78BFA';aLines.push({from,to,color,t:Date.now()+i*300,dur:3000})}}
+function hlNode(id,on){const n=document.getElementById(`node-${id}`);if(n){on?n.classList.add('active'):n.classList.remove('active')}}
+
+function addEv(step){const log=document.getElementById('event-log'),e=document.createElement('div');const ts=fmtT(step.time),evType=step.evType||'INFO',ac=step.agent&&step.agent!=='system'?AG[step.agent]?.color:'var(--system)',an=step.agent&&step.agent!=='system'?AG[step.agent]?.name:'SYSTEM';e.className=`ev ${EV_CLASS[evType]||'info'}`;e.innerHTML=`<div class="ev-icon" style="color:${EV_COLORS[evType]||'var(--system)'}">${EV_ICONS[evType]||'\u25CB'}</div><div class="ev-body"><div class="ev-head"><span class="ev-time">${ts}</span><span class="ev-agent" style="color:${ac}">${an}</span></div><div class="ev-msg">${step.msg}</div></div>`;log.prepend(e)}
+
+function showDecision(data){const overlay=document.getElementById('decision-overlay'),modal=document.getElementById('decision-modal');const desc=data.desc.replace(/\n/g,'<br>');let h=`<div class="dm-bar"><span class="dm-icon">\u2605</span><span class="dm-label">Decision Point</span><span class="dm-agent">${data.recommender}</span></div><div class="dm-title">${data.title}</div><div class="dm-desc">${desc}</div>`;if(data.risks)h+=`<div class="dm-risks"><div class="dm-risks-title">Risk Assessment</div><div class="dm-risks-list">${data.risks}</div></div>`;h+=`<div class="dm-options">`;data.options.forEach((opt,i)=>{h+=`<button class="dm-btn${i===0?' primary':''}" onclick="resolveDecision()">${opt}</button>`});h+=`</div>`;modal.innerHTML=h;overlay.classList.add('visible');pauseSim()}
+function resolveDecision(){document.getElementById('decision-overlay').classList.remove('visible');if(!simRunning){simRunning=true;document.getElementById('btn-play').textContent='\u23F8 Pause';document.getElementById('btn-play').className='active';scheduleSteps()}}
+
+function showCascade(chain){if(!chain||!chain.length){document.getElementById('cascade-chain').classList.remove('visible');return}const el=document.getElementById('cascade-nodes');const colors={system:'#94A3B8',overwatch:'#A78BFA',predict:'#EF4444',swarm:'#22D3EE',evac:'#34D399',deploy:'#FBBF24'};el.innerHTML=chain.map((n,i)=>{const c=colors[n]||'#A78BFA';return(i>0?'<span class="cc-arrow">\u2192</span>':'')+`<span class="cc-node" style="background:${c}15;color:${c};border:1px solid ${c}40">${n.toUpperCase()}</span>`}).join('');document.getElementById('cascade-chain').classList.add('visible')}
+
+function renderSt(){const c=document.getElementById('steps');c.innerHTML='';SCENARIO.forEach((s,i)=>{const e=document.createElement('div');e.className='step'+(s.isDecision?' decision-step':'');e.id=`step-${i}`;const ac=s.agent&&s.agent!=='system'?AG[s.agent]?.color:'var(--system)',an=s.agent&&s.agent!=='system'?AG[s.agent]?.name:'SYS';let desc=s.phase||s.msg?.substring(0,35)+'...';if(s.isDecision)desc='\u2605 DECISION';e.innerHTML=`<div class="sd"></div><span class="sa" style="color:${ac}">${an}</span><span class="st">${desc}</span>`;c.appendChild(e)})}
+
+function setPhase(cls,label){const el=document.getElementById('phase-tag');el.className=`phase-tag ${cls}`;el.textContent=label}
+function setIncidentType(type){const el=document.getElementById('incident-type');el.className=`incident-tag ${type}`;el.textContent=type==='type1'?'Type 1':'Type 3'}
+function togglePlay(){simRunning?pauseSim():startSim()}
+function startSim(){simRunning=true;const b=document.getElementById('btn-play');b.textContent='\u23F8 Pause';b.className='active';if(stepIdx<0){simStart=Date.now();stepIdx=0}scheduleSteps()}
+function pauseSim(){simRunning=false;const b=document.getElementById('btn-play');b.textContent='\u25B6 Resume';b.className='play';timeouts.forEach(clearTimeout);timeouts=[]}
+function resetSim(){pauseSim();stepIdx=-1;fireRadius=.05;targetFireRadius=.05;if(window.initFireEngine)window.initFireEngine();routeStates={};retardantActive=false;fireOps.waterDrops.length=0;fireOps.backfireLines.length=0;fireOps.dozerLines.length=0;fireOps.handLines.length=0;fireOps.hoseLines.length=0;fireOps.structProtect.length=0;fireOps.retardantDrops.length=0;metrics={acres:5,contain:0,struct:0,evac:0,drones:'0/12',decisions:0,actions:0};updateMetrics({});DRONES.forEach(d=>{dronePos[d.id]={x:.80+Math.random()*.08,y:.48+Math.random()*.08,tx:.80+Math.random()*.08,ty:.48+Math.random()*.08}});UNITS.forEach(u=>{unitPos[u.id]={x:u.x,y:u.y,tx:u.x,ty:u.y}});clearSL();zoneLabels.forEach(z=>z.el.remove());zoneLabels.length=0;document.getElementById('cascade-chain').classList.remove('visible');document.getElementById('retardant-timer').classList.remove('visible');document.getElementById('decision-overlay').classList.remove('visible');document.getElementById('vignette').classList.remove('crisis');setPhase('detection','Detection');setIncidentType('type3');renderAg();document.getElementById('event-log').innerHTML='';renderSt();document.getElementById('sim-time').textContent='T+00:00';document.getElementById('voice-cmd').textContent='OVERWATCH online. Awaiting IC commands.';aLines.length=0;Object.keys(AG).forEach(id=>hlNode(id,false));document.getElementById('btn-play').textContent='\u25B6 Play';document.getElementById('btn-play').className='play';updateTimeline(0)}
+function scheduleSteps(){if(!simRunning||stepIdx>=SCENARIO.length)return;const now=Date.now();for(let i=stepIdx;i<SCENARIO.length;i++){const s=SCENARIO[i],delay=(s.time/simSpeed)-(now-simStart);if(delay<=0){execStep(i,s);stepIdx=i+1}else{const t=setTimeout(()=>{if(!simRunning)return;execStep(i,s);stepIdx=i+1;scheduleSteps()},delay);timeouts.push(t);break}}}
+function execStep(idx,step){
+  document.getElementById('sim-time').textContent=`T+${fmtT(step.time)}${step.phase?' \u2014 '+step.phase:''}`;
+  updateTimeline(step.time);
+  for(let i=0;i<SCENARIO.length;i++){const e=document.getElementById(`step-${i}`);if(!e)continue;if(i<idx)e.className='step done'+(SCENARIO[i].isDecision?' decision-step':'');else if(i===idx)e.className='step current'+(SCENARIO[i].isDecision?' decision-step':'');else e.className='step'+(SCENARIO[i].isDecision?' decision-step':'')}
+  document.getElementById(`step-${idx}`)?.scrollIntoView({behavior:'smooth',block:'nearest'});
+  if(step.phaseClass)setPhase(step.phaseClass,step.phase);
+  if(step.incidentType)setIncidentType(step.incidentType);
+  if(step.crisis===true)document.getElementById('vignette').classList.add('crisis');
+  if(step.crisis===false)document.getElementById('vignette').classList.remove('crisis');
+  if(step.metrics)updateMetrics(step.metrics);
+  if(step.agentStates)Object.entries(step.agentStates).forEach(([id,s])=>setAgentState(id,s));
+  if(step.thinking&&step.agent&&step.agent!=='system')setTh(step.agent,step.thinking);
+  if(step.fireIgnite&&window.igniteAtLatLng)window.igniteAtLatLng(step.fireIgnite.lat,step.fireIgnite.lng,step.fireIgnite.radius||3);
+  if(step.fireGrow!==undefined){targetFireRadius=step.fireGrow;if(window.setFireRate)window.setFireRate(step.fireGrow);}
+  if(step.weather&&window.setFireWeather)window.setFireWeather(step.weather);
+  if(step.activateRoutes)step.activateRoutes.forEach(r=>routeStates[r]='clear');
+  if(step.routeUpdates)step.routeUpdates.forEach(r=>routeStates[r.id]=r.status);
+  if(step.moveDrones)step.moveDrones.forEach(d=>{if(dronePos[d.id]){dronePos[d.id].tx=d.x;dronePos[d.id].ty=d.y}});
+  if(step.moveUnits)step.moveUnits.forEach(u=>{if(unitPos[u.id]){unitPos[u.id].tx=u.x;unitPos[u.id].ty=u.y}});
+  if(step.spatial)step.spatial.forEach(s=>addSL(s.loc,s.text,s.cls));
+  if(step.zoneUpdates)step.zoneUpdates.forEach(z=>updateZoneLabel(z.id,z.status,z.x,z.y));
+  if(step.chain){addChainLines(step.chain);showCascade(step.chain);step.chain.forEach(id=>hlNode(id,true));setTimeout(()=>step.chain.forEach(id=>hlNode(id,false)),3000/simSpeed)}
+  if(step.startRetardant){retardantActive=true;retardantStart=Date.now();document.getElementById('retardant-timer').classList.add('visible');const eng=window.getFireEngine&&window.getFireEngine();if(eng){eng.applyRetardant(35,50,8,45)}}
+  if(step.expireRetardant){retardantActive=false;document.getElementById('retardant-timer').classList.remove('visible')}
+  if(step.isDecision&&step.decisionData){addEv(step);showDecision(step.decisionData);return}
+  addEv(step);
+  if(idx===SCENARIO.length-1)setTimeout(()=>{simRunning=false;document.getElementById('btn-play').textContent='\u25B6 Replay';document.getElementById('btn-play').className='play';document.getElementById('sim-time').textContent=`T+${fmtT(step.time)} \u2014 Complete`},1000/simSpeed);
+}
+function setSpeed(s){simSpeed=s;document.querySelectorAll('.topbar button').forEach(b=>{if(b.id?.startsWith('speed-'))b.classList.remove('active')});document.getElementById(`speed-${s}x`)?.classList.add('active')}
+function fmtT(ms){const t=Math.floor(ms/1000),m=Math.floor(t/60).toString().padStart(2,'0'),s=(t%60).toString().padStart(2,'0');return`${m}:${s}`}
+
+// Expose functions globally for onclick handlers
+window.setSpeed = setSpeed;
+window.togglePlay = togglePlay;
+window.resetSim = resetSim;
+window.resolveDecision = resolveDecision;
+
+renderAg();renderSt();updateMetrics({});
+
+// ── Timeline Bar Setup ────────────────────────────────────────────────────
+const TL_TOTAL_MS=900000; // 15 minutes
+const TL_PHASES=[
+  {time:0,label:'Detection',color:'#94A3B8'},
+  {time:60000,label:'Escalation',color:'#FBBF24'},
+  {time:240000,label:'Crisis',color:'#EF4444'},
+  {time:480000,label:'Containment',color:'#34D399'},
+  {time:750000,label:'Resolution',color:'#67E8F9'}
+];
+(function buildTicks(){
+  const cont=document.getElementById('tl-ticks');
+  // Minute ticks (0–15)
+  for(let m=0;m<=15;m++){
+    const pct=(m*60000/TL_TOTAL_MS)*100;
+    const tick=document.createElement('div');
+    tick.className='tl-tick'+(m%5===0?' major':'');
+    tick.style.left=pct+'%';
+    cont.appendChild(tick);
+    if(m%1===0){
+      const lbl=document.createElement('div');
+      lbl.className='tl-tick-label';
+      lbl.style.left=pct+'%';
+      lbl.textContent=m+'m';
+      cont.appendChild(lbl);
+    }
+  }
+  // Phase markers
+  TL_PHASES.forEach(p=>{
+    const pct=(p.time/TL_TOTAL_MS)*100;
+    const mk=document.createElement('div');
+    mk.className='tl-phase-marker';
+    mk.style.left=pct+'%';
+    mk.style.color=p.color;
+    mk.style.background=p.color+'18';
+    mk.style.border='1px solid '+p.color+'40';
+    mk.textContent=p.label;
+    cont.appendChild(mk);
+  });
+})();
+function updateTimeline(currentMs){
+  const pct=Math.min(100,(currentMs/TL_TOTAL_MS)*100);
+  document.getElementById('tl-fill').style.width=pct+'%';
+  document.getElementById('tl-head').style.left=`calc(${pct}% - 1px)`;
+  const t=Math.floor(currentMs/1000);
+  const mm=Math.floor(t/60).toString().padStart(2,'0');
+  const ss=(t%60).toString().padStart(2,'0');
+  document.getElementById('tl-elapsed').textContent=mm+':'+ss;
+}
+
+window.addEventListener('resize',()=>{resizeT();spatialLabels.forEach(s=>s.up());zoneLabels.forEach(z=>z.up())});
+resizeT();drawT();setTimeout(initCoord,50);
+
+// ── Fire Ignition Drag Tool ─────────────────────────────────────────────────
+(function(){
+  const tool=document.getElementById('fire-tool');
+  const ghost=document.getElementById('fire-ghost');
+  let dragging=false;
+
+  // Grid mapping constants (must match drawT)
+  const GSW=1.15, GSH=1.15;
+  const FX0=0.22-0.477*GSW;
+  const FY0=0.20-0.50*GSH;
+
+  function screenToGrid(clientX,clientY){
+    const nx=clientX/window.innerWidth;
+    const ny=clientY/window.innerHeight;
+    const grf=(ny-FY0)/GSH;
+    const gcf=(nx-FX0)/GSW;
+    const GR=window.GRID_ROWS||128, GC=window.GRID_COLS||128;
+    const gr=Math.floor(grf*GR);
+    const gc=Math.floor(gcf*GC);
+    if(gr>=0&&gr<GR&&gc>=0&&gc<GC) return {row:gr,col:gc};
+    return null;
+  }
+
+  function onDown(e){
+    e.preventDefault();
+    e.stopPropagation();
+    dragging=true;
+    tool.classList.add('dragging');
+    ghost.classList.add('visible');
+    const cx=e.touches?e.touches[0].clientX:e.clientX;
+    const cy=e.touches?e.touches[0].clientY:e.clientY;
+    ghost.style.left=cx+'px';
+    ghost.style.top=cy+'px';
+  }
+
+  function onMove(e){
+    if(!dragging) return;
+    const cx=e.touches?e.touches[0].clientX:e.clientX;
+    const cy=e.touches?e.touches[0].clientY:e.clientY;
+    ghost.style.left=cx+'px';
+    ghost.style.top=cy+'px';
+  }
+
+  function onUp(e){
+    if(!dragging) return;
+    dragging=false;
+    tool.classList.remove('dragging');
+    ghost.classList.remove('visible');
+
+    const cx=e.changedTouches?e.changedTouches[0].clientX:e.clientX;
+    const cy=e.changedTouches?e.changedTouches[0].clientY:e.clientY;
+    const cell=screenToGrid(cx,cy);
+
+    if(cell && window.igniteAt){
+      window.igniteAt(cell.row,cell.col,4);
+      // Start fire spreading if not already
+      if(window.setFireRate){
+        window.setFireRate(Math.max(targetFireRadius||0.08, 0.08));
+        // Add spatial label at drop point
+        const nx=cx/window.innerWidth, ny=cy/window.innerHeight;
+        const label=document.createElement('div');
+        label.className='spatial-label fire';
+        label.innerHTML='<span class="sl-dot" style="background:var(--predict)"></span>NEW IGNITION';
+        label.style.left=(cx-40)+'px';
+        label.style.top=(cy-24)+'px';
+        document.body.appendChild(label);
+        requestAnimationFrame(()=>label.classList.add('visible'));
+        spatialLabels.push({el:label,up:()=>{label.style.left=(nx*window.innerWidth-40)+'px';label.style.top=(ny*window.innerHeight-24)+'px'}});
+        // Add event log entry
+        addEv({time:0,agent:'system',evType:'ALERT',msg:`Manual ignition at grid (${cell.row}, ${cell.col}).`});
+      }
+    }
+  }
+
+  tool.addEventListener('mousedown',onDown);
+  tool.addEventListener('touchstart',onDown,{passive:false});
+  document.addEventListener('mousemove',onMove);
+  document.addEventListener('touchmove',onMove,{passive:false});
+  document.addEventListener('mouseup',onUp);
+  document.addEventListener('touchend',onUp);
+})();
+
+// ── Hover Tooltip — Fire state + Unit/Drone details ─────────────────────────
+(function(){
+  const tip=document.getElementById('fire-tip');
+  const GSW=1.15, GSH=1.15;
+  const FX0=0.22-0.477*GSW;
+  const FY0=0.20-0.50*GSH;
+  let lastCell=null;
+
+  function screenToGrid(cx,cy){
+    const nx=cx/window.innerWidth, ny=cy/window.innerHeight;
+    const grf=(ny-FY0)/GSH, gcf=(nx-FX0)/GSW;
+    const GR=window.GRID_ROWS||256, GC=window.GRID_COLS||256;
+    const gr=Math.floor(grf*GR), gc=Math.floor(gcf*GC);
+    if(gr>=0&&gr<GR&&gc>=0&&gc<GC) return {row:gr,col:gc,grf,gcf};
+    return null;
+  }
+
+  // Find nearest unit/drone to mouse position (in screen coords 0-1)
+  function findNearbyAsset(nx,ny){
+    const hitR=0.025; // ~25px hit radius
+    // Check units
+    for(const u of UNITS){
+      const up=unitPos[u.id];
+      if(!up)continue;
+      const dx=up.x-nx,dy=up.y-ny;
+      if(Math.sqrt(dx*dx+dy*dy)<hitR) return {type:'unit',data:u,pos:up};
+    }
+    // Check drones
+    for(const d of DRONES){
+      const dp=dronePos[d.id];
+      if(!dp)continue;
+      const dx=dp.x-nx,dy=dp.y-ny;
+      if(Math.sqrt(dx*dx+dy*dy)<hitR) return {type:'drone',data:d,pos:dp};
+    }
+    // Check fire ops visualizations
+    const opsR=0.03;
+    for(const ho of fireOps.hoseLines){
+      const mx=(ho.ux+ho.fx)/2,my=(ho.uy+ho.fy)/2;
+      if(Math.sqrt((mx-nx)**2+(my-ny)**2)<opsR) return {type:'ops',opsType:'hose',desc:'Engine Hose Line',detail:'Direct attack — water stream on fire edge. 500gal tank + pump. Effective on light fuels.'};
+    }
+    for(const dl of fireOps.dozerLines){
+      const mx=(dl.x1+dl.x2)/2,my=(dl.y1+dl.y2)/2;
+      if(Math.sqrt((mx-nx)**2+(my-ny)**2)<opsR) return {type:'ops',opsType:'dozer',desc:'Dozer Line (Firebreak)',detail:'Cat D8 blade clearing 12ft strip of vegetation. Removes fuel to stop fire spread. Perpendicular to wind direction.'};
+    }
+    for(const hl of fireOps.handLines){
+      const mx=(hl.x1+hl.x2)/2,my=(hl.y1+hl.y2)/2;
+      if(Math.sqrt((mx-nx)**2+(my-ny)**2)<opsR) return {type:'ops',opsType:'handline',desc:'Hand Line (Crew-Cut Fireline)',detail:'20-person crew using Pulaskis and McLeods to scrape vegetation down to mineral soil. 18-24in wide.'};
+    }
+    for(const bf of fireOps.backfireLines){
+      const mx=(bf.x1+bf.x2)/2,my=(bf.y1+bf.y2)/2;
+      if(Math.sqrt((mx-nx)**2+(my-ny)**2)<opsR) return {type:'ops',opsType:'backfire',desc:'Burnout / Backfire Operation',detail:'Controlled fire set from a secure control line. Burns fuel toward main fire, removing it before the wildfire arrives. Set with drip torches or dragon eggs.'};
+    }
+    for(const rd of fireOps.retardantDrops){
+      const mx=(rd.x1+rd.x2)/2,my=(rd.y1+rd.y2)/2;
+      if(Math.sqrt((mx-nx)**2+(my-ny)**2)<opsR) return {type:'ops',opsType:'retardant',desc:'Retardant Drop Line',detail:'Phos-Chek retardant laid AHEAD of fire (not on flames). Slows fire spread 30-60 min for ground crews to construct fireline. Pink/red color for aerial visibility.'};
+    }
+    for(const sp of fireOps.structProtect){
+      if(Math.sqrt((sp.x-nx)**2+(sp.y-ny)**2)<opsR) return {type:'ops',opsType:'struct',desc:'Structure Protection',detail:'Foam/gel application on structures. Triage system: saveable structures first. 100ft defensible space cleared, sprinklers deployed, Class A foam.'};
+    }
+    for(const wd of fireOps.waterDrops){
+      if(Math.sqrt((wd.x-nx)**2+(wd.y-ny)**2)<opsR) return {type:'ops',opsType:'water',desc:'Helicopter Water Drop',detail:'Bambi Bucket drop from Chinook. Cools hot spots for ground crew access — does NOT extinguish large fires. 2,600gal capacity.'};
+    }
+    return null;
+  }
+
+  document.getElementById('terrain').addEventListener('mousemove',function(e){
+    const nx=e.clientX/window.innerWidth, ny=e.clientY/window.innerHeight;
+
+    // Priority 1: Check for nearby unit or drone
+    const asset=findNearbyAsset(nx,ny);
+    if(asset){
+      let html='';
+      if(asset.type==='unit'){
+        const u=asset.data;
+        const ut=UNIT_TYPES[u.type];
+        const stateClass=u.type==='heli'?'heli':u.type==='air'?'air':'unit';
+        html=`<div class="ft-state ${stateClass}">${ut.icon} ${ut.name}</div>`;
+        html+=`<b style="color:${ut.color}">${u.id}</b> — ${u.type.toUpperCase()}<br>`;
+        html+=`Crew: ${ut.crew} | ${ut.capacity}<br>`;
+        html+=`<div class="ft-tactic"><b>Tactic:</b> ${ut.tactic}</div>`;
+        html+=`<div style="margin-top:3px;font-size:7px;color:var(--muted)">${ut.desc}</div>`;
+      } else if(asset.type==='drone'){
+        const d=asset.data;
+        const dt=DRONE_TYPES[d.dtype];
+        html=`<div class="ft-state drone">${dt.icon} ${dt.name}</div>`;
+        html+=`<b style="color:${dt.color}">${d.id}</b> — ${d.dtype.toUpperCase()}<br>`;
+        html+=`Speed: ${dt.speed} | Endurance: ${dt.endurance}<br>`;
+        html+=`Sensor: ${dt.sensor}<br>`;
+        html+=`<div style="margin-top:3px;font-size:7px;color:var(--muted)">${dt.desc}</div>`;
+      } else if(asset.type==='ops'){
+        const colors={hose:'#38BDF8',dozer:'#A3E635',handline:'#B4783C',backfire:'#F97316',retardant:'#DC3246',struct:'#38BDF8',water:'#38BDF8'};
+        const icons={hose:'💧',dozer:'🚜',handline:'⛏',backfire:'🔥',retardant:'✈',struct:'🛡',water:'🚁'};
+        html=`<div class="ft-state" style="color:${colors[asset.opsType]||'#fff'}">${icons[asset.opsType]||''} ${asset.desc}</div>`;
+        html+=`<div style="margin-top:3px;font-size:7px;color:var(--muted)">${asset.detail}</div>`;
+      }
+      tip.innerHTML=html;
+      tip.classList.add('visible');
+      tip.style.left=Math.min(e.clientX+14,window.innerWidth-250)+'px';
+      tip.style.top=Math.max(e.clientY-10,4)+'px';
+      return;
+    }
+
+    // Priority 2: Fire/terrain state
+    const snap=window.getFireSnapshot?window.getFireSnapshot():null;
+    if(!snap){tip.classList.remove('visible');return}
+    const cell=screenToGrid(e.clientX,e.clientY);
+    if(!cell){tip.classList.remove('visible');lastCell=null;return}
+
+    const GC=window.GRID_COLS||256;
+    const idx=cell.row*GC+cell.col;
+    const state=snap.cells[idx];
+    let html='';
+    if(state===1){
+      const burnedFor=snap.timestep-(snap.burnTime?snap.burnTime[idx]:0);
+      html=`<div class="ft-state burning">🔥 Active Fire</div>`;
+      html+=`Burning for ~${Math.round(burnedFor)} min<br>`;
+      html+=`Cell: (${cell.row}, ${cell.col})`;
+    } else if(state===2){
+      html=`<div class="ft-state ash">⬛ Burned — Ash</div>`;
+      html+=`This area has been consumed<br>`;
+      html+=`Cell: (${cell.row}, ${cell.col})`;
+    } else if(state===3){
+      html=`<div class="ft-state retardant">🔴 Phos-Chek Retardant</div>`;
+      html+=`Fire retardant line — 95% spread reduction<br>`;
+      html+=`Cell: (${cell.row}, ${cell.col})`;
+    } else {
+      tip.classList.remove('visible');
+      lastCell=null;
+      return;
+    }
+
+    tip.innerHTML=html;
+    tip.classList.add('visible');
+    const tipX=e.clientX+14, tipY=e.clientY-10;
+    tip.style.left=Math.min(tipX,window.innerWidth-250)+'px';
+    tip.style.top=Math.max(tipY,4)+'px';
+    lastCell={row:cell.row,col:cell.col};
+  });
+
+  document.getElementById('terrain').addEventListener('mouseleave',function(){
+    tip.classList.remove('visible');
+    lastCell=null;
+  });
+})();
+
+// ── Autonomous Agent System ──────────────────────────────────────────────────
+// Agents observe the actual fire state and deploy resources optimally
+(function(){
+  let lastTick=0;
+  const TICK_MS=1500;
+
+  // ── Agent memory / state ──
+  const agentState={
+    dronesDeployed:0,
+    lastDroneAssign:0,
+    evacZones:{},    // zone -> {status, triggered}
+    unitAssignments:{}, // unitId -> {role, target}
+    lastRetardantCheck:0,
+    lastEscalation:0,
+    totalActions:0,
+    lastSpotCount:0,
+    threatLevel:'LOW',
+    crewSafe:true,
+    lastDecisionAcres:0,
+    incidentEscalated:false,
+    routesActivated:false,
+    crewWithdrawn:false,
+    retardantRequested:false,
+    actionsLogged:new Set(),
+  };
+
+  // ── Grid-to-screen mapping (must match drawT) ──
+  const GSW=1.15,GSH=1.15;
+  const FX0=0.22-0.477*GSW;
+  const FY0=0.20-0.50*GSH;
+  function gridToScreen(row,col){
+    const GR=window.GRID_ROWS||256,GC=window.GRID_COLS||256;
+    const ny=FY0+(row/GR)*GSH;
+    const nx=FX0+(col/GC)*GSW;
+    return {x:nx,y:ny};
+  }
+
+  // ── Cluster fire fronts into N groups using simple k-means ──
+  function clusterFronts(fronts,k){
+    if(fronts.length===0)return[];
+    if(fronts.length<=k)return fronts.map(f=>({row:f.row,col:f.col,size:1}));
+    // Initialize centroids by sampling evenly
+    const step=Math.max(1,Math.floor(fronts.length/k));
+    const centroids=[];
+    for(let i=0;i<k;i++) centroids.push({row:fronts[Math.min(i*step,fronts.length-1)].row,col:fronts[Math.min(i*step,fronts.length-1)].col});
+    // Run 3 iterations
+    for(let iter=0;iter<3;iter++){
+      const groups=centroids.map(()=>({sumR:0,sumC:0,count:0}));
+      for(const f of fronts){
+        let best=0,bestD=Infinity;
+        for(let j=0;j<centroids.length;j++){
+          const d=(f.row-centroids[j].row)**2+(f.col-centroids[j].col)**2;
+          if(d<bestD){bestD=d;best=j}
+        }
+        groups[best].sumR+=f.row;groups[best].sumC+=f.col;groups[best].count++;
+      }
+      for(let j=0;j<centroids.length;j++){
+        if(groups[j].count>0){centroids[j].row=groups[j].sumR/groups[j].count;centroids[j].col=groups[j].sumC/groups[j].count}
+      }
+    }
+    // Recount sizes
+    const sizes=centroids.map(()=>0);
+    for(const f of fronts){
+      let best=0,bestD=Infinity;
+      for(let j=0;j<centroids.length;j++){
+        const d=(f.row-centroids[j].row)**2+(f.col-centroids[j].col)**2;
+        if(d<bestD){bestD=d;best=j}
+      }
+      sizes[best]++;
+    }
+    return centroids.map((c,i)=>({row:Math.round(c.row),col:Math.round(c.col),size:sizes[i]})).filter(c=>c.size>0).sort((a,b)=>b.size-a.size);
+  }
+
+  // ── Find optimal unit positions around fire perimeter ──
+  function getDefensePositions(fronts,count){
+    if(fronts.length===0)return[];
+    // Find bounding box of fire, place units along the perimeter facing inward
+    let minR=999,maxR=0,minC=999,maxC=0;
+    for(const f of fronts){minR=Math.min(minR,f.row);maxR=Math.max(maxR,f.row);minC=Math.min(minC,f.col);maxC=Math.max(maxC,f.col)}
+    const positions=[];
+    const margin=5; // cells just outside fire edge — direct attack position
+    const GR=window.GRID_ROWS||256,GC=window.GRID_COLS||256;
+    // Place units evenly around the fire perimeter, prioritizing downwind side
+    const eng=window.getFireEngine?window.getFireEngine():null;
+    const windDir=eng?eng.windDirection:315;
+    const windRad=(windDir*Math.PI/180);
+    // Downwind direction (where fire is heading)
+    const dwR=-Math.cos(windRad),dwC=Math.sin(windRad);
+    const centerR=(minR+maxR)/2,centerC=(minC+maxC)/2;
+    for(let i=0;i<count;i++){
+      const angle=(i/count)*Math.PI*2;
+      // Bias toward downwind side
+      const biasR=dwR*margin*0.4,biasC=dwC*margin*0.4;
+      const radius=Math.max(maxR-minR,maxC-minC)/2+margin;
+      const pr=Math.max(2,Math.min(GR-2,centerR+Math.sin(angle)*radius+biasR));
+      const pc=Math.max(2,Math.min(GC-2,centerC+Math.cos(angle)*radius+biasC));
+      positions.push({row:Math.round(pr),col:Math.round(pc)});
+    }
+    return positions;
+  }
+
+  // ── Population zones with real coords ──
+  const POP_ZONES=[
+    {id:'B3',name:'Pacific Palisades',pop:2847,centerRow:133,centerCol:110,radius:20,status:'clear',evacPct:0},
+    {id:'B4',name:'Brentwood South',pop:1560,centerRow:77,centerCol:107,radius:18,status:'clear',evacPct:0},
+    {id:'C1',name:'Topanga',pop:4200,centerRow:140,centerCol:56,radius:22,status:'clear',evacPct:0},
+  ];
+
+  // ── Check if fire is near a zone ──
+  function fireDistToZone(zone,eng){
+    if(!eng)return 999;
+    const n=eng.rows*eng.cols;
+    let minDist=999;
+    for(let i=0;i<n;i++){
+      if(eng.cells[i]!==1)continue; // only BURNING
+      const r=Math.floor(i/eng.cols),c=i%eng.cols;
+      const d=Math.sqrt((r-zone.centerRow)**2+(c-zone.centerCol)**2);
+      if(d<minDist) minDist=d;
+    }
+    return minDist;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // MAIN TICK — called every frame from drawT
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  function autonomousTick(){
+    if(!simRunning)return;
+    const now=Date.now();
+    if(now-lastTick<TICK_MS)return;
+    lastTick=now;
+
+    const eng=window.getFireEngine?window.getFireEngine():null;
+    if(!eng)return;
+    const stats=eng.getStats();
+    if(!stats||stats.totalAffected===0)return;
+
+    const acres=Math.round(stats.totalAcres);
+    const ros=stats.rosChainPerHour;
+    const fronts=stats.activeFrontCells;
+    const spots=stats.spotFireCount;
+    const burning=stats.burning;
+    const burned=stats.burned;
+    const activeFronts=eng.getActiveFronts();
+    const windRad=((eng.windDirection+180)%360)*Math.PI/180;
+
+    // ── ICS Phase: IA (Initial Attack) → EA (Extended Attack) → FS (Full Suppression)
+    const icsPhase=acres<20?'IA':acres<150?'EA':'FS';
+    if(now%5000<TICK_MS)console.log(`[ICS] Phase:${icsPhase} | ${acres}ac | ${fronts} fronts | ${activeFronts.length} active | units:${Object.keys(unitPos).length} drones:${Object.keys(dronePos).length} | ops: hose=${fireOps.hoseLines.length} dozer=${fireOps.dozerLines.length} hand=${fireOps.handLines.length} retardant=${fireOps.retardantDrops.length} struct=${fireOps.structProtect.length} backfire=${fireOps.backfireLines.length} water=${fireOps.waterDrops.length}`);
+    agentState.threatLevel=ros>3.5?'EXTREME':ros>2?'HIGH':ros>1?'MODERATE':'LOW';
+    const threatColor=agentState.threatLevel==='EXTREME'?'#EF4444':agentState.threatLevel==='HIGH'?'#F59E0B':agentState.threatLevel==='MODERATE'?'#FBBF24':'#6EE7B7';
+
+    // Fire center and leading edge helpers
+    let cR=0,cC=0;
+    if(activeFronts.length>0){for(const f of activeFronts){cR+=f.row;cC+=f.col}cR/=activeFronts.length;cC/=activeFronts.length}
+    function findLeadingEdge(){let b=activeFronts[0],bs=-Infinity;for(const f of activeFronts){const s=-Math.cos(windRad)*f.row+Math.sin(windRad)*f.col;if(s>bs){bs=s;b=f}}return b}
+
+    // ── SWARM: Deploy drones to fire front clusters ──
+    const numDronesToDeploy=Math.min(12,Math.max(2,Math.ceil(acres/30)+Math.ceil(fronts/40)));
+
+    if(numDronesToDeploy>agentState.dronesDeployed||now-agentState.lastDroneAssign>5000){
+      agentState.lastDroneAssign=now;
+      const clusters=clusterFronts(activeFronts,numDronesToDeploy);
+      const droneIds=Object.keys(dronePos);
+      // Assign drones to clusters: largest cluster gets most drones
+      let droneIdx=0;
+      for(let ci=0;ci<clusters.length&&droneIdx<droneIds.length;ci++){
+        const cl=clusters[ci];
+        const screenPos=gridToScreen(cl.row,cl.col);
+        // Assign 1-3 drones per cluster based on size
+        const dronesForCluster=Math.min(3,Math.max(1,Math.round(cl.size/Math.max(1,fronts)*numDronesToDeploy)));
+        for(let di=0;di<dronesForCluster&&droneIdx<droneIds.length;di++){
+          const did=droneIds[droneIdx];
+          // Add slight offset so drones don't stack
+          const offset=(di-dronesForCluster/2)*0.015;
+          dronePos[did].tx=screenPos.x+offset+Math.sin(now*.001+droneIdx)*.008;
+          dronePos[did].ty=screenPos.y+offset*0.7+Math.cos(now*.001+droneIdx)*.006;
+          droneIdx++;
+        }
+      }
+      // Remaining drones: patrol perimeter
+      while(droneIdx<droneIds.length){
+        const angle=(droneIdx/droneIds.length)*Math.PI*2+now*.0001;
+        const patrolR=(cR||128)+Math.sin(angle)*40;
+        const patrolC=(cC||128)+Math.cos(angle)*40;
+        const pp=gridToScreen(Math.round(patrolR),Math.round(patrolC));
+        dronePos[droneIds[droneIdx]].tx=pp.x;
+        dronePos[droneIds[droneIdx]].ty=pp.y;
+        droneIdx++;
+      }
+      agentState.dronesDeployed=numDronesToDeploy;
+      updateMetrics({drones:`${numDronesToDeploy}/12`});
+      if(!agentState.actionsLogged.has('drone_deploy_'+numDronesToDeploy)&&numDronesToDeploy>=3){
+        agentState.actionsLogged.add('drone_deploy_'+numDronesToDeploy);
+        addEv({time:simRunning?(Date.now()-simStart)*simSpeed:0,agent:'swarm',evType:'UPDATE',
+          msg:`Fleet ${numDronesToDeploy}/12 deployed to ${clusters.length} fire front cluster${clusters.length>1?'s':''}. IR scanning.`});
+        agentState.totalActions++;
+      }
+    }
+
+    // ━━ INITIAL ATTACK — Engines direct attack with hose lines ━━━━━━━━━━━
+    const engines=UNITS.filter(u=>u.type==='engine');
+    if(acres>5&&activeFronts.length>0){
+      const defPos=getDefensePositions(activeFronts,engines.length);
+      fireOps.hoseLines.length=0; // refresh each tick
+      for(let ei=0;ei<engines.length;ei++){
+        if(ei<defPos.length){
+          const sp=gridToScreen(defPos[ei].row,defPos[ei].col);
+          unitPos[engines[ei].id].tx=sp.x;unitPos[engines[ei].id].ty=sp.y;
+          const nearF=activeFronts[Math.min(ei*Math.floor(activeFronts.length/engines.length),activeFronts.length-1)];
+          const fp=gridToScreen(nearF.row,nearF.col);
+          fireOps.hoseLines.push({ux:sp.x,uy:sp.y,fx:fp.x,fy:fp.y});
+        }
+      }
+      if(!agentState.actionsLogged.has('engine_attack')){
+        agentState.actionsLogged.add('engine_attack');
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',
+          msg:`${engines.length} Type 3 engines on scene. Direct attack — hose lines on fire edge.`});
+        setAgentState('deploy','active');agentState.totalActions+=2;
+      }
+    }
+    // Water tender staged behind engines
+    const tender=UNITS.find(u=>u.type==='tender');
+    if(tender&&acres>10){
+      const tR=(cR||128)+Math.cos(windRad)*20,tC=(cC||128)-Math.sin(windRad)*20;
+      const tp=gridToScreen(Math.round(tR),Math.round(tC));
+      unitPos[tender.id].tx=tp.x;unitPos[tender.id].ty=tp.y;
+      if(!agentState.actionsLogged.has('tender_deploy')){
+        agentState.actionsLogged.add('tender_deploy');
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',msg:`WT-1 Water Tender staged. 4,000gal resupply ready.`});
+        agentState.totalActions++;
+      }
+    }
+
+    // ── Crew safety — LCES protocol: withdraw if fire closing ──
+    if(!agentState.crewWithdrawn&&acres>150){
+      const hotshot=UNITS.find(u=>u.type==='hotshot');
+      if(hotshot){
+        const hPos=unitPos[hotshot.id];
+        const GR=window.GRID_ROWS||256,GC=window.GRID_COLS||256;
+        const hGridR=Math.round(((hPos.ty-FY0)/GSH)*GR),hGridC=Math.round(((hPos.tx-FX0)/GSW)*GC);
+        let nearFire=false;
+        for(const f of activeFronts){if(Math.abs(f.row-hGridR)<10&&Math.abs(f.col-hGridC)<10){nearFire=true;break}}
+        if(nearFire){
+          agentState.crewWithdrawn=true;
+          const safety=LOCATIONS.safety_alpha;
+          unitPos[hotshot.id].tx=safety.x;unitPos[hotshot.id].ty=safety.y;
+          addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'CRITICAL',
+            msg:`⚠ HC-1 escape route threatened! LCES protocol — WITHDRAWING to Safety Zone α.`});
+          addSL('safety_alpha','HC-1 → Safety α','deploy');
+          setAgentState('deploy','critical');agentState.totalActions+=2;
+          const safetyDrone=Object.keys(dronePos)[6];
+          if(safetyDrone){dronePos[safetyDrone].tx=safety.x+0.02;dronePos[safetyDrone].ty=safety.y-0.02;
+            addEv({time:(Date.now()-simStart)*simSpeed,agent:'swarm',evType:'INFO',msg:`${safetyDrone} safety overwatch for HC-1 withdrawal.`});}
+          setTimeout(()=>{if(simRunning){addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'RESOLVED',
+            msg:`HC-1 at Safety Zone α. All 20 personnel accounted for. ✓`});setAgentState('deploy','executing')}},8000/simSpeed);
+        }
+      }
+    }
+
+    // ── VLAT retardant AHEAD of fire (preventive, not on flames) ──
+    if(!agentState.retardantRequested&&acres>120&&ros>1.5){
+      agentState.retardantRequested=true;
+      if(activeFronts.length>0){
+        const lead=findLeadingEdge();
+        const dropR=Math.round(lead.row-Math.cos(windRad)*20),dropC=Math.round(lead.col+Math.sin(windRad)*20);
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',
+          msg:`AT-1 VLAT DC-10 inbound. 11,600gal Phos-Chek retardant line AHEAD of fire.`});
+        setAgentState('deploy','executing');
+        const airUnit=UNITS.find(u=>u.type==='air');
+        if(airUnit){const dp=gridToScreen(dropR,dropC);unitPos[airUnit.id].tx=dp.x;unitPos[airUnit.id].ty=dp.y}
+        agentState.totalActions+=2;
+        setTimeout(()=>{if(simRunning&&eng){
+          eng.applyRetardant(dropR,dropC,10,45);
+          retardantActive=true;retardantStart=Date.now();
+          document.getElementById('retardant-timer').classList.add('visible');
+          const rp1=gridToScreen(Math.round(dropR+Math.sin(windRad)*12),Math.round(dropC+Math.cos(windRad)*12));
+          const rp2=gridToScreen(Math.round(dropR-Math.sin(windRad)*12),Math.round(dropC-Math.cos(windRad)*12));
+          fireOps.retardantDrops.push({x1:rp1.x,y1:rp1.y,x2:rp2.x,y2:rp2.y,startTime:Date.now(),duration:30});
+          addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'RESOLVED',
+            msg:`VLAT DROP COMPLETE. Phos-Chek retardant line set ahead of fire. 30-60min window.`});
+          agentState.totalActions+=2}
+        },6000/simSpeed);
+      }
+    }
+
+    // ── Structure protection — deploy struct engine ──
+    const structEng=UNITS.find(u=>u.type==='structeng');
+    if(structEng&&acres>80&&!agentState.actionsLogged.has('struct_protect')){
+      const nearestZone=POP_ZONES.reduce((best,z)=>{const d=fireDistToZone(z,eng);return d<best.d?{zone:z,d}:best},{zone:POP_ZONES[0],d:999});
+      if(nearestZone.d<40){
+        agentState.actionsLogged.add('struct_protect');
+        const zp=gridToScreen(nearestZone.zone.centerRow,nearestZone.zone.centerCol);
+        unitPos[structEng.id].tx=zp.x;unitPos[structEng.id].ty=zp.y;
+        for(let si=0;si<4;si++){const ang=(si/4)*Math.PI*2;
+          fireOps.structProtect.push({x:zp.x+Math.cos(ang)*0.02,y:zp.y+Math.sin(ang)*0.015})}
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',
+          msg:`SP-1 Structure Engine at ${nearestZone.zone.name}. Foam/gel on structures. Triage: saveable first.`});
+        agentState.totalActions+=2;
+      }
+    }
+
+    // ── Dragon egg aerial ignition from ignition drone ──
+    if(agentState.actionsLogged.has('backfire')&&!agentState.actionsLogged.has('dragon_egg')){
+      agentState.actionsLogged.add('dragon_egg');
+      const ignDrone=DRONES.find(d=>d.dtype==='ignition');
+      if(ignDrone&&dronePos[ignDrone.id]&&fireOps.backfireLines.length>0){
+        const bfLine=fireOps.backfireLines[0];
+        dronePos[ignDrone.id].tx=(bfLine.x1+bfLine.x2)/2;dronePos[ignDrone.id].ty=(bfLine.y1+bfLine.y2)/2;
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'swarm',evType:'UPDATE',
+          msg:`${ignDrone.id} Aerial Ignition drone deploying dragon eggs along burnout line. PSD spheres auto-ignite in 30s.`});
+        agentState.totalActions++;
+      }
+    }
+
+    // ── ICS Phase transition ──
+    if(acres>20&&acres<=150&&!agentState.actionsLogged.has('phase_ea')){
+      agentState.actionsLogged.add('phase_ea');
+      setPhase('extended','Extended Attack');
+      addEv({time:(Date.now()-simStart)*simSpeed,agent:'overwatch',evType:'UPDATE',
+        msg:`Initial attack insufficient. Transitioning to Extended Attack. Additional resources ordered.`});
+      setAgentState('overwatch','active');agentState.totalActions++;
+    }
+
+    // ── Helicopter — orbit and cool hot spots for ground crew access ──
+    const heliUnit=UNITS.find(u=>u.type==='heli');
+    if(heliUnit&&acres>15&&activeFronts.length>3){
+      const orbitAng=now*.0003;
+      const orbitR=(cR||128)+Math.sin(orbitAng)*30,orbitC=(cC||128)+Math.cos(orbitAng)*30;
+      const op=gridToScreen(Math.round(orbitR),Math.round(orbitC));
+      unitPos[heliUnit.id].tx=op.x;unitPos[heliUnit.id].ty=op.y;
+      if(!agentState.lastWaterDrop||now-agentState.lastWaterDrop>6000/simSpeed){
+        agentState.lastWaterDrop=now;
+        const lead=findLeadingEdge();
+        if(lead){
+          const offR=Math.round((Math.random()-0.5)*4),offC=Math.round((Math.random()-0.5)*4);
+          const tgtR=lead.row+offR,tgtC=lead.col+offC;
+          setTimeout(()=>{if(!simRunning)return;const hp=unitPos[heliUnit.id];
+            fireOps.waterDrops.push({x:hp.x,y:hp.y,startTime:Date.now(),duration:2000});
+            const GR=window.GRID_ROWS||256,GC=window.GRID_COLS||256;
+            for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){const rr=tgtR+dr,cc2=tgtC+dc;
+              if(rr>=0&&rr<GR&&cc2>=0&&cc2<GC){const ci=rr*GC+cc2;if(eng.cells[ci]===1)eng.cells[ci]=2}}
+          },1500/simSpeed);
+          if(!agentState.actionsLogged.has('heli_drop')){agentState.actionsLogged.add('heli_drop');
+            addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'UPDATE',
+              msg:`H-1 Chinook Bambi Bucket — cooling hot spots for ground crew access.`});agentState.totalActions++}
+        }
+      }
+    }
+
+    // ── Dozer firebreak — cut line ahead of fire ──
+    const dozerUnit=UNITS.find(u=>u.type==='dozer');
+    if(dozerUnit&&acres>50&&!agentState.actionsLogged.has('dozer_break')){
+      agentState.actionsLogged.add('dozer_break');
+      if(activeFronts.length>0){
+        const aheadR=cR-Math.cos(windRad)*25,aheadC=cC+Math.sin(windRad)*25;
+        const perpR=Math.sin(windRad)*20,perpC=Math.cos(windRad)*20;
+        const p1=gridToScreen(Math.round(aheadR-perpR),Math.round(aheadC-perpC));
+        const p2=gridToScreen(Math.round(aheadR+perpR),Math.round(aheadC+perpC));
+        fireOps.dozerLines.push({x1:p1.x,y1:p1.y,x2:p2.x,y2:p2.y});
+        const dp=gridToScreen(Math.round(aheadR),Math.round(aheadC));
+        unitPos[dozerUnit.id].tx=dp.x;unitPos[dozerUnit.id].ty=dp.y;
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'UPDATE',
+          msg:`DZ-1 Cat D8 cutting dozer line ahead of fire. 12ft blade clearing vegetation.`});
+        agentState.totalActions+=2;
+      }
+    }
+
+    // ── Hotshot burnout from anchor point ──
+    const hotshotUnit=UNITS.find(u=>u.type==='hotshot');
+    if(hotshotUnit&&acres>60&&!agentState.crewWithdrawn&&!agentState.actionsLogged.has('backfire')){
+      agentState.actionsLogged.add('backfire');
+      if(activeFronts.length>0){
+        const sideR=cR+Math.sin(windRad)*18,sideC=cC+Math.cos(windRad)*18;
+        const lineR=Math.cos(windRad)*15,lineC=-Math.sin(windRad)*15;
+        const p1=gridToScreen(Math.round(sideR-lineR),Math.round(sideC-lineC));
+        const p2=gridToScreen(Math.round(sideR+lineR),Math.round(sideC+lineC));
+        fireOps.backfireLines.push({x1:p1.x,y1:p1.y,x2:p2.x,y2:p2.y,startTime:Date.now(),duration:25});
+        const hp=gridToScreen(Math.round(sideR),Math.round(sideC));
+        unitPos[hotshotUnit.id].tx=hp.x;unitPos[hotshotUnit.id].ty=hp.y;
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',
+          msg:`HC-1 Hotshot burnout op — drip torches firing from control line to consume fuel.`});
+        addChainLines(['deploy','predict']);agentState.totalActions+=3;
+      }
+    }
+
+    // ── Hand crew fireline on fire flank ──
+    const handCrew=UNITS.find(u=>u.type==='crew');
+    if(handCrew&&acres>30&&activeFronts.length>0&&!agentState.actionsLogged.has('crew_line')){
+      agentState.actionsLogged.add('crew_line');
+      const flankR=cR+Math.sin(windRad)*15,flankC=cC+Math.cos(windRad)*15;
+      const fp=gridToScreen(Math.round(flankR),Math.round(flankC));
+      unitPos[handCrew.id].tx=fp.x;unitPos[handCrew.id].ty=fp.y;
+      const lineLen=12;
+      const hl1=gridToScreen(Math.round(flankR-Math.cos(windRad)*lineLen),Math.round(flankC+Math.sin(windRad)*lineLen));
+      const hl2=gridToScreen(Math.round(flankR+Math.cos(windRad)*lineLen),Math.round(flankC-Math.sin(windRad)*lineLen));
+      fireOps.handLines.push({x1:hl1.x,y1:hl1.y,x2:hl2.x,y2:hl2.y});
+      addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'UPDATE',
+        msg:`C-1 Type 2 Hand Crew cutting fireline on flank. Pulaskis and McLeods.`});
+      agentState.totalActions++;
+    }
+
+    // ── SEAT small air tanker — quick retardant on flanks ──
+    const seatUnit=UNITS.find(u=>u.type==='seat');
+    if(seatUnit&&acres>40){
+      const seatAng=now*.0004+2;
+      const seatR=(cR||128)+Math.sin(seatAng)*22,seatC=(cC||128)+Math.cos(seatAng)*22;
+      const sp2=gridToScreen(Math.round(seatR),Math.round(seatC));
+      unitPos[seatUnit.id].tx=sp2.x;unitPos[seatUnit.id].ty=sp2.y;
+      if(!agentState.actionsLogged.has('seat_drop')&&acres>55&&activeFronts.length>0){
+        agentState.actionsLogged.add('seat_drop');
+        const flank=activeFronts[Math.floor(activeFronts.length*0.3)];
+        if(flank){const fpp=gridToScreen(flank.row,flank.col),fpp2=gridToScreen(flank.row+8,flank.col+8);
+          fireOps.retardantDrops.push({x1:fpp.x,y1:fpp.y,x2:fpp2.x,y2:fpp2.y,startTime:Date.now(),duration:15});
+          eng.applyRetardant(flank.row+4,flank.col+4,5,30);}
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'UPDATE',
+          msg:`SE-1 SEAT Air Tractor — 800gal retardant drop on fire flank.`});agentState.totalActions++;
+      }
+    }
+
+    // ── Lead plane — guides air tanker drops ──
+    const leadUnit=UNITS.find(u=>u.type==='lead');
+    if(leadUnit&&acres>30){
+      const leadAng=now*.0005+1;
+      const leadR=(cR||128)+Math.sin(leadAng)*38,leadC=(cC||128)+Math.cos(leadAng)*38;
+      const lp=gridToScreen(Math.round(leadR),Math.round(leadC));
+      unitPos[leadUnit.id].tx=lp.x;unitPos[leadUnit.id].ty=lp.y;
+      if(!agentState.actionsLogged.has('lead_guide')){agentState.actionsLogged.add('lead_guide');
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'deploy',evType:'INFO',
+          msg:`LP-1 Lead Plane on station. Marking drop zone with smoke for air tankers.`});agentState.totalActions++}
+    }
+
+    // ── EVAC: Monitor fire proximity to population zones ──────────────────
+    for(const zone of POP_ZONES){
+      const dist=fireDistToZone(zone,eng);
+      const timeToReachMin=dist>0?(dist*50)/(ros*20.1168/60):0; // rough ETA in minutes
+
+      if(zone.status==='clear'&&dist<50){
+        zone.status='advisory';zone.evacPct=0;
+        agentState.evacZones[zone.id]='advisory';
+        updateZoneLabel(zone.id,'advisory',
+          gridToScreen(zone.centerRow,zone.centerCol).x,
+          gridToScreen(zone.centerRow,zone.centerCol).y);
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'INFO',
+          msg:`${zone.id} (${zone.name}, pop ${zone.pop.toLocaleString()}) → ADVISORY. Fire ${Math.round(dist)} cells out.`});
+        setAgentState('evac','active');
+        agentState.totalActions++;
+      }
+      else if(zone.status==='advisory'&&dist<35){
+        zone.status='warning';
+        agentState.evacZones[zone.id]='warning';
+        updateZoneLabel(zone.id,'warning',
+          gridToScreen(zone.centerRow,zone.centerCol).x,
+          gridToScreen(zone.centerRow,zone.centerCol).y);
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'ALERT',
+          msg:`${zone.id} → WARNING. WEA pushed to ${zone.pop.toLocaleString()}. ETA ~${Math.round(timeToReachMin)}min.`});
+        setAgentState('evac','alert');
+        agentState.totalActions++;
+        // Activate evacuation routes
+        if(!agentState.routesActivated){
+          agentState.routesActivated=true;
+          ROUTES.forEach(r=>routeStates[r.id]='clear');
+          addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'RESOLVED',
+            msg:`3 evac routes activated: Sunset, PCH, Topanga Canyon.`});
+          addSL('sunset_blvd','R1: Sunset','evac');
+          addSL('pch','R2: PCH','evac');
+          addSL('topanga','R3: Topanga','evac');
+          agentState.totalActions++;
+        }
+      }
+      else if(zone.status==='warning'&&dist<20){
+        zone.status='order';
+        agentState.evacZones[zone.id]='order';
+        updateZoneLabel(zone.id,'order',
+          gridToScreen(zone.centerRow,zone.centerCol).x,
+          gridToScreen(zone.centerRow,zone.centerCol).y);
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'CRITICAL',
+          msg:`⚠ MANDATORY ORDER: ${zone.id}. Pop ${zone.pop.toLocaleString()}. Fire ${Math.round(dist)} cells.`});
+        setAgentState('evac','executing');
+        updateMetrics({evac:(metrics.evac||0)+zone.pop});
+        agentState.totalActions+=2;
+      }
+
+      // Simulate evacuation progress for zones under warning/order
+      if(zone.status==='warning'||zone.status==='order'){
+        zone.evacPct=Math.min(98,zone.evacPct+(zone.status==='order'?1.5:0.5));
+      }
+
+      // Route blocking: if fire is near a route
+      if(dist<15&&zone.id==='C1'&&routeStates['R3']!=='blocked'){
+        routeStates['R3']='blocked';
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'ALERT',
+          msg:`R3 Topanga BLOCKED by fire. Rerouting vehicles.`});
+        addSL('topanga','R3 BLOCKED','fire');
+        agentState.totalActions++;
+      }
+      if(dist<25&&zone.id==='B3'&&routeStates['R2']==='clear'){
+        routeStates['R2']='congested';
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'evac',evType:'ALERT',
+          msg:`R2 PCH at high capacity. Rerouting available.`});
+        agentState.totalActions++;
+      }
+    }
+
+    // ── Spot fire detection ──
+    if(spots>agentState.lastSpotCount&&spots>0){
+      const newSpots=spots-agentState.lastSpotCount;
+      if(newSpots>0&&!agentState.actionsLogged.has('spot_'+spots)){
+        agentState.actionsLogged.add('spot_'+spots);
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'swarm',evType:'CRITICAL',
+          msg:`IR CONFIRMED: ${newSpots} new spot fire${newSpots>1?'s':''}! Total: ${spots}. Drones re-tasked.`});
+        setAgentState('swarm','critical');
+        addChainLines(['swarm','overwatch','predict']);
+        agentState.totalActions+=2;
+        setTimeout(()=>setAgentState('swarm','active'),4000/simSpeed);
+      }
+    }
+    agentState.lastSpotCount=spots;
+
+    // ── Incident escalation ──
+    if(!agentState.incidentEscalated&&acres>150){
+      agentState.incidentEscalated=true;
+      setIncidentType('type1');
+      document.getElementById('vignette').classList.add('crisis');
+      setPhase('crisis','Full Suppression');
+      addEv({time:(Date.now()-simStart)*simSpeed,agent:'overwatch',evType:'CRITICAL',
+        msg:`INCIDENT ESCALATED to Type 1. ${acres} acres, ${agentState.threatLevel} threat. Extended attack → full suppression.`});
+      setAgentState('overwatch','critical');
+      addChainLines(['overwatch','predict','evac','deploy','swarm']);
+      agentState.totalActions+=3;
+    }
+
+    // ── Phase detection ──
+    if(acres>300&&!agentState.actionsLogged.has('containment')){
+      const contain=Math.round(Math.max(0,100-fronts/Math.max(1,burned+burning)*200));
+      if(contain>10){
+        agentState.actionsLogged.add('containment');
+        setPhase('containment','Containment');
+        document.getElementById('vignette').classList.remove('crisis');
+        updateMetrics({contain});
+        addEv({time:(Date.now()-simStart)*simSpeed,agent:'predict',evType:'UPDATE',
+          msg:`${acres} acres. ${contain}% contained. Mop-up and cold trailing beginning.`});
+        setAgentState('predict','active');setAgentState('overwatch','active');
+      }
+    }
+
+    // Update metrics
+    updateMetrics({acres,actions:agentState.totalActions});
+    if(acres>200)updateMetrics({struct:Math.round(acres*30)});
+
+    // ━━ Agent thinking panels ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // PREDICT
+    const predictEl=document.getElementById('think-predict');
+    if(predictEl&&acres>0){
+      const windStr=`${eng.windSpeed}mph ${['N','NE','E','SE','S','SW','W','NW'][Math.round(eng.windDirection/45)%8]}`;
+      const moisture=Math.round(eng.humidity);
+      predictEl.innerHTML=
+        `<div class="th"><span class="tl obs">OBS</span>${acres}ac | ROS ${ros} ch/hr | ${fronts} fronts</div>`+
+        `<div class="th"><span class="tl rsn">RSN</span>Threat: <span style="color:${threatColor}">${agentState.threatLevel}</span> | Wind: ${windStr} | RH: ${moisture}%</div>`+
+        `<div class="th"><span class="tl act">ACT</span>${burning} burning, ${burned} consumed | ${spots} spot fires</div>`;
+    }
+
+    // SWARM
+    const swarmEl=document.getElementById('think-swarm');
+    if(swarmEl&&acres>0){
+      const inTransit=Object.values(dronePos).filter(d=>Math.abs(d.x-d.tx)>.01||Math.abs(d.y-d.ty)>.01).length;
+      const clusters=clusterFronts(activeFronts,Math.min(6,numDronesToDeploy));
+      swarmEl.innerHTML=
+        `<div class="th"><span class="tl obs">OBS</span>${agentState.dronesDeployed}/12 deployed | ${inTransit} repositioning</div>`+
+        `<div class="th"><span class="tl rsn">RSN</span>${clusters.length} front clusters detected | Largest: ${clusters[0]?.size||0} cells</div>`+
+        `<div class="th"><span class="tl act">ACT</span>IR scanning ${fronts} edge cells | Coverage: ${Math.min(99,Math.round(agentState.dronesDeployed/12*100))}%</div>`;
+    }
+
+    // EVAC
+    const evacEl=document.getElementById('think-evac');
+    if(evacEl&&acres>0){
+      const zonesAtRisk=POP_ZONES.filter(z=>z.status!=='clear');
+      const totalPop=zonesAtRisk.reduce((s,z)=>s+z.pop,0);
+      const avgEvac=zonesAtRisk.length>0?Math.round(zonesAtRisk.reduce((s,z)=>s+z.evacPct,0)/zonesAtRisk.length):0;
+      const activeRoutes=Object.keys(routeStates).length;
+      const blocked=Object.values(routeStates).filter(s=>s==='blocked').length;
+      if(zonesAtRisk.length>0){
+        evacEl.innerHTML=
+          `<div class="th"><span class="tl obs">OBS</span>${zonesAtRisk.length} zone${zonesAtRisk.length>1?'s':''} at risk | Pop: ${totalPop.toLocaleString()}</div>`+
+          `<div class="th"><span class="tl rsn">RSN</span>${zonesAtRisk.map(z=>`${z.id}:${z.status.toUpperCase()}`).join(' | ')}</div>`+
+          `<div class="th"><span class="tl act">ACT</span>Evac ~${avgEvac}% | ${activeRoutes} routes (${blocked} blocked)</div>`;
+      } else {
+        evacEl.innerHTML=
+          `<div class="th"><span class="tl obs">OBS</span>Monitoring 3 zones | No evacuations active</div>`+
+          `<div class="th"><span class="tl act">ACT</span>Fire ${Math.round(fireDistToZone(POP_ZONES[0],eng))} cells from nearest zone</div>`;
+      }
+    }
+
+    // DEPLOY
+    const deployEl=document.getElementById('think-deploy');
+    if(deployEl&&acres>0){
+      const nEng=UNITS.filter(u=>u.type==='engine').length;
+      const nAir=UNITS.filter(u=>u.type==='air'||u.type==='heli'||u.type==='seat').length;
+      const nGround=UNITS.filter(u=>['hotshot','crew','dozer'].includes(u.type)).length;
+      const phaseLabel=icsPhase==='IA'?'Initial Attack':icsPhase==='EA'?'Extended Attack':'Full Suppression';
+      deployEl.innerHTML=
+        `<div class="th"><span class="tl ics">ICS</span>Phase: ${phaseLabel} | ${nEng} engines, ${nAir} air, ${nGround} ground</div>`+
+        `<div class="th"><span class="tl obs">OBS</span>${retardantActive?'Retardant ACTIVE':'No retardant'} | ${fireOps.dozerLines.length} dozer lines | ${fireOps.handLines.length} hand lines</div>`+
+        `<div class="th"><span class="tl act">ACT</span>${agentState.crewWithdrawn?'HC-1 at safety':'All crews on line'} | ${fireOps.structProtect.length>0?'Struct protection active':'No struct protect'}</div>`;
+    }
+
+    // OVERWATCH
+    const owEl=document.getElementById('think-overwatch');
+    if(owEl&&acres>0){
+      const phase=document.getElementById('phase-tag')?.textContent||'Detection';
+      const containPct=metrics.contain||0;
+      const zonesEvac=POP_ZONES.filter(z=>z.status!=='clear').length;
+      owEl.innerHTML=
+        `<div class="th"><span class="tl sys">SYS</span>${phase} | ${acres}ac | ${containPct}% contained</div>`+
+        `<div class="th"><span class="tl obs">OBS</span>Threat: ${agentState.threatLevel} | ${zonesEvac} evac zones | ${spots} spot fires</div>`+
+        `<div class="th"><span class="tl act">ACT</span>${Object.keys(AG).length} agents | ${agentState.totalActions} actions | ${agentState.dronesDeployed} drones</div>`;
+    }
+  }
+
+  window._reactiveAgentTick=autonomousTick;
+})();
+</script>
+</body>
+</html>
