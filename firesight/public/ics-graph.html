@@ -1432,15 +1432,16 @@ function draw(){
   if(playing){
     const dt=(now-lastFrameTime)/1000*simSpeed;
     simTime+=dt;
-    // Tick fire
-    FIRE.tick(dt,simTime);
-    // Tick all active agents
-    for(const[id,a] of Object.entries(agents)){
-      if(!a.active)continue;
-      a.cooldown-=dt;
-      if(a.cooldown<=0){
-        a.cooldown=a.tickInterval;
-        if(AGENT_TICK[id])AGENT_TICK[id](a,dt);
+    if(!externalMode){
+      // Standalone mode: run internal fire + agent simulation
+      FIRE.tick(dt,simTime);
+      for(const[id,a] of Object.entries(agents)){
+        if(!a.active)continue;
+        a.cooldown-=dt;
+        if(a.cooldown<=0){
+          a.cooldown=a.tickInterval;
+          if(AGENT_TICK[id])AGENT_TICK[id](a,dt);
+        }
       }
     }
   }
@@ -1744,6 +1745,11 @@ window.addEventListener('message',function(ev){
       if(NODES[nodeId]&&!agents[nodeId].active){
         agents[nodeId].active=true;
         litNodes.add(nodeId);
+        // Spawn particles along hierarchy edges to show activation flow
+        for(const [a,b] of ICS_HIERARCHY){
+          if(b===nodeId&&litNodes.has(a))spawnMsgParticle(a,b,'command');
+          if(a===nodeId&&litNodes.has(b))spawnMsgParticle(a,b,'intel');
+        }
       }
     }
     // Also activate structural ICS nodes based on phase
@@ -1758,6 +1764,17 @@ window.addEventListener('message',function(ev){
     }
     if(d.icsPhase==='full'){
       ['log_chief','fin_chief','iroc','comms','medical','liaison','res_unit','nws'].forEach(id=>{if(NODES[id]&&!agents[id].active){agents[id].active=true;litNodes.add(id)}});
+    }
+
+    // In external mode, periodically spawn particles between active nodes for visual life
+    if(externalMode&&frame%90===0){
+      const activeIds=[...litNodes];
+      for(const [a,b] of ICS_HIERARCHY){
+        if(litNodes.has(a)&&litNodes.has(b)&&Math.random()<0.3){
+          const types=['command','intel','coord','ai'];
+          spawnMsgParticle(a,b,types[Math.floor(Math.random()*types.length)]);
+        }
+      }
     }
   }
 });

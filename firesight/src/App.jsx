@@ -143,6 +143,9 @@ export default function App() {
             icsEngine={icsEngineRef.current}
             onLiveData={setLiveData}
           />
+          {decisions.length > 0 && (
+            <DecisionQueue decisions={decisions} onApprove={handleApprove} onOverride={handleOverride} />
+          )}
         </div>
         {/* ── ICS Command Chain ──────────── */}
         <div style={{

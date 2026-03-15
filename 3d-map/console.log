@@ -2813,3 +2813,4 @@ Error
 [05:37:17.027] [LOG] [FireEngine] Tick 405 (3.9ms): burning=99 cells (0.63 km²), burned=2899, new ignitions this tick=11, sim time=405 min
 [05:42:17.033] [LOG] [FireEngine] Tick 410 (2.8ms): burning=78 cells (0.50 km²), burned=2933, new ignitions this tick=1, sim time=410 min
 [05:47:17.033] [LOG] [FireEngine] Tick 415 (3.4ms): burning=69 cells (0.44 km²), burned=2957, new ignitions this tick=5, sim time=415 min
+[05:52:17.031] [LOG] [FireEngine] Tick 420 (3.1ms): burning=61 cells (0.39 km²), burned=2981, new ignitions this tick=3, sim time=420 min
