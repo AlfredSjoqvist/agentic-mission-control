@@ -5,6 +5,9 @@ import AgentPanel, { LargeAgentPanel } from './components/AgentPanel.jsx';
 import Timeline, { sliderToTimeSlot } from './components/Timeline.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
+import CommandChain from './components/CommandChain.jsx';
+import { useVoiceControl, MicButton, VoiceToast } from './components/VoiceControl.jsx';
+import DroneHUD from './components/DroneHUD.jsx';
 import { colors, typography, radii, panelStyle } from './styles/designTokens.js';
 import { createPalisadesScenario } from './fireSpreadEngine.js';
 import { ICSEngine, NODES as ICS_NODES } from './icsEngine.js';
@@ -59,6 +62,24 @@ export default function App() {
   const [swarmActive,  setSwarmActive]  = useState(false);
   const [evacActive,   setEvacActive]   = useState(false);
   const [deployActive, setDeployActive] = useState(false);
+  const [placedUnits, setPlacedUnits] = useState([]);
+  const [cycleCount, setCycleCount] = useState(0);
+  const [activeDroneIndex, setActiveDroneIndex] = useState(null);
+
+  // Reset everything for a new prediction cycle
+  const handleResetCycle = useCallback(() => {
+    setSimulationMode(false);
+    setSwarmActive(false);
+    setEvacActive(false);
+    setDeployActive(false);
+    setTriggerSwarm(false);
+    setTriggerEvac(false);
+    setTriggerDeploy(false);
+    setPlacedUnits([]);
+    setSliderValue(0);
+    dispatchTimers.current.forEach(clearTimeout);
+    setCycleCount(c => c + 1);
+  }, []);
 
   // Fire spread engine + projections
   const engineRef = useRef(null);
@@ -73,6 +94,33 @@ export default function App() {
     setFireStats(engine.getStats());
     setSimulationMode(true);
   }, []);
+
+  // Sequential dispatch — triggered by "Execute Plan" in Pyro panel
+  const [triggerSwarm,  setTriggerSwarm]  = useState(false);
+  const [triggerEvac,   setTriggerEvac]   = useState(false);
+  const [triggerDeploy, setTriggerDeploy] = useState(false);
+  const dispatchTimers = useRef([]);
+
+  const handleFullDispatch = useCallback(() => {
+    // Already dispatched? Bail
+    if (swarmActive && evacActive && deployActive) return;
+    // Stagger: Swarm → 2.5s → Evac → 2.5s → Deploy
+    setTriggerSwarm(true);
+    const t1 = setTimeout(() => setTriggerEvac(true), 2500);
+    const t2 = setTimeout(() => setTriggerDeploy(true), 5000);
+    dispatchTimers.current = [t1, t2];
+  }, [swarmActive, evacActive, deployActive]);
+
+  useEffect(() => () => dispatchTimers.current.forEach(clearTimeout), []);
+
+  // ── Voice control ────────────────────────────────────────────────────────
+  const { status: voiceStatus, toast: voiceToast, toggle: toggleVoice } = useVoiceControl({
+    onPyro:   () => setSimulationMode(true),
+    onSwarm:  () => { setSwarmActive(true);  setTriggerSwarm(true);  },
+    onEvac:   () => { setEvacActive(true);   setTriggerEvac(true);   },
+    onDeploy: () => { setDeployActive(true); setTriggerDeploy(true); },
+    onReset:  handleResetCycle,
+  });
 
   const toggleLayer = useCallback((key) => {
     setActiveLayers(prev => ({ ...prev, [key]: !prev[key] }));
@@ -124,16 +172,38 @@ export default function App() {
         background: colors.bg,
       }}>
 
-        {/* ── Map View ──────────── */}
-        <div style={{
-          flex: 3,
+        {/* ── LEFT: Pyro (large primary panel) ──────────── */}
+        <aside style={{
+          gridArea: 'left',
+          minHeight: 0,
           overflow: 'hidden',
+        }} enable-xr="">
+          <LargeAgentPanel
+            panelId="pyro"
+            simulationMode={simulationMode}
+            onSimulate={() => setSimulationMode(true)}
+            onFullDispatch={handleFullDispatch}
+            allDeployed={swarmActive && evacActive && deployActive}
+            onResetCycle={handleResetCycle}
+            resetSignal={cycleCount}
+          />
+        </aside>
+
+        {/* ── CENTER: Hero terrain scene ──────────────────────── */}
+        <main style={{
+          gridArea: 'terrain',
+          borderRadius: radii.lg,
+          overflow: 'hidden',
+          border: `1px solid ${colors.border}`,
+          boxShadow: '0 0 80px rgba(0,0,0,0.6)',
           position: 'relative',
           minHeight: 0,
         }}>
           <TerrainScene
             timeSlot={timeSlot}
             onTerrainClick={handleTerrainClick}
+            onDroneSelect={setActiveDroneIndex}
+            activeDroneIndex={activeDroneIndex}
             simulationMode={simulationMode}
             activeLayers={activeLayers}
             swarmActive={swarmActive}
@@ -143,23 +213,44 @@ export default function App() {
             icsEngine={icsEngineRef.current}
             onLiveData={setLiveData}
           />
+          {/* DecisionQueue overlay on terrain — from upstream */}
           {decisions.length > 0 && (
             <DecisionQueue decisions={decisions} onApprove={handleApprove} onOverride={handleOverride} />
           )}
-        </div>
-        {/* ── ICS Command Chain ──────────── */}
-        <div style={{
-          flex: 2,
-          overflow: 'hidden',
-          borderLeft: `1px solid ${colors.border}`,
+          {activeDroneIndex === null && <TimeframePill timeSlot={timeSlot} simulationMode={simulationMode} />}
+          {simulationMode && activeDroneIndex === null && (
+            <LayerControl activeLayers={activeLayers} onToggle={toggleLayer} />
+          )}
+          {activeDroneIndex !== null && (
+            <DroneHUD
+              droneIndex={activeDroneIndex}
+              onExit={() => setActiveDroneIndex(null)}
+            />
+          )}
+        </main>
+
+        {/* ── RIGHT: 3 compact panels + Command Chain ─────── */}
+        <aside style={{
+          gridArea: 'right',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
           minHeight: 0,
-        }}>
-          <iframe
-            src="/ics-graph.html"
-            style={{ width: '100%', height: '100%', border: 'none' }}
-            title="ICS Command Chain"
+          overflow: 'auto',
+        }} enable-xr="">
+          <AgentPanel panelId="swarm"  onActivate={() => setSwarmActive(true)}  isActive={swarmActive}  triggerDispatch={triggerSwarm}  resetSignal={cycleCount} />
+          <AgentPanel panelId="evac"   onActivate={() => setEvacActive(true)}   isActive={evacActive}   triggerDispatch={triggerEvac}   resetSignal={cycleCount} />
+          <AgentPanel panelId="deploy" onActivate={() => setDeployActive(true)} isActive={deployActive} triggerDispatch={triggerDeploy} resetSignal={cycleCount} />
+          <CommandChain
+            simulationMode={simulationMode}
+            swarmActive={swarmActive}
+            evacActive={evacActive}
+            deployActive={deployActive}
           />
-        </div>
+        </aside>
+
+        {/* ── VOICE TOAST ─────────────────────────────────────── */}
+        <VoiceToast toast={voiceToast} />
 
         {/* ── CONTEXT MENU ────────────────────────────────────── */}
         {contextMenu && (

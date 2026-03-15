@@ -1,12 +1,6 @@
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// TerrainScene.jsx — FireSight: Interactive Wildfire Simulation
-//
-// Click to ignite. Recon drones patrol autonomously. Fire response begins
-// only when a drone's sensor detects the blaze.
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { FireSpreadEngine, GRID_ROWS, GRID_COLS, BURNING, BURNED, RETARDANT, UNBURNED } from '../fireSpreadEngine.js';
-import { NODES as ICS_NODES, TYPE_COLORS as ICS_TYPE_COLORS } from '../icsEngine.js';
+import React, { useEffect, useRef, useCallback } from 'react';
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
 
 // ── Remote Debug Logger — batches console logs to /api/log ───────────────────
 const _logQueue = [];
@@ -107,8 +101,36 @@ function findRoadPath(fr,fc,tr,tc) {
   return path;
 }
 
-// Max visual movement per frame (cells) — prevents fast aircraft from teleporting
-// 0.15 c/f × 60fps = 9 cells/sec × 95m = 855m/s ≈ reasonable visual max
+// ─── Three.js terrain constants ───────────────────────────────────────────
+const TERRAIN_SIZE = 100;
+const TERRAIN_SEGS = 128;
+const CAM_HEIGHT = 38;
+const CAM_RADIUS = 72;
+const CAM_SPEED = 0.04;
+
+// ─── Procedural terrain height function ───────────────────────────────────
+function getHeight(x, z) {
+  const nx = x / TERRAIN_SIZE;
+  const nz = z / TERRAIN_SIZE;
+  return (
+    Math.sin(nx * 3.1 + 0.4) * 4.5 +
+    Math.cos(nz * 2.7 + 0.9) * 3.2 +
+    Math.sin((nx + nz) * 5.3) * 2.1 +
+    Math.cos((nx - nz) * 4.1 + 1.2) * 1.8 +
+    Math.sin(nx * 8.7 + nz * 6.2) * 0.9 +
+    Math.max(0, Math.sin(nx * 1.5 - 0.3) * Math.cos(nz * 1.8 + 0.5) * 7.5) +
+    3.5
+  );
+}
+
+// ─── Fire zone definitions ────────────────────────────────────────────────
+const FIRE_ZONES = [
+  { slot: 0, cx: -4,  cz:  2,  radius: 5.5,  color: new THREE.Color(0.85, 0.20, 0.04), particles: 120 },
+  { slot: 1, cx: -8,  cz:  9,  radius: 9.0,  color: new THREE.Color(0.70, 0.28, 0.08), particles: 200 },
+  { slot: 2, cx:  4,  cz: -6,  radius: 14.0, color: new THREE.Color(0.55, 0.32, 0.12), particles: 340 },
+];
+
+// ─── Max visual movement per frame (canvas simulation) ───────────────────
 const MAX_CPF = 0.15;
 
 function moveAtSpeed(obj, speedMph, simSpd) {
@@ -126,685 +148,1395 @@ function moveAtSpeed(obj, speedMph, simSpd) {
   }
 }
 
-function setUnitTarget(unit, tr, tc) {
-  if(Math.abs(unit.trow-tr)<3 && Math.abs(unit.tcol-tc)<3) return;
-  unit.trow=tr; unit.tcol=tc;
-  if(IS_GROUND.has(unit.type)){unit._path=findRoadPath(Math.round(unit.row),Math.round(unit.col),Math.round(tr),Math.round(tc));unit._pi=0;}
-  else{unit._path=null;}
+// ─── Terrain vertex color ────────────────────────────────────────────────
+function colorForHeight(h) {
+  if (h < 1.5) return [0.10, 0.22, 0.11];
+  if (h < 3.5) return [0.14, 0.30, 0.14];
+  if (h < 5.5) return [0.22, 0.28, 0.15];
+  if (h < 8.0) return [0.36, 0.27, 0.17];
+  if (h < 11.0) return [0.50, 0.45, 0.38];
+  return [0.72, 0.72, 0.74];
 }
 
-// ── Evacuation Routes (lat/lng points) ──────────────────────────────────────
-const ROUTES = [
-  { id:'R1', name:'Sunset', pts:[[34.045,-118.50],[34.042,-118.48],[34.040,-118.45],[34.038,-118.42]] },
-  { id:'R2', name:'PCH', pts:[[34.030,-118.52],[34.025,-118.50],[34.020,-118.47],[34.015,-118.44]] },
-  { id:'R3', name:'Topanga', pts:[[34.050,-118.55],[34.055,-118.57],[34.060,-118.59]] },
-];
+// ─── Glow sprite ─────────────────────────────────────────────────────────
+function makeGlowTexture(size = 128) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+  const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+  g.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+  g.addColorStop(0.25, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.3)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(canvas);
+}
 
-// ── Population Zones ────────────────────────────────────────────────────────
-const POP_ZONES = [
-  { id:'B3', name:'Pacific Palisades', pop:2847, row:133, col:110 },
-  { id:'B4', name:'Brentwood South', pop:1560, row:77, col:107 },
-  { id:'C1', name:'Topanga', pop:4200, row:140, col:56 },
-];
-
-// ── Drone sensor range (grid cells) — how close a drone must be to "see" fire ──
-const DRONE_SENSOR_RANGE = 18;  // ~900m at 50m/cell
-
-// ── COMMAND CENTER — Incident Command Post + drone operations ───────────────
-// Located at Pepperdine University staging area (34.074°N, 118.551°W)
-// Real ICP location used during the 2025 Palisades Fire
-const COMMAND_CENTER = { name:'FireSight ICP', row:24, col:36 };
-
-// Total drone stash at command center — this is the hard max
-const DRONE_STASH_TOTAL = 24;
-
-// How many patrol at start vs. held in reserve
-const INITIAL_PATROL = 6;
-
-// Drone fleet composition — realistic models per phase
-// Phase 1: Scouts (DFR drones, first on scene)
-// Phase 2: Mappers (fixed-wing, perimeter mapping)
-// Phase 3: Safety overwatch + comms relay
-// Phase 4: IGNIS aerial ignition drones (dragon eggs)
-// Phase 5: Suppression (heavy-lift, emerging)
-// Always: MQ-9 Reaper (persistent HALE ISR)
-const DRONE_STASH = [
-  // ── Initial patrol (first 6, always airborne) ──
-  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:80,  patrolCenterCol:128, patrolRadius:50, flightTime:40 },
-  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:110, patrolCenterCol:80,  patrolRadius:45, flightTime:41 },
-  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:60,  patrolCenterCol:160, patrolRadius:50, flightTime:40 },
-  { dtype:'mapper', model:'senseFly eBee X', patrolCenterRow:100, patrolCenterCol:110, patrolRadius:55, flightTime:90 },
-  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:50,  patrolCenterCol:128, patrolRadius:15, flightTime:120 },
-  { dtype:'reaper', model:'MQ-9 Reaper',     patrolCenterRow:128, patrolCenterCol:128, patrolRadius:80, flightTime:1620 },
-  // ── Reserve (launched as fire grows) ──
-  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:128, patrolCenterCol:128, patrolRadius:40, flightTime:41 },
-  { dtype:'mapper', model:'senseFly eBee X', patrolCenterRow:90,  patrolCenterCol:90,  patrolRadius:55, flightTime:90 },
-  { dtype:'mapper', model:'JOUAV CW-25',    patrolCenterRow:128, patrolCenterCol:128, patrolRadius:60, flightTime:240 },
-  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:130, patrolCenterCol:110, patrolRadius:20, flightTime:45 },
-  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:80,  patrolCenterCol:107, patrolRadius:20, flightTime:45 },
-  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:135, patrolCenterCol:60,  patrolRadius:20, flightTime:45 },
-  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:80,  patrolCenterCol:190, patrolRadius:15, flightTime:120 },
-  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:128, patrolCenterCol:60,  patrolRadius:45, flightTime:40 },
-  { dtype:'safety', model:'DJI Mavic 3T',   patrolCenterRow:100, patrolCenterCol:170, patrolRadius:25, flightTime:45 },
-  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
-  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
-  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
-  { dtype:'ignis',  model:'DJI M600 IGNIS', patrolCenterRow:128, patrolCenterCol:128, patrolRadius:8,  flightTime:30 },
-  { dtype:'suppression', model:'FireSwarm Thunder', patrolCenterRow:90, patrolCenterCol:50, patrolRadius:15, flightTime:35 },
-  { dtype:'scout',  model:'DJI M30T',       patrolCenterRow:50,  patrolCenterCol:100, patrolRadius:45, flightTime:41 },
-  { dtype:'relay',  model:'Comms Relay',     patrolCenterRow:100, patrolCenterCol:128, patrolRadius:15, flightTime:120 },
-  { dtype:'suppression', model:'FireSwarm Thunder', patrolCenterRow:120, patrolCenterCol:80, patrolRadius:15, flightTime:35 },
-  { dtype:'scout',  model:'Skydio X10',     patrolCenterRow:80,  patrolCenterCol:180, patrolRadius:50, flightTime:40 },
-];
-
-// ── Build initial drone fleet (first INITIAL_PATROL from stash, rest stay at base) ──
-function makeDrones() {
-  const drones = [];
-  for (let i = 0; i < DRONE_STASH_TOTAL; i++) {
-    const spec = DRONE_STASH[i];
-    const id = `D-${String(i + 1).padStart(2, '0')}`;
-    const deployed = i < INITIAL_PATROL;
-    drones.push({
-      id, dtype: spec.dtype, model: spec.model || spec.dtype,
-      flightTime: spec.flightTime || 40,
-      homeRow: COMMAND_CENTER.row, homeCol: COMMAND_CENTER.col,
-      patrolCenterRow: spec.patrolCenterRow, patrolCenterCol: spec.patrolCenterCol,
-      patrolRadius: spec.patrolRadius,
-      row: COMMAND_CENTER.row, col: COMMAND_CENTER.col,
-      trow: deployed ? spec.patrolCenterRow : COMMAND_CENTER.row,
-      tcol: deployed ? spec.patrolCenterCol : COMMAND_CENTER.col,
-      patrolAngle: Math.random() * Math.PI * 2,
-      launched: deployed,
-    });
+// ─── Fire overlay texture ────────────────────────────────────────────────
+function makeFireOverlayTexture(r, g, b, soft) {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+  const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
+  if (soft) {
+    grad.addColorStop(0.0, `rgba(${r},${g},${b},0.35)`);
+    grad.addColorStop(0.4, `rgba(${r},${g},${b},0.15)`);
+    grad.addColorStop(0.75, `rgba(${r},${g},${b},0.04)`);
+    grad.addColorStop(1.0, `rgba(${r},${g},${b},0.00)`);
+  } else {
+    grad.addColorStop(0.0, `rgba(${r},${g},${b},0.90)`);
+    grad.addColorStop(0.25, `rgba(${r},${g},${b},0.65)`);
+    grad.addColorStop(0.55, `rgba(${r},${g},${b},0.30)`);
+    grad.addColorStop(1.0, `rgba(${r},${g},${b},0.00)`);
   }
-  return drones;
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(canvas);
 }
 
-// ── Unit staging at real LAFD/LA County stations ────────────────────────────
-// Ground units follow roads via waypoint pathfinding. Aircraft fly direct.
-function makeUnits() {
-  return [
-    // ── FIRE ENGINES (3-person crew, Type 3, 500gal) ──
-    // LAFD Station 69 — Pacific Palisades
-    { id:'E-69A', type:'engine',  homeRow:46,  homeCol:49, station:'LAFD Stn 69', crew:3, vehicle:'Pierce Type 3' },
-    { id:'E-69B', type:'engine',  homeRow:48,  homeCol:51, station:'LAFD Stn 69', crew:3, vehicle:'Pierce Type 3' },
-    // LAFD Station 23 — Brentwood
-    { id:'E-23',  type:'engine',  homeRow:44,  homeCol:76, station:'LAFD Stn 23', crew:3, vehicle:'Pierce Type 3' },
+// ─── GLSL Volumetric Fire Shader ─────────────────────────────────────────
+const FIRE_VERT = `
+  varying vec2 vUv;
+  varying float vY;
+  varying float vNormY;
+  uniform float uTime;
+  uniform float uHeight;
 
-    // ── WATER TENDER (driver + operator, 4,000gal) ──
-    // LA County Station 71 — Malibu
-    { id:'WT-71', type:'tender',  homeRow:56,  homeCol:23, station:'LACoFD Stn 71', crew:2, vehicle:'International HV507' },
+  // Simplex-style noise
+  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 
-    // ── AIRCRAFT ──
-    // Van Nuys Airport — Air Tanker Base
-    { id:'AT-1',  type:'air',     homeRow:2,   homeCol:195, station:'Van Nuys ATB', crew:2, vehicle:'DC-10 VLAT (11,600gal Phos-Chek)' },
-    { id:'SE-1',  type:'seat',    homeRow:4,   homeCol:198, station:'Van Nuys ATB', crew:1, vehicle:'AT-802 Air Tractor (800gal)' },
-    { id:'LP-1',  type:'lead',    homeRow:3,   homeCol:192, station:'Van Nuys ATB', crew:2, vehicle:'OV-10A Bronco (Lead Plane)' },
-    // Santa Monica Airport — Helitack
-    { id:'H-1',   type:'heli',    homeRow:76,  homeCol:89, station:'SMO Heliport', crew:4, vehicle:'CH-47D Chinook (2,600gal Bambi)' },
+  float snoise(vec3 v) {
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289(i);
+    vec4 p = permute(permute(permute(
+      i.z + vec4(0.0, i1.z, i2.z, 1.0))
+      + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+      + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+  }
 
-    // ── HOTSHOT CREW (20-person elite, on foot in brush) ──
-    // LA County Camp 8 — Malibu Canyon
-    { id:'IHC-8', type:'hotshot', homeRow:32,  homeCol:16, station:'Camp 8 Malibu', crew:20, vehicle:'On foot (drip torches, hand tools)' },
+  void main() {
+    vUv = uv;
+    vY = position.y;
+    vNormY = clamp(position.y / max(uHeight, 1.0), 0.0, 1.0);
 
-    // ── HAND CREW (20-person, manual fireline) ──
-    { id:'HC-2',  type:'crew',    homeRow:34,  homeCol:18, station:'Camp 8 Malibu', crew:20, vehicle:'On foot (Pulaski, McLeod)' },
-    // Second hand crew from Topanga
-    { id:'HC-5',  type:'crew',    homeRow:50,  homeCol:52, station:'Topanga Station', crew:20, vehicle:'On foot (Pulaski, McLeod)' },
+    vec3 pos = position;
+    float hNorm = clamp(pos.y / max(uHeight, 1.0), 0.0, 1.0);
 
-    // ── DOZER (operator, D8 Cat on lowboy trailer) ──
-    // Caltrans yard — Sepulveda Pass
-    { id:'DZ-1',  type:'dozer',   homeRow:18,  homeCol:79, station:'Caltrans Sepulveda', crew:1, vehicle:'Cat D8T (10-20ft blade)' },
+    // Noise-based displacement — stronger at top, zero at base
+    float heightFactor = smoothstep(0.0, 0.6, hNorm);
 
-    // ── STRUCTURE ENGINE (4-person, Type 1) ──
-    // LAFD Station 19 — Brentwood
-    { id:'SP-19', type:'structeng',homeRow:41, homeCol:70, station:'LAFD Stn 19', crew:4, vehicle:'Pierce Arrow XT (foam/gel)' },
-  ].map(u => ({ ...u, row:u.homeRow, col:u.homeCol, trow:u.homeRow, tcol:u.homeCol, _path:null, _pi:0 }));
+    // Multi-octave noise for wild, organic flame tongues
+    float n1 = snoise(vec3(pos.x * 0.4, pos.y * 0.25 - uTime * 2.2, pos.z * 0.4)) * 3.2;
+    float n2 = snoise(vec3(pos.x * 0.9, pos.y * 0.6 - uTime * 3.8, pos.z * 0.9 + 10.0)) * 1.8;
+    float n3 = snoise(vec3(pos.x * 2.0, pos.y * 1.2 - uTime * 5.5, pos.z * 2.0 + 20.0)) * 0.8;
+    // Extra turbulence for wispy tips
+    float n4 = snoise(vec3(pos.x * 3.5, pos.y * 2.0 - uTime * 7.0, pos.z * 3.5 + 35.0)) * 0.4;
+
+    float displaceX = (n1 + n2 + n3 + n4) * heightFactor;
+    float displaceZ = (n1 * 0.8 + n2 * 0.6 + n3 * 0.3) * heightFactor;
+
+    // Wind lean — fire leans in wind direction
+    displaceX += hNorm * 1.5;
+    displaceZ += hNorm * 0.8;
+
+    pos.x += displaceX;
+    pos.z += displaceZ;
+
+    // Pinch at top — tighter for flame tongue shape
+    float pinch = 1.0 - heightFactor * 0.75;
+    pos.x *= pinch;
+    pos.z *= pinch;
+
+    // Slight vertical stretch with noise for irregular tips
+    pos.y += n2 * heightFactor * 0.4;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+const FIRE_FRAG = `
+  varying vec2 vUv;
+  varying float vY;
+  varying float vNormY;
+  uniform float uTime;
+  uniform float uIntensity;
+  uniform float uHeight;
+
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+
+  float noise2D(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    vec2 shift = vec2(100.0);
+    for (int i = 0; i < 5; i++) {
+      v += a * noise2D(p);
+      p = p * 2.0 + shift;
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  void main() {
+    float h = vNormY;
+    float dist = length(vUv - 0.5) * 2.0;
+
+    // Multi-scale noise — upward flowing
+    vec2 nc1 = vec2(vUv.x * 3.0, vUv.y * 2.0 - uTime * 0.9);
+    vec2 nc2 = vec2(vUv.x * 5.5 + 3.0, vUv.y * 3.5 - uTime * 1.6);
+    vec2 nc3 = vec2(vUv.x * 9.0 + 7.0, vUv.y * 6.0 - uTime * 2.5);
+    float n1 = fbm(nc1 * 3.0);
+    float n2 = fbm(nc2 * 2.5);
+    float n3 = fbm(nc3 * 2.0);
+    float n = n1 * 0.45 + n2 * 0.35 + n3 * 0.2;
+
+    // Very soft edge — gradual falloff so wide cylinders merge into one mass
+    float edgeFade = 1.0 - smoothstep(0.0, 0.55, dist);
+    edgeFade = edgeFade * edgeFade; // quadratic falloff, softer
+    float topFade = 1.0 - smoothstep(0.25, 0.95, h);
+    float shape = edgeFade * topFade;
+
+    // Dark gap streaks — vertical dark channels through fire
+    float gapNoise1 = fbm(vec2(vUv.x * 8.0 + uTime * 0.2, vUv.y * 3.0 - uTime * 1.2) * 2.0);
+    float gapNoise2 = fbm(vec2(vUv.x * 12.0 - 5.0, vUv.y * 5.0 - uTime * 2.0) * 1.5);
+    float gaps = smoothstep(0.18, 0.52, gapNoise1) * smoothstep(0.22, 0.50, gapNoise2);
+    shape *= mix(0.0, 1.0, gaps);
+
+    // Organic warp
+    float warp = smoothstep(0.08, 0.55, n + 0.3 * (1.0 - h));
+    shape *= warp;
+
+    // Color ramp — deep orange/red, bright enough to be visible with fewer overlaps
+    vec3 col;
+    float t = h + n * 0.08;
+
+    if (t < 0.06) {
+      // Base: warm bright orange
+      col = mix(vec3(0.90, 0.50, 0.08), vec3(0.85, 0.35, 0.05), t / 0.06);
+    } else if (t < 0.20) {
+      // Lower: saturated deep orange
+      col = mix(vec3(0.85, 0.35, 0.05), vec3(0.70, 0.18, 0.02), (t - 0.06) / 0.14);
+    } else if (t < 0.45) {
+      // Mid body: dark orange-red (DOMINANT)
+      col = mix(vec3(0.70, 0.18, 0.02), vec3(0.50, 0.08, 0.01), (t - 0.20) / 0.25);
+    } else if (t < 0.68) {
+      // Upper: dark red
+      col = mix(vec3(0.50, 0.08, 0.01), vec3(0.22, 0.025, 0.005), (t - 0.45) / 0.23);
+    } else {
+      // Tips: smoky dark
+      col = mix(vec3(0.22, 0.025, 0.005), vec3(0.05, 0.006, 0.001), clamp((t - 0.68) / 0.32, 0.0, 1.0));
+    }
+
+    // Slight noise warmth
+    col += vec3(0.04, 0.015, 0.0) * n1 * (1.0 - h * 0.7);
+
+    float alpha = shape * uIntensity;
+    alpha = clamp(alpha, 0.0, 0.80);
+
+    if (alpha < 0.005) discard;
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+// ─── Build volumetric fire mesh (returns group with multiple flame columns) ──
+function buildFireVolume(zone) {
+  const group = new THREE.Group();
+
+  // Wide overlapping blobs — continuous fire mass, not separate strips
+  const columns = zone.slot === 0 ? 8 : zone.slot === 1 ? 10 : 12;
+  for (let i = 0; i < columns; i++) {
+    const angle = i * 2.39996 + (zone.slot * 1.7);
+    const dist = (i === 0) ? 0 : (Math.sqrt(i / columns)) * zone.radius * 0.55;
+    const fx = zone.cx + Math.cos(angle) * dist;
+    const fz = zone.cz + Math.sin(angle) * dist;
+
+    // Each volume: wide base, tall flames
+    const centerFactor = 1.0 - (dist / (zone.radius * 0.55 + 0.01)) * 0.3;
+    const heightScale = (0.7 + Math.random() * 0.6) * centerFactor;
+    const height = zone.radius * 2.2 * heightScale;
+    // Wide radius — each blob covers big area, overlaps with neighbors
+    const radiusBottom = zone.radius * (i === 0 ? 0.80 : 0.55);
+    const radiusTop = radiusBottom * 0.10;
+    const geo = new THREE.CylinderGeometry(radiusTop, radiusBottom, height, 16, 22, true);
+
+    const uniforms = {
+      uTime: { value: i * 1.7 + zone.slot * 3.0 },
+      uIntensity: { value: zone.slot === 0 ? 0.85 : zone.slot === 1 ? 0.65 : 0.45 },
+      uHeight: { value: height },
+    };
+
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: FIRE_VERT,
+      fragmentShader: FIRE_FRAG,
+      uniforms,
+      transparent: true,
+      blending: THREE.AdditiveBlending, // Additive so overlapping cylinders blend seamlessly
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    const baseH = getHeight(fx, fz);
+    mesh.position.set(fx, baseH + height * 0.25, fz);
+    mesh.userData = { uniforms };
+    group.add(mesh);
+  }
+
+  group.visible = false;
+  group.userData = { zone };
+  return group;
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── Build terrain ───────────────────────────────────────────────────────
+function buildTerrain() {
+  const geo = new THREE.PlaneGeometry(
+    TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGS, TERRAIN_SEGS
+  );
+  geo.rotateX(-Math.PI / 2);
 
-export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode, activeLayers, swarmActive, evacActive, deployActive, fireData, icsEngine, onLiveData }) {
-  const mapContainerRef = useRef(null);
-  const mapRef = useRef(null);
-  const simRef = useRef(null);
-  const animRef = useRef(null);
-  const tooltipDivRef = useRef(null);
-  const [mapStatus, setMapStatus] = useState('initializing');
-  const [fogOfWar, setFogOfWar] = useState(false);
-  const fogRef = useRef(false);
-  const [ui, setUi] = useState({
-    speed:1, acres:0, contain:0, drones:'0/12', phase:'Patrol',
-    events:[], evac:0, actions:0, fireDetected:false, fireActive:false,
+  const pos = geo.attributes.position;
+  const colorArr = [];
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const h = getHeight(x, z);
+    pos.setY(i, h);
+    const [cr, cg, cb] = colorForHeight(h);
+    colorArr.push(cr, cg, cb);
+  }
+
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colorArr, 3));
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+
+  return geo;
+}
+
+// ─── Fire overlay disc ──────────────────────────────────────────────────
+function buildFireOverlay(zone, soft = false) {
+  const [r, g, b] = [
+    Math.round(zone.color.r * 255),
+    Math.round(zone.color.g * 255),
+    Math.round(zone.color.b * 255),
+  ];
+  const scaleFactor = soft ? 2.8 : 1;
+  const tex = makeFireOverlayTexture(r, g, b, soft);
+  const geo = new THREE.PlaneGeometry(zone.radius * 2 * scaleFactor, zone.radius * 2 * scaleFactor);
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    opacity: soft ? 0.06 : 0.12,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  const avgH = getHeight(zone.cx, zone.cz);
+  mesh.position.set(zone.cx, avgH + (soft ? 3.5 : 2.0), zone.cz);
+  mesh.visible = false;
+  return mesh;
+}
+
+// ─── Fire particles ─────────────────────────────────────────────────────
+function buildFireParticles(zone, glowTex) {
+  const count = zone.particles;
+  const positions = new Float32Array(count * 3);
+  const opacities = new Float32Array(count);
+  const speeds = new Float32Array(count);
+  const offsets = new Float32Array(count * 2);
+
+  for (let i = 0; i < count; i++) {
+    const r = Math.sqrt(Math.random()) * zone.radius * 0.85;
+    const theta = Math.random() * Math.PI * 2;
+    const bx = zone.cx + Math.cos(theta) * r;
+    const bz = zone.cz + Math.sin(theta) * r;
+    const baseH = getHeight(bx, bz);
+
+    positions[i * 3 + 0] = bx;
+    positions[i * 3 + 1] = baseH + Math.random() * 5;
+    positions[i * 3 + 2] = bz;
+
+    opacities[i] = Math.random();
+    speeds[i] = 0.016 + Math.random() * 0.04;
+    offsets[i * 2 + 0] = bx;
+    offsets[i * 2 + 1] = bz;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+  const mat = new THREE.PointsMaterial({
+    color: new THREE.Color(1.0, 0.6, 0.15),
+    size: zone.slot === 0 ? 0.35 : zone.slot === 1 ? 0.28 : 0.22,
+    map: glowTex,
+    transparent: true,
+    opacity: zone.slot === 0 ? 0.55 : zone.slot === 1 ? 0.40 : 0.30,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
   });
 
-  const hasApiKey = !!import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  const points = new THREE.Points(geo, mat);
+  points.userData = { opacities, speeds, offsets, zone, count };
+  points.visible = false;
+  return points;
+}
 
-  // ── Initialize Google Maps ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!hasApiKey || !mapContainerRef.current) return;
-    let destroyed = false;
-    setMapStatus('loading');
+// ─── Fire perimeter ring ────────────────────────────────────────────────
+function buildPerimeterRing(zone) {
+  const segments = 80;
+  const pts = [];
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * Math.PI * 2;
+    const x = zone.cx + Math.cos(theta) * zone.radius;
+    const z = zone.cz + Math.sin(theta) * zone.radius;
+    const y = getHeight(x, z) + 0.9;
+    pts.push(new THREE.Vector3(x, y, z));
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({
+    color: zone.color,
+    transparent: true,
+    opacity: 0.75,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const line = new THREE.Line(geo, mat);
+  line.visible = false;
+  return line;
+}
 
-    const g = window.google || (window.google = {});
-    const m = g.maps || (g.maps = {});
-    if (!m.importLibrary) {
-      const r = new Set(); let h;
-      m.importLibrary = (name) => {
-        r.add(name);
-        return (h || (h = new Promise((resolve, reject) => {
-          const script = document.createElement('script');
-          const params = new URLSearchParams({
-            key: import.meta.env.VITE_GOOGLE_MAPS_API_KEY, v:'weekly',
-            libraries: [...r].join(','), callback:'google.maps.__ib__',
-          });
-          script.src = `https://maps.googleapis.com/maps/api/js?${params}`;
-          script.async = true;
-          script.onerror = () => reject(new Error('Google Maps script failed'));
-          m.__ib__ = resolve;
-          document.head.appendChild(script);
-        }))).then(() => m.importLibrary(name));
-      };
+// ─── Wind arrow grid ────────────────────────────────────────────────────
+function buildWindArrows() {
+  const group = new THREE.Group();
+  const dir = new THREE.Vector3(-1, 0, -1).normalize();
+  const spacing = 18;
+  const count = 4;
+  const half = (count - 1) * spacing / 2;
+
+  for (let i = 0; i < count; i++) {
+    for (let j = 0; j < count; j++) {
+      const x = i * spacing - half;
+      const z = j * spacing - half;
+      const y = getHeight(x, z) + 1.2; // hug terrain closely
+      const arrow = new THREE.ArrowHelper(
+        dir, new THREE.Vector3(x, y, z),
+        5.0, 0x55bbee, 1.4, 0.7
+      );
+      arrow.line.material.transparent = true;
+      arrow.line.material.opacity = 0.7;
+      arrow.cone.material.transparent = true;
+      arrow.cone.material.opacity = 0.7;
+      group.add(arrow);
     }
+  }
+  group.visible = false;
+  return group;
+}
 
-    (async () => {
-      try {
-        const { Map } = await google.maps.importLibrary('maps');
-        if (destroyed) return;
-        const map = new Map(mapContainerRef.current, {
-          center: CENTER, zoom: 13, tilt: 0, heading: 0, minZoom: 12, maxZoom: 18,
-          mapTypeId: 'satellite', disableDefaultUI: true, gestureHandling: 'greedy',
-          restriction: {
-            latLngBounds: { north: LAT_MAX, south: LAT_MIN, east: LNG_MAX, west: LNG_MIN },
-            strictBounds: false,
-          },
-        });
-        mapRef.current = map;
-        setMapStatus('ready');
-        initSim(map);
-      } catch (err) {
-        console.error('[Map] Failed:', err);
-        setMapStatus('error');
-      }
-    })();
-    return () => { destroyed = true; mapRef.current = null; };
-  }, [hasApiKey]);
+// ─── Build a quadcopter drone mesh from primitives ───────────────────────
+function buildDroneMesh(scale = 1.0) {
+  const drone = new THREE.Group();
+  const s = scale;
 
-  // ── Initialize Simulation ───────────────────────────────────────────────
-  function initSim(map) {
-    const engine = new FireSpreadEngine({ windSpeed:25, windDirection:315, humidity:12, temperature:94 });
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = GRID_COLS; offCanvas.height = GRID_ROWS;
+  // ── Materials ──────────────────────────────────────────────────────────
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x1c2a36,   // dark anthracite body
+    roughness: 0.65,
+    metalness: 0.35,
+  });
+  const armMat = new THREE.MeshStandardMaterial({
+    color: 0x263545,
+    roughness: 0.6,
+    metalness: 0.4,
+  });
+  const motorMat = new THREE.MeshStandardMaterial({
+    color: 0x111518,
+    roughness: 0.35,
+    metalness: 0.75,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: 0x2e5c7a,   // blue-grey sensor dome
+    roughness: 0.45,
+    metalness: 0.55,
+  });
+  const camLensMat = new THREE.MeshStandardMaterial({
+    color: 0x080c10,
+    roughness: 0.1,
+    metalness: 0.9,
+  });
 
-    const drones = makeDrones();
-    const units = makeUnits();
+  // ── Central body — flat box ────────────────────────────────────────────
+  const bodyGeo = new THREE.BoxGeometry(0.60 * s, 0.16 * s, 0.42 * s);
+  const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+  bodyMesh.castShadow = true;
+  bodyMesh.receiveShadow = true;
+  drone.add(bodyMesh);
 
-    const sim = {
-      engine, offCanvas, offCtx: offCanvas.getContext('2d'),
-      drones, units,
-      fireOps: { hoseLines:[], dozerLines:[], handLines:[], retardantDrops:[], waterDrops:[], backfireLines:[], structProtect:[] },
-      routeStates: {}, zoneStates: POP_ZONES.map(z => ({ ...z, status:'clear', evacPct:0 })),
-      speed: 1, frame: 0,
-      fireStepAccum: 0, fireStepsPerFrame: 0.05,  // balanced: spreads but agents can contain it
-      fireActive: false,       // user has placed fire
-      fireDetected: false,     // a drone has spotted it
-      fireDetectedAt: 0,       // timestamp of detection
-      detectorDroneId: null,   // which drone found it
-      icsStarted: false,       // ICS engine activated
-      simTimeSec: 0,           // accumulated simulation time in seconds
-      ag: { dronesDeployed:0, lastDroneAssign:0, logged:new Set(), actions:0,
-            retardantReq:false, crewWithdrawn:false, routesActive:false, escalated:false,
-            lastWaterDrop:0 },
-      events: [], lastUi: 0,
-      canvas: null, ctx: null, gw: 0, gh: 0,
-      tooltipTarget: null,     // { type, id, x, y } for hover tooltips
-    };
-    simRef.current = sim;
+  // ── Top dome / obstacle sensor ─────────────────────────────────────────
+  const domeGeo = new THREE.SphereGeometry(0.14 * s, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+  const domeMesh = new THREE.Mesh(domeGeo, accentMat);
+  domeMesh.position.set(0, 0.10 * s, 0);
+  drone.add(domeMesh);
 
-    // ── DEBUG: Log drone init state ──
-    const launchedInit = drones.filter(d => d.launched);
-    debugLog(`SIM INIT: ${drones.length} drones created, ${launchedInit.length} launched initially`);
-    for (const d of launchedInit) {
-      debugLog(`  ${d.id} [${d.dtype}] ${d.model} at (${d.row.toFixed(1)},${d.col.toFixed(1)}) → target (${d.trow.toFixed(1)},${d.tcol.toFixed(1)})`);
-    }
-    debugLog(`MPH_TO_CPF = ${MPH_TO_CPF.toFixed(6)}, SIM_TIME_SCALE = ${SIM_TIME_SCALE}`);
-    debugLog(`Scout 40mph → ${(40 * MPH_TO_CPF).toFixed(4)} cells/frame → ${(40 * MPH_TO_CPF * 60).toFixed(2)} cells/sec`);
+  // ── Camera gimbal housing — cylinder below nose ────────────────────────
+  const gimbalHouseGeo = new THREE.CylinderGeometry(0.075 * s, 0.075 * s, 0.06 * s, 10);
+  const gimbalHouse = new THREE.Mesh(gimbalHouseGeo, motorMat);
+  gimbalHouse.position.set(0.23 * s, -0.09 * s, 0);
+  drone.add(gimbalHouse);
 
-    // ── Create OverlayView ──
-    const overlay = new google.maps.OverlayView();
-    overlay.onAdd = function() {
-      const canvas = document.createElement('canvas');
-      canvas.style.position = 'absolute';
-      canvas.style.pointerEvents = 'none';
-      this.getPanes().overlayLayer.appendChild(canvas);
-      sim.canvas = canvas;
-      sim.ctx = canvas.getContext('2d');
-    };
-    overlay.draw = function() {
-      const proj = this.getProjection();
-      if (!proj || !sim.canvas) return;
-      const tl = proj.fromLatLngToDivPixel(new google.maps.LatLng(LAT_MAX, LNG_MIN));
-      const br = proj.fromLatLngToDivPixel(new google.maps.LatLng(LAT_MIN, LNG_MAX));
-      const w = Math.abs(br.x - tl.x);
-      const h = Math.abs(br.y - tl.y);
-      const dpr = window.devicePixelRatio || 1;
-      sim.canvas.style.left = Math.min(tl.x, br.x) + 'px';
-      sim.canvas.style.top = Math.min(tl.y, br.y) + 'px';
-      sim.canvas.style.width = w + 'px';
-      sim.canvas.style.height = h + 'px';
-      sim.canvas.width = Math.round(w * dpr);
-      sim.canvas.height = Math.round(h * dpr);
-      sim.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      sim.gw = w;
-      sim.gh = h;
-    };
-    overlay.onRemove = function() { if (sim.canvas) sim.canvas.remove(); };
-    overlay.setMap(map);
-    sim.overlay = overlay;
+  // ── Camera lens (dark glossy sphere) ──────────────────────────────────
+  const lensGeo = new THREE.SphereGeometry(0.065 * s, 8, 6);
+  const lens = new THREE.Mesh(lensGeo, camLensMat);
+  lens.position.set(0.27 * s, -0.10 * s, 0);
+  drone.add(lens);
 
-    // ── Tooltip on hover ──
-    // Uses Google Maps projection to convert grid→latLng→containerPixel
-    // This correctly accounts for map pan/zoom transforms
-    function grid2ll(row, col) {
-      const lat = LAT_MAX - (row / GRID_ROWS) * (LAT_MAX - LAT_MIN);
-      const lng = LNG_MIN + (col / GRID_COLS) * (LNG_MAX - LNG_MIN);
-      return { lat, lng };
-    }
+  // ── Status LED ─────────────────────────────────────────────────────────
+  const ledGeo = new THREE.SphereGeometry(0.018 * s, 5, 4);
+  const ledMat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
+  const led = new THREE.Mesh(ledGeo, ledMat);
+  led.position.set(-0.25 * s, 0.09 * s, 0);
+  drone.add(led);
 
-    const dtypeLabels = {
-      scout:'DFR Scout Drone', mapper:'Mapping Fixed-Wing', relay:'Comms Relay UAS',
-      safety:'Safety Overwatch', ignis:'IGNIS Aerial Ignition', reaper:'MQ-9 Reaper (HALE)',
-      suppression:'Heavy-Lift Suppression',
-      // Legacy aliases
-      recon:'DFR Scout Drone', spotter:'Mapping Fixed-Wing', ignition:'IGNIS Aerial Ignition',
-    };
-    const dtypeDescs = {
-      scout:'DJI M30T / Skydio X10 quadcopter. 40mph, 30-45min flight. Thermal + visual camera. First on scene for fire confirmation.',
-      mapper:'senseFly eBee X / JOUAV CW-25 fixed-wing. 25mph, 1-4hr flight. Systematic grid mapping builds real-time fire perimeter.',
-      relay:'Comms relay at altitude. Bridges P25 radio frequencies for ground crews in canyons. 2hr endurance.',
-      safety:'DJI Mavic 3T. 40mph. Monitors crew positions via IR. Verifies escape routes. Flags safety concerns.',
-      ignis:'DJI M600 + IGNIS II system. Drops dragon eggs (KMnO4 spheres) for backfire ops. 10-120 spheres/min. 30min flight.',
-      reaper:'General Atomics MQ-9 Reaper. 230mph at 25,000ft. 27hr endurance. Wide-area persistent thermal surveillance.',
-      suppression:'FireSwarm Thunder Wasp. Heavy-lift, carries 350kg water/retardant payload. Autonomous pickup and drop.',
-      // Legacy
-      recon:'DJI M30T / Skydio X10 quadcopter. 40mph, 30-45min flight. Thermal + visual camera.',
-      spotter:'senseFly eBee X fixed-wing. 25mph, 1-4hr flight. Systematic grid mapping.',
-      ignition:'DJI M600 + IGNIS II. Dragon egg aerial ignition for backfire operations.',
-    };
-    const unitLabels = {
-      engine:'Type 3 Engine', tender:'Water Tender (4,000gal)', hotshot:'Hotshot Crew (IHC) — 20 personnel',
-      crew:'Type 2 Hand Crew — 20 personnel', dozer:'Cat D8T Dozer', air:'DC-10 VLAT (11,600gal)',
-      seat:'AT-802 Air Tractor SEAT', heli:'CH-47D Chinook Helitack', lead:'OV-10A Bronco Lead Plane',
-      structeng:'Structure Engine (Type 1)',
-    };
-    const unitDescs = {
-      engine:'3-person crew, 500gal tank. Direct attack with hose lines. Pump-and-roll. 35mph on road.',
-      tender:'2-person crew. Shuttles 4,000gal water to engines on fireline. 30mph on road.',
-      hotshot:'20-person elite IHC crew. Hikes at 2.5mph through brush. Hand line construction, burnout with drip torches.',
-      crew:'20-person hand crew. Hikes at 2.5mph. Manual fireline with Pulaski and McLeod tools. Mop-up, cold trailing.',
-      dozer:'Cat D8T with 15ft blade. Transported on lowboy trailer (25mph), cuts firebreak off-road at 6mph.',
-      air:'DC-10 VLAT. 11,600gal Phos-Chek retardant. 300mph cruise. Drops AHEAD of fire. 35min turnaround at Van Nuys.',
-      seat:'AT-802 Air Tractor. 800gal retardant. 170mph. Fast turnaround. Flanks and initial attack.',
-      heli:'CH-47D Chinook. 2,600gal Bambi Bucket. 157mph. Cools hot spots. Night-capable with NVG.',
-      lead:'OV-10A Bronco. 200mph. Scouts drop zone, marks with smoke, guides tanker approach through smoke.',
-      structeng:'Structure protection: triage, sprinklers, gel, foam application.',
-    };
+  // ── 4 arms + motor mounts + rotors at 45° diagonals ───────────────────
+  const armAngles = [45, 135, 225, 315];
+  armAngles.forEach((deg) => {
+    const rad = (deg * Math.PI) / 180;
+    const armReach = 0.52 * s;   // distance from center to motor tip
 
-    const tooltipHandler = (e) => {
-      const s = simRef.current;
-      if (!s || !s.canvas) return;
-      const tt = tooltipDivRef.current;
-      if (!tt) return;
-      const el = mapContainerRef.current;
-      if (!el) return;
+    const tipX = Math.cos(rad) * armReach;
+    const tipZ = Math.sin(rad) * armReach;
+    const midX = tipX * 0.5;
+    const midZ = tipZ * 0.5;
 
-      // Use the overlay canvas bounding rect directly — this correctly accounts for
-      // ALL CSS transforms (scale, translate) without needing projection APIs
-      const canvasRect = s.canvas.getBoundingClientRect();
-      const parentRect = el.getBoundingClientRect();
+    // Arm — tapered box pointing from body to tip
+    const armGeo = new THREE.BoxGeometry(armReach, 0.055 * s, 0.075 * s);
+    const arm = new THREE.Mesh(armGeo, armMat);
+    arm.rotation.y = -rad;
+    arm.position.set(midX, 0, midZ);
+    arm.castShadow = true;
+    drone.add(arm);
 
-      // Mouse position in overlay canvas coordinates (same space as g2px)
-      const mx = (e.clientX - canvasRect.left) / canvasRect.width * s.gw;
-      const my = (e.clientY - canvasRect.top) / canvasRect.height * s.gh;
+    // Motor cylinder at tip
+    const motorGeo = new THREE.CylinderGeometry(0.072 * s, 0.072 * s, 0.11 * s, 10);
+    const motor = new THREE.Mesh(motorGeo, motorMat);
+    motor.position.set(tipX, 0, tipZ);
+    drone.add(motor);
 
-      // Tooltip position in the parent div's internal coordinate space
-      const parentScale = el.offsetWidth / parentRect.width;
-      const tmx = (e.clientX - parentRect.left) * parentScale;
-      const tmy = (e.clientY - parentRect.top) * parentScale;
+    // ── Rotor: actual crossed blade pair + blur disc ──────────────────
+    const rotorPivot = new THREE.Group();
+    rotorPivot.position.set(tipX, 0.09 * s, tipZ);
+    rotorPivot.userData.isRotor = true;
+    drone.add(rotorPivot);
 
-      const hitRadius = 20;
-
-      // Check drones — g2px returns canvas-space coords, same as mx/my
-      for (const d of s.drones) {
-        if (!d.launched) continue;
-        const sp = g2px(d.row, d.col, s.gw, s.gh);
-        if (Math.abs(sp.x - mx) < hitRadius && Math.abs(sp.y - my) < hitRadius) {
-          const dc = DTYPE_COLORS[d.dtype] || '#22D3EE';
-          const spd = SPEED[d.dtype] || 40;
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${dc};margin-bottom:3px">${d.id} — ${d.model || dtypeLabels[d.dtype] || d.dtype}</div>` +
-            `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${dtypeDescs[d.dtype] || ''}</div>` +
-            `<div style="font-size:8px;color:#64748B">Speed: ${spd}mph | Flight time: ${d.flightTime||40}min<br>Status: ${s.fireDetected ? 'Active Response' : 'Patrol'}</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
-          return;
-        }
-      }
-
-      // Check units
-      for (const u of s.units) {
-        const sp = g2px(u.row, u.col, s.gw, s.gh);
-        if (Math.abs(sp.x - mx) < hitRadius && Math.abs(sp.y - my) < hitRadius) {
-          const uc = UTYPE[u.type]?.c || '#FBBF24';
-          const spd = SPEED[u.type] || 20;
-          const crewInfo = u.crew ? `Crew: ${u.crew} | ` : '';
-          tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:${uc};margin-bottom:3px">${u.id} — ${unitLabels[u.type] || u.type}</div>` +
-            `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">${unitDescs[u.type] || ''}</div>` +
-            `<div style="font-size:8px;color:#64748B">${crewInfo}Speed: ${spd}mph | From: ${u.station||'Unknown'}<br>Vehicle: ${u.vehicle||''}<br>Status: ${s.fireDetected ? 'Deployed' : 'Staged at station'}</div>`;
-          tt.style.display = 'block';
-          tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-          tt.style.top = Math.max(tmy - 10, 4) + 'px';
-          return;
-        }
-      }
-
-      // Check command center
-      const ccSp = g2px(COMMAND_CENTER.row, COMMAND_CENTER.col, s.gw, s.gh);
-      if (Math.abs(ccSp.x - mx) < 20 && Math.abs(ccSp.y - my) < 20) {
-        const stashed = s.drones.filter(d => !d.launched).length;
-        const launched = s.drones.filter(d => d.launched).length;
-        const phase = icsEngine ? icsEngine.icsPhase : 'standby';
-        tt.innerHTML = `<div style="font-size:12px;font-weight:700;color:#A78BFA;margin-bottom:3px">FireSight ICP — Incident Command Post</div>` +
-          `<div style="font-size:9px;color:#94A3B8;margin-bottom:4px">Pepperdine University staging area (34.074°N, 118.551°W). Real ICP location used during the 2025 Palisades Fire.</div>` +
-          `<div style="font-size:8px;color:#64748B">UAS Fleet: ${launched} airborne / ${stashed} in reserve (${DRONE_STASH_TOTAL} total)<br>ICS Phase: ${phase.toUpperCase()}</div>`;
-        tt.style.display = 'block';
-        tt.style.left = Math.min(tmx + 16, el.offsetWidth - 340) + 'px';
-        tt.style.top = Math.max(tmy - 10, 4) + 'px';
-        return;
-      }
-
-      tt.style.display = 'none';
-    };
-
-    mapContainerRef.current?.addEventListener('mousemove', tooltipHandler);
-
-    // ── Click-to-ignite ──
-    map.addListener('click', (e) => {
-      const lat = e.latLng.lat(), lng = e.latLng.lng();
-      // Clamp to grid bounds (fire grid has finite extent)
-      const clat = Math.max(LAT_MIN, Math.min(LAT_MAX, lat));
-      const clng = Math.max(LNG_MIN, Math.min(LNG_MAX, lng));
-      engine.igniteAtLatLng(clat, clng, 5);
-      sim.fireActive = true;
-      debugLog(`IGNITE at (${lat.toFixed(4)}, ${lng.toFixed(4)}) → grid (${clat.toFixed(4)}, ${clng.toFixed(4)})`);
-      sim.events.push({ time: Date.now(), agent:'system', msg: `Fire ignited at ${lat.toFixed(3)}\u00B0N, ${Math.abs(lng).toFixed(3)}\u00B0W`, t:Date.now() });
+    // Two rotor blades (crossed) — thin, dark
+    const bladeMat = new THREE.MeshStandardMaterial({
+      color: 0x1a1a1a,
+      roughness: 0.3,
+      metalness: 0.5,
+    });
+    [0, Math.PI / 2].forEach((bladeRot) => {
+      const bladeGeo = new THREE.BoxGeometry(0.38 * s, 0.006 * s, 0.055 * s);
+      const blade = new THREE.Mesh(bladeGeo, bladeMat);
+      blade.rotation.y = bladeRot;
+      rotorPivot.add(blade);
     });
 
-    startLoop();
+    // Blur disc — semi-transparent flat cylinder simulating motion blur
+    const discGeo = new THREE.CylinderGeometry(0.20 * s, 0.20 * s, 0.003 * s, 16);
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0x8aaabb,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const disc = new THREE.Mesh(discGeo, discMat);
+    rotorPivot.add(disc);
+  });
+
+  return drone;
+}
+
+// ─── Swarm drone group ──────────────────────────────────────────────────
+const DRONE_POSITIONS = [
+  [-15, -12], [-5, -18], [8, -14], [18, -8],
+  [16,   4],  [ 6,  14], [-8,  16], [-18,  6],
+];
+
+function buildSwarmGroup() {
+  const group = new THREE.Group();
+
+  DRONE_POSITIONS.forEach(([x, z]) => {
+    const y = getHeight(x, z) + 4.5;
+
+    // Realistic quadcopter drone — scale 2.5 so it's visible from orbit camera
+    const drone = buildDroneMesh(2.5);
+    drone.position.set(x, y, z);
+    // Slight random yaw per drone
+    drone.rotation.y = Math.random() * Math.PI * 2;
+    drone.userData.isDrone = true;
+
+    // Invisible hit sphere — makes clicking the drone much easier
+    const hitGeo = new THREE.SphereGeometry(3.5, 8, 8);
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    const hitSphere = new THREE.Mesh(hitGeo, hitMat);
+    hitSphere.userData.isDrone = true;  // raycast will hit this first
+    drone.add(hitSphere);               // parented to drone, inherits position
+
+    group.add(drone);
+
+    // Coverage disc on ground — subtle dark scanning area
+    const discGeo = new THREE.CircleGeometry(7, 32);
+    discGeo.rotateX(-Math.PI / 2);
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0x3a6080,
+      transparent: true, opacity: 0.06,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const disc = new THREE.Mesh(discGeo, discMat);
+    disc.position.set(x, getHeight(x, z) + 0.2, z);
+    group.add(disc);
+  });
+
+  group.visible = false;
+  return group;
+}
+
+// ─── Evac routes ────────────────────────────────────────────────────────
+const EVAC_ROUTES = [
+  { points: [[-12, -5], [-25, -15], [-38, -28]], color: 0x00cc66, emissive: 0x00ff88 },
+  { points: [[0, -8], [10, -25], [25, -38]], color: 0x00cc66, emissive: 0x00ff88 },
+  { points: [[5, 10], [15, 22], [20, 35]], color: 0xcc2222, emissive: 0xff3333 },
+];
+
+// Sample many points along route, snapping each to terrain height
+function sampleTerrainRoute(controlPoints, samples = 60) {
+  // First create a rough 2D spline from the control points
+  const pts2D = controlPoints.map(([x, z]) => new THREE.Vector2(x, z));
+  const result = [];
+  for (let i = 0; i < samples; i++) {
+    const t = i / (samples - 1);
+    // Interpolate along segments
+    const totalSegs = pts2D.length - 1;
+    const seg = Math.min(Math.floor(t * totalSegs), totalSegs - 1);
+    const localT = (t * totalSegs) - seg;
+    const x = pts2D[seg].x + (pts2D[seg + 1].x - pts2D[seg].x) * localT;
+    const z = pts2D[seg].y + (pts2D[seg + 1].y - pts2D[seg].y) * localT;
+    const y = getHeight(x, z) + 0.35; // hug terrain, just slightly above
+    result.push(new THREE.Vector3(x, y, z));
+  }
+  return result;
+}
+
+function buildEvacRoutes() {
+  const group = new THREE.Group();
+
+  EVAC_ROUTES.forEach(({ points, color, emissive }) => {
+    // Dense terrain-hugging sample points
+    const terrainPts = sampleTerrainRoute(points, 80);
+    const curve = new THREE.CatmullRomCurve3(terrainPts);
+    const tubeGeo = new THREE.TubeGeometry(curve, 80, 0.18, 5, false);
+    const tubeMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive,
+      emissiveIntensity: 0.6,
+      transparent: true, opacity: 0.85,
+      depthWrite: false,
+    });
+    const tube = new THREE.Mesh(tubeGeo, tubeMat);
+    group.add(tube);
+  });
+
+  group.visible = false;
+  return group;
+}
+
+// ─── Build an air tanker (fixed-wing firefighting aircraft) ──────────────
+function buildTankerMesh(scale = 1.0) {
+  const tanker = new THREE.Group();
+  const s = scale;
+
+  // Materials — solid, realistic, dark military tones
+  const fuselageMat = new THREE.MeshStandardMaterial({
+    color: 0xc8c8c8,
+    roughness: 0.5,
+    metalness: 0.4,
+  });
+  const wingMat = new THREE.MeshStandardMaterial({
+    color: 0xb0b0b0,
+    roughness: 0.6,
+    metalness: 0.3,
+  });
+  const tailMat = new THREE.MeshStandardMaterial({
+    color: 0xcc3322,
+    roughness: 0.5,
+    metalness: 0.2,
+  });
+  const engineMat = new THREE.MeshStandardMaterial({
+    color: 0x222222,
+    roughness: 0.3,
+    metalness: 0.7,
+  });
+  const noseMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    roughness: 0.3,
+    metalness: 0.6,
+  });
+
+  // Fuselage — elongated cylinder
+  const fuselageGeo = new THREE.CylinderGeometry(0.18 * s, 0.16 * s, 2.0 * s, 10);
+  fuselageGeo.rotateZ(Math.PI / 2);
+  const fuselage = new THREE.Mesh(fuselageGeo, fuselageMat);
+  fuselage.castShadow = true;
+  tanker.add(fuselage);
+
+  // Nose cone
+  const noseGeo = new THREE.ConeGeometry(0.18 * s, 0.5 * s, 10);
+  noseGeo.rotateZ(-Math.PI / 2);
+  const nose = new THREE.Mesh(noseGeo, noseMat);
+  nose.position.set(1.25 * s, 0, 0);
+  tanker.add(nose);
+
+  // Tail cone (tapers to rear)
+  const tailConeGeo = new THREE.ConeGeometry(0.16 * s, 0.6 * s, 8);
+  tailConeGeo.rotateZ(Math.PI / 2);
+  const tailCone = new THREE.Mesh(tailConeGeo, fuselageMat);
+  tailCone.position.set(-1.3 * s, 0, 0);
+  tanker.add(tailCone);
+
+  // Main wings — flat boxes angled back slightly
+  const wingGeo = new THREE.BoxGeometry(0.8 * s, 0.03 * s, 1.8 * s);
+  const leftWing = new THREE.Mesh(wingGeo, wingMat);
+  leftWing.position.set(0.1 * s, -0.02 * s, 0);
+  leftWing.castShadow = true;
+  tanker.add(leftWing);
+
+  // Horizontal tail stabilizer
+  const hStabGeo = new THREE.BoxGeometry(0.35 * s, 0.02 * s, 0.9 * s);
+  const hStab = new THREE.Mesh(hStabGeo, tailMat);
+  hStab.position.set(-1.4 * s, 0.05 * s, 0);
+  tanker.add(hStab);
+
+  // Vertical tail fin
+  const vFinGeo = new THREE.BoxGeometry(0.4 * s, 0.5 * s, 0.03 * s);
+  const vFin = new THREE.Mesh(vFinGeo, tailMat);
+  vFin.position.set(-1.35 * s, 0.28 * s, 0);
+  tanker.add(vFin);
+
+  // Engine nacelles (2, under wings)
+  [-0.55, 0.55].forEach((zOff) => {
+    const engGeo = new THREE.CylinderGeometry(0.07 * s, 0.08 * s, 0.4 * s, 8);
+    engGeo.rotateZ(Math.PI / 2);
+    const eng = new THREE.Mesh(engGeo, engineMat);
+    eng.position.set(0.15 * s, -0.12 * s, zOff * s);
+    tanker.add(eng);
+
+    // Engine intake
+    const intakeGeo = new THREE.CylinderGeometry(0.08 * s, 0.07 * s, 0.05 * s, 8);
+    intakeGeo.rotateZ(Math.PI / 2);
+    const intake = new THREE.Mesh(intakeGeo, noseMat);
+    intake.position.set(0.36 * s, -0.12 * s, zOff * s);
+    tanker.add(intake);
+  });
+
+  // Red belly stripe (retardant tank indicator)
+  const bellyGeo = new THREE.BoxGeometry(1.2 * s, 0.04 * s, 0.28 * s);
+  const bellyMat = new THREE.MeshStandardMaterial({
+    color: 0xcc2211,
+    roughness: 0.5,
+    metalness: 0.2,
+  });
+  const belly = new THREE.Mesh(bellyGeo, bellyMat);
+  belly.position.set(0, -0.17 * s, 0);
+  tanker.add(belly);
+
+  return tanker;
+}
+
+// ─── Deploy units ───────────────────────────────────────────────────────
+const CREW_POSITIONS  = [[-14, -4], [-8, 2], [2, -10], [-20, 0]];
+const TANKER_POSITIONS = [[0, -20], [-20, -20]];
+
+function buildDeployGroup() {
+  const group = new THREE.Group();
+
+  CREW_POSITIONS.forEach(([x, z]) => {
+    const y = getHeight(x, z);
+    // Crew marker — solid orange cone
+    const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xE06820,
+      roughness: 0.6,
+      metalness: 0.2,
+    });
+    const cone = new THREE.Mesh(geo, mat);
+    cone.position.set(x, y + 0.6, z);
+    cone.castShadow = true;
+    group.add(cone);
+  });
+
+  TANKER_POSITIONS.forEach(([x, z]) => {
+    const y = getHeight(x, z) + 9;
+    const tanker = buildTankerMesh(1.2);
+    tanker.position.set(x, y, z);
+    // Slight bank angle for flying look
+    tanker.rotation.y = Math.atan2(z, x) + Math.PI * 0.5;
+    tanker.rotation.z = 0.08;
+    tanker.userData.isTanker = true;
+    group.add(tanker);
+  });
+
+  group.visible = false;
+  return group;
+}
+
+// ─── Subtle grid overlay ────────────────────────────────────────────────
+function buildGridOverlay() {
+  const grid = new THREE.GridHelper(TERRAIN_SIZE, 24,
+    new THREE.Color(0.25, 0.50, 0.75),
+    new THREE.Color(0.25, 0.50, 0.75)
+  );
+  grid.material.transparent = true;
+  grid.material.opacity = 0.04;
+  grid.material.blending = THREE.AdditiveBlending;
+  grid.position.y = 0.6;
+  return grid;
+}
+
+// ─── Placed units (from context menu) ───────────────────────────────────
+function buildPlacedUnits(placedUnits, scene, existingGroup) {
+  // Clear previous
+  if (existingGroup) {
+    existingGroup.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+    scene.remove(existingGroup);
   }
 
-  // ── Grid (row,col) → Overlay canvas pixel ─────────────────────────────
-  function g2px(row, col, gw, gh) {
-    return { x: (col / GRID_COLS) * gw, y: (row / GRID_ROWS) * gh };
-  }
+  const group = new THREE.Group();
 
-  function ll2px(lat, lng, gw, gh) {
-    const x = ((lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * gw;
-    const y = (1 - (lat - LAT_MIN) / (LAT_MAX - LAT_MIN)) * gh;
-    return { x, y };
-  }
+  placedUnits.forEach(u => {
+    const x = u.position.x;
+    const z = u.position.z;
+    const y = getHeight(x, z) || 3;
 
-  // ── K-Means Clustering of Fire Fronts ─────────────────────────────────
-  function clusterFronts(fronts, k) {
-    if (fronts.length === 0) return [];
-    if (fronts.length <= k) return fronts.map(f => ({ row:f.row, col:f.col, size:1 }));
-    const step = Math.max(1, Math.floor(fronts.length / k));
-    const centroids = [];
-    for (let i = 0; i < k; i++) centroids.push({ row:fronts[Math.min(i*step,fronts.length-1)].row, col:fronts[Math.min(i*step,fronts.length-1)].col });
-    for (let iter = 0; iter < 3; iter++) {
-      const groups = centroids.map(() => ({ sR:0, sC:0, n:0 }));
-      for (const f of fronts) {
-        let best = 0, bestD = Infinity;
-        for (let j = 0; j < centroids.length; j++) { const d = (f.row-centroids[j].row)**2 + (f.col-centroids[j].col)**2; if (d < bestD) { bestD=d; best=j; } }
-        groups[best].sR += f.row; groups[best].sC += f.col; groups[best].n++;
+    if (u.type === 'drone') {
+      // Realistic quadcopter
+      const drone = buildDroneMesh(2.5);
+      drone.position.set(x, y + 3.5, z);
+      drone.rotation.y = Math.random() * Math.PI * 2;
+      group.add(drone);
+    } else if (u.type === 'evac') {
+      // Arrow/marker for evac
+      const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x3DB87A,
+        transparent: true, opacity: 0.88,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x, y + 0.6, z);
+      group.add(mesh);
+    } else {
+      // Crew — cone marker
+      const geo = new THREE.ConeGeometry(0.45, 1.2, 6);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xFFB84A,
+        transparent: true, opacity: 0.88,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x, y + 0.6, z);
+      group.add(mesh);
+    }
+  });
+
+  scene.add(group);
+  return group;
+}
+
+// ─── Main component ─────────────────────────────────────────────────────
+export default function TerrainScene({
+  timeSlot,
+  sliderValue,
+  onTerrainClick,
+  onDroneSelect,
+  activeDroneIndex,
+  simulationMode,
+  activeLayers,
+  swarmActive,
+  evacActive,
+  deployActive,
+  placedUnits,
+}) {
+  const mountRef = useRef(null);
+  const sceneRef = useRef({});
+  const onDroneSelectRef = useRef(onDroneSelect);
+  const activeDroneIndexRef = useRef(activeDroneIndex);
+  useEffect(() => { onDroneSelectRef.current = onDroneSelect; }, [onDroneSelect]);
+  useEffect(() => { activeDroneIndexRef.current = activeDroneIndex; }, [activeDroneIndex]);
+
+  const handleClick = useCallback((e) => {
+    const { renderer, camera, terrain, swarmGroup } = sceneRef.current;
+    if (!renderer || !camera || !terrain) return;
+
+    const canvas = renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+
+    // ── Check drone clicks first (higher priority than terrain) ──────────
+    if (swarmGroup && swarmGroup.visible) {
+      const droneHits = raycaster.intersectObjects(swarmGroup.children, true);
+      for (const hit of droneHits) {
+        // Walk up to direct child of swarmGroup
+        let obj = hit.object;
+        while (obj.parent && obj.parent !== swarmGroup) obj = obj.parent;
+        // Only trigger on actual drone meshes (skip coverage discs)
+        if (obj.userData.isDrone) {
+          const childIdx = swarmGroup.children.indexOf(obj);
+          // Children are [drone0, disc0, drone1, disc1, ...] → droneIndex = childIdx/2
+          const droneIndex = Math.floor(childIdx / 2);
+          onDroneSelect?.(droneIndex);
+          return;
+        }
       }
-      for (let j = 0; j < centroids.length; j++) { if (groups[j].n > 0) { centroids[j].row = groups[j].sR/groups[j].n; centroids[j].col = groups[j].sC/groups[j].n; } }
     }
-    const sizes = centroids.map(() => 0);
-    for (const f of fronts) {
-      let best = 0, bestD = Infinity;
-      for (let j = 0; j < centroids.length; j++) { const d = (f.row-centroids[j].row)**2 + (f.col-centroids[j].col)**2; if (d < bestD) { bestD=d; best=j; } }
-      sizes[best]++;
+
+    // ── Terrain click fallback ────────────────────────────────────────────
+    const hits = raycaster.intersectObject(terrain);
+    if (hits.length > 0) {
+      const pt = hits[0].point;
+      onTerrainClick?.({
+        screenX: e.clientX,
+        screenY: e.clientY,
+        worldPos: { x: pt.x, z: pt.z },
+      });
     }
-    return centroids.map((c,i) => ({ row:Math.round(c.row), col:Math.round(c.col), size:sizes[i] })).filter(c => c.size > 0).sort((a,b) => b.size - a.size);
-  }
+  }, [onTerrainClick, onDroneSelect]);
 
-  function getDefensePos(fronts, count, engine) {
-    if (fronts.length === 0) return [];
-    let minR=999,maxR=0,minC=999,maxC=0;
-    for (const f of fronts) { minR=Math.min(minR,f.row); maxR=Math.max(maxR,f.row); minC=Math.min(minC,f.col); maxC=Math.max(maxC,f.col); }
-    const centerR=(minR+maxR)/2, centerC=(minC+maxC)/2;
-    const windRad = (engine.windDirection * Math.PI / 180);
-    const dwR = -Math.cos(windRad), dwC = Math.sin(windRad);
-    const margin = 5, radius = Math.max(maxR-minR, maxC-minC)/2 + margin;
-    const positions = [];
-    for (let i = 0; i < count; i++) {
-      const angle = (i/count) * Math.PI * 2;
-      positions.push({ row:Math.round(Math.max(2,Math.min(GRID_ROWS-2,centerR+Math.sin(angle)*radius+dwR*margin*0.4))), col:Math.round(Math.max(2,Math.min(GRID_COLS-2,centerC+Math.cos(angle)*radius+dwC*margin*0.4))) });
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+
+    // ── Renderer ────────────────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(w, h);
+    renderer.setClearColor(0x060a10, 1);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    renderer.xr.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    // ── VR Enter button ─────────────────────────────────────────────
+    const vrBtn = VRButton.createButton(renderer);
+    Object.assign(vrBtn.style, {
+      position: 'absolute', bottom: '14px', right: '14px',
+      fontFamily: 'monospace', fontSize: '10px', letterSpacing: '0.10em',
+      padding: '8px 16px', borderRadius: '6px',
+      background: 'rgba(4,6,10,0.80)', color: '#5b9bd5',
+      border: '1px solid rgba(91,155,213,0.60)',
+      cursor: 'pointer', textTransform: 'uppercase',
+    });
+    container.style.position = 'relative';
+    container.appendChild(vrBtn);
+
+    // ── Scene ────────────────────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x080e18, 0.005);
+    scene.background = new THREE.Color(0x060a10);
+
+    // ── Camera ───────────────────────────────────────────────────────
+    const camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 400);
+    camera.position.set(0, CAM_HEIGHT, CAM_RADIUS);
+    camera.lookAt(0, 4, 0);
+
+    // ── Lighting ────────────────────────────────────────────────────
+    const ambient = new THREE.AmbientLight(0x304868, 2.0);
+    scene.add(ambient);
+
+    const dir = new THREE.DirectionalLight(0x88aacc, 1.8);
+    dir.position.set(-30, 55, 20);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(1024, 1024);
+    dir.shadow.camera.near = 0.5;
+    dir.shadow.camera.far = 200;
+    dir.shadow.camera.left = -50;
+    dir.shadow.camera.right = 50;
+    dir.shadow.camera.top = 50;
+    dir.shadow.camera.bottom = -50;
+    dir.shadow.bias = -0.001;
+    scene.add(dir);
+
+    const rim = new THREE.DirectionalLight(0xddaa66, 0.7);
+    rim.position.set(25, 20, -30);
+    scene.add(rim);
+
+    const fill = new THREE.DirectionalLight(0x445566, 0.5);
+    fill.position.set(0, 10, 50);
+    scene.add(fill);
+
+    const hemi = new THREE.HemisphereLight(0x445577, 0x1a1a10, 0.6);
+    scene.add(hemi);
+
+    // ── Terrain ─────────────────────────────────────────────────────
+    const geo = buildTerrain();
+    const terrainMat = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      shininess: 12,
+      specular: new THREE.Color(0x334455),
+    });
+    const terrainMesh = new THREE.Mesh(geo, terrainMat);
+    terrainMesh.receiveShadow = true;
+    scene.add(terrainMesh);
+
+    scene.add(buildGridOverlay());
+
+    // ── Fire ────────────────────────────────────────────────────────
+    const glowTex = makeGlowTexture();
+    const overlays = [];
+    const halos = [];
+    const particleSystems = [];
+    const fireLights = [];
+    const fireVolumes = [];
+
+    FIRE_ZONES.forEach((zone) => {
+      const overlay = buildFireOverlay(zone, false);
+      scene.add(overlay);
+      overlays.push(overlay);
+
+      const halo = buildFireOverlay(zone, true);
+      scene.add(halo);
+      halos.push(halo);
+
+      // Ember particles (small sparks, fewer and subtler)
+      const ps = buildFireParticles(zone, glowTex);
+      scene.add(ps);
+      particleSystems.push(ps);
+
+      // Volumetric fire shader
+      const vol = buildFireVolume(zone);
+      scene.add(vol);
+      fireVolumes.push(vol);
+
+      const light = new THREE.PointLight(new THREE.Color(0.95, 0.4, 0.05), 0, zone.radius * 4, 1.8);
+      const lh = getHeight(zone.cx, zone.cz);
+      light.position.set(zone.cx, lh + 4, zone.cz);
+      scene.add(light);
+      fireLights.push(light);
+    });
+
+    const perimeterRings = FIRE_ZONES.map((zone) => {
+      const ring = buildPerimeterRing(zone);
+      scene.add(ring);
+      return ring;
+    });
+
+    const windArrows = buildWindArrows();
+    scene.add(windArrows);
+
+    const swarmGroup = buildSwarmGroup();
+    scene.add(swarmGroup);
+
+    const evacRoutes = buildEvacRoutes();
+    scene.add(evacRoutes);
+
+    const deployGroup = buildDeployGroup();
+    scene.add(deployGroup);
+
+    // ── Store refs ──────────────────────────────────────────────────
+    sceneRef.current = {
+      renderer, scene, camera, terrain: terrainMesh,
+      overlays, halos, particleSystems, fireLights, fireVolumes,
+      perimeterRings, windArrows,
+      swarmGroup, evacRoutes, deployGroup,
+      camAngle: 0,
+      placedGroup: null,
+      xrDroneIndex: null,
+      xrControllers: [],
+    };
+
+    // ── XR Controllers (PICO) ────────────────────────────────────────
+    const tempMatrix = new THREE.Matrix4();
+    const xrRaycaster = new THREE.Raycaster();
+
+    function buildControllerRay() {
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1),
+      ]);
+      const mat = new THREE.LineBasicMaterial({ color: 0x5b9bd5, transparent: true, opacity: 0.7 });
+      const line = new THREE.Line(geo, mat);
+      line.scale.z = 30;
+      return line;
     }
-    return positions;
-  }
 
-  function fireDist(zone, engine) {
-    let minD = 999;
-    for (let i = 0; i < engine.rows * engine.cols; i++) {
-      if (engine.cells[i] !== BURNING) continue;
-      const r = Math.floor(i/engine.cols), c = i%engine.cols;
-      const d = Math.sqrt((r-zone.row)**2 + (c-zone.col)**2);
-      if (d < minD) minD = d;
-    }
-    return minD;
-  }
+    [0, 1].forEach((i) => {
+      const ctrl = renderer.xr.getController(i);
+      ctrl.add(buildControllerRay());
+      scene.add(ctrl);
+      sceneRef.current.xrControllers.push(ctrl);
 
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // DRONE PATROL — autonomous scan patterns before fire detection
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  function updateDronePatrol(sim) {
-    const { drones } = sim;
-    for (const d of drones) {
-      if (!d.launched) continue;  // still in stash at command center
-      d.patrolAngle += 0.008 * sim.speed;
+      ctrl.addEventListener('selectstart', () => {
+        const s = sceneRef.current;
+        if (!s.swarmGroup?.visible) {
+          s.xrDroneIndex = null;
+          onDroneSelectRef.current?.(null);
+          return;
+        }
+        tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+        xrRaycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+        xrRaycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
 
-      if (d.dtype === 'scout' || d.dtype === 'recon') {
-        // Scout (Skydio/M30): fast figure-8 scan pattern
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.sin(d.patrolAngle * 2) * d.patrolRadius * 0.6;
-      } else if (d.dtype === 'mapper' || d.dtype === 'spotter') {
-        // Mapper (eBee): systematic grid lines (fixed-wing lawnmower pattern)
-        const row = Math.floor(d.patrolAngle / (Math.PI * 2)) % 8;
-        const progress = (d.patrolAngle % (Math.PI * 2)) / (Math.PI * 2);
-        const rowDir = row % 2 === 0 ? 1 : -1;
-        d.trow = d.patrolCenterRow - d.patrolRadius + (row / 8) * d.patrolRadius * 2;
-        d.tcol = d.patrolCenterCol + rowDir * (progress - 0.5) * d.patrolRadius * 2;
-      } else if (d.dtype === 'relay') {
-        // Comms relay: slow station-keeping at altitude
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.3) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.3) * d.patrolRadius;
-      } else if (d.dtype === 'safety') {
-        // Safety overwatch (Mavic 3T): patrol near crew positions
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.7) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.7) * d.patrolRadius;
-      } else if (d.dtype === 'reaper') {
-        // MQ-9 Reaper: wide slow orbit at 25,000ft
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.15) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.15) * d.patrolRadius;
-      } else if (d.dtype === 'suppression') {
-        // Heavy-lift: circular pattern near water source then fire
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.5) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.5) * d.patrolRadius;
+        const hits = xrRaycaster.intersectObjects(s.swarmGroup.children, true);
+        for (const hit of hits) {
+          let obj = hit.object;
+          while (obj.parent && obj.parent !== s.swarmGroup) obj = obj.parent;
+          if (obj.userData.isDrone) {
+            const childIdx = s.swarmGroup.children.indexOf(obj);
+            const droneIndex = Math.floor(childIdx / 2);
+            // Toggle: pressing same drone again deselects
+            const next = s.xrDroneIndex === droneIndex ? null : droneIndex;
+            s.xrDroneIndex = next;
+            onDroneSelectRef.current?.(next);
+            return;
+          }
+        }
+        // Missed all drones — deselect
+        s.xrDroneIndex = null;
+        onDroneSelectRef.current?.(null);
+      });
+    });
+
+    // Show zone 0 immediately
+    overlays[0].visible = true;
+    halos[0].visible = true;
+    particleSystems[0].visible = true;
+    fireVolumes[0].visible = true;
+    fireLights[0].intensity = 2.5;
+
+    // ── Resize ──────────────────────────────────────────────────────
+    const onResize = () => {
+      const nw = container.clientWidth;
+      const nh = container.clientHeight;
+      camera.aspect = nw / nh;
+      camera.updateProjectionMatrix();
+      renderer.setSize(nw, nh);
+    };
+    const resizeObs = new ResizeObserver(onResize);
+    resizeObs.observe(container);
+
+    // ── Animation loop ──────────────────────────────────────────────
+    const clock = new THREE.Clock();
+
+    function animate() {
+      const dt = clock.getDelta();
+      const elapsed = clock.elapsedTime;
+
+      const s = sceneRef.current;
+      if (!s.renderer) return;
+
+      // Camera — drone POV or default orbit
+      const curDroneIdx = s.xrDroneIndex ?? activeDroneIndexRef.current;
+      if (curDroneIdx !== null && curDroneIdx !== undefined && s.swarmGroup?.visible) {
+        const droneChildIdx = curDroneIdx * 2; // [drone, disc, drone, disc, ...]
+        const droneObj = s.swarmGroup.children[droneChildIdx];
+        if (droneObj) {
+          const tx = droneObj.position.x;
+          const tz = droneObj.position.z;
+          const ty = droneObj.position.y + 2; // just above the drone
+          // Smoothly lerp camera to drone position
+          s.camera.position.x += (tx - s.camera.position.x) * 0.06;
+          s.camera.position.y += (ty - s.camera.position.y) * 0.06;
+          s.camera.position.z += (tz - s.camera.position.z) * 0.06;
+          s.camera.lookAt(-4, 1, 2); // look toward fire center, slightly down
+        }
       } else {
-        // IGNIS/other: standby, small hover drift
-        d.trow = d.patrolCenterRow + Math.sin(d.patrolAngle * 0.2) * d.patrolRadius;
-        d.tcol = d.patrolCenterCol + Math.cos(d.patrolAngle * 0.2) * d.patrolRadius;
+        s.camAngle += CAM_SPEED * dt;
+        const cx = Math.sin(s.camAngle) * CAM_RADIUS;
+        const cz = Math.cos(s.camAngle) * CAM_RADIUS;
+        s.camera.position.set(cx, CAM_HEIGHT, cz);
+        s.camera.lookAt(0, 4, 0);
       }
-    }
-  }
 
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // FIRE DETECTION — check if any drone can see burning cells
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  function checkFireDetection(sim) {
-    if (sim.fireDetected || !sim.fireActive) return false;
-    const { drones, engine } = sim;
-    const range = DRONE_SENSOR_RANGE;
-    const rangeSq = range * range;
+      // Animate particles
+      s.particleSystems.forEach((ps) => {
+        if (!ps.visible) return;
+        const { opacities, speeds, offsets, zone, count } = ps.userData;
+        const posArr = ps.geometry.attributes.position.array;
 
-    for (const d of drones) {
-      if (!d.launched) continue;
-      if (!['recon','spotter','scout','mapper','safety','reaper'].includes(d.dtype)) continue;
-      const dr = Math.round(d.row), dc = Math.round(d.col);
+        for (let i = 0; i < count; i++) {
+          posArr[i * 3 + 1] += speeds[i];
+          opacities[i] += speeds[i] * 0.35;
 
-      for (let r = Math.max(0, dr - range); r < Math.min(GRID_ROWS, dr + range); r++) {
-        for (let c = Math.max(0, dc - range); c < Math.min(GRID_COLS, dc + range); c++) {
-          if ((r-dr)*(r-dr) + (c-dc)*(c-dc) > rangeSq) continue;
-          if (engine.cells[r * GRID_COLS + c] === BURNING) {
-            sim.fireDetected = true;
-            sim.fireDetectedAt = Date.now();
-            sim.detectorDroneId = d.id;
-            sim.events.push({
-              time: Date.now(), agent:'swarm',
-              msg: `${d.id} (${d.dtype}) THERMAL ALERT \u2014 fire detected! Vectoring fleet.`,
-              t: Date.now()
+          posArr[i * 3 + 0] += Math.sin(elapsed + i * 0.37) * 0.004;
+          posArr[i * 3 + 2] += Math.cos(elapsed + i * 0.53) * 0.004;
+
+          if (opacities[i] > 1.0) {
+            opacities[i] = 0;
+            const r2 = Math.sqrt(Math.random()) * zone.radius * 0.85;
+            const theta2 = Math.random() * Math.PI * 2;
+            const nx = zone.cx + Math.cos(theta2) * r2;
+            const nz = zone.cz + Math.sin(theta2) * r2;
+            posArr[i * 3 + 0] = nx;
+            posArr[i * 3 + 2] = nz;
+            offsets[i * 2 + 0] = nx;
+            offsets[i * 2 + 1] = nz;
+            posArr[i * 3 + 1] = getHeight(nx, nz);
+          }
+        }
+        ps.geometry.attributes.position.needsUpdate = true;
+
+        const base = zone.slot === 0 ? 0.85 : zone.slot === 1 ? 0.70 : 0.55;
+        ps.material.opacity = base + Math.sin(elapsed * 2.5 + zone.slot) * 0.08;
+      });
+
+      // Animate drone rotors + hover bob
+      if (s.swarmGroup && s.swarmGroup.visible) {
+        s.swarmGroup.children.forEach((child) => {
+          if (child.userData.isDrone) {
+            // Gentle hover bob
+            child.position.y += Math.sin(elapsed * 1.8 + child.position.x * 0.5) * 0.004;
+            // Spin each rotor pivot on Y axis (rotorPivot is horizontal plane)
+            child.children.forEach((part) => {
+              if (part.userData.isRotor) {
+                part.rotation.y += 0.22;
+              }
             });
-            sim.events.push({
-              time: Date.now(), agent:'overwatch',
-              msg: `INCIDENT DECLARED. 5 AI agents online. Orchestrating response.`,
-              t: Date.now()
-            });
-            return true;
+          }
+        });
+      }
+
+      // Animate volumetric fire shaders
+      if (s.fireVolumes) {
+        s.fireVolumes.forEach((group) => {
+          if (!group.visible) return;
+          group.children.forEach((mesh) => {
+            if (mesh.userData.uniforms) {
+              mesh.userData.uniforms.uTime.value = elapsed;
+            }
+          });
+        });
+      }
+
+      // Pulse fire lights — subtle warm glow, not blinding
+      s.fireLights.forEach((light, idx) => {
+        if (light.intensity > 0) {
+          const base = 1.6 + idx * 0.2;
+          light.intensity = base + Math.sin(elapsed * 2.8 + idx * 1.5) * 0.4;
+        }
+      });
+
+      // ── XR thumbstick drone flight (PICO controllers) ────────────
+      const xrSession = s.renderer.xr.getSession?.();
+      if (xrSession && s.xrDroneIndex !== null && s.swarmGroup?.visible) {
+        const droneChildIdx = s.xrDroneIndex * 2;
+        const droneObj = s.swarmGroup.children[droneChildIdx];
+        if (droneObj) {
+          const FLY_SPEED = 10 * dt;
+          const sources = xrSession.inputSources;
+          // Left controller → XZ movement, Right controller → altitude
+          if (sources[0]?.gamepad) {
+            const ax = sources[0].gamepad.axes[2] ?? 0;
+            const az = sources[0].gamepad.axes[3] ?? 0;
+            if (Math.abs(ax) > 0.12) droneObj.position.x += ax * FLY_SPEED;
+            if (Math.abs(az) > 0.12) droneObj.position.z += az * FLY_SPEED;
+          }
+          if (sources[1]?.gamepad) {
+            const ay = sources[1].gamepad.axes[3] ?? 0;
+            if (Math.abs(ay) > 0.12) droneObj.position.y -= ay * FLY_SPEED;
           }
         }
       }
+
+      s.renderer.render(s.scene, s.camera);
     }
-    return false;
-  }
+    renderer.setAnimationLoop(animate);
 
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // FIRE BEHAVIOR SCORING — composite threat assessment drives all dispatch
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  function getResponseLevel(acres, ros, fronts, spots, windSpeed) {
-    // Composite score: weights calibrated to real ICS escalation thresholds
-    const score = (acres * 0.3) + (ros * 10) + (fronts * 0.1) + (windSpeed * 0.5) + (spots * 5);
-    // Level 1: Size-up (initial detection, < 2 acres)
-    // Level 2: Initial Attack (confirmed fire, engines + heli)
-    // Level 3: Extended Attack (growing, add heavy resources)
-    // Level 4: Major Fire (structure threat, VLAT + evac)
-    // Level 5: Type 1 Incident (all resources committed)
-    if (score > 120) return 5;
-    if (score > 60)  return 4;
-    if (score > 25)  return 3;
-    if (score > 8)   return 2;
-    return 1;
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // AUTONOMOUS AGENT TICK — only runs AFTER fire detection
-  // Dispatch is CONDITION-DRIVEN: units deploy based on fire behavior, not timers
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  function agentTick(sim) {
-    if (!sim.fireDetected) return;
-    const now = Date.now();
-    if (now - (sim._lastAgentTick || 0) < 1500) return;
-    sim._lastAgentTick = now;
-
-    const { engine, drones, units, fireOps, ag } = sim;
-    const stats = engine.getStats();
-    if (!stats || stats.totalAffected === 0) return;
-
-    const acres = Math.round(stats.totalAcres);
-    const ros = stats.rosChainPerHour;
-    const fronts = stats.activeFrontCells;
-    const spots = stats.spotFireCount;
-    const activeFronts = engine.getActiveFronts();
-    const windRad = ((engine.windDirection + 180) % 360) * Math.PI / 180;
-    const secSinceDetection = (now - sim.fireDetectedAt) / 1000;
-    const level = getResponseLevel(acres, ros, fronts, spots, engine.windSpeed);
-
-    let cR = 0, cC = 0;
-    if (activeFronts.length > 0) { for (const f of activeFronts) { cR += f.row; cC += f.col; } cR /= activeFronts.length; cC /= activeFronts.length; }
-    function leadingEdge() { let b = activeFronts[0], bs = -Infinity; for (const f of activeFronts) { const s = -Math.cos(windRad)*f.row + Math.sin(windRad)*f.col; if (s > bs) { bs=s; b=f; } } return b; }
-    const addEvent = (agent, msg) => { sim.events.push({ time: now, agent, msg, t: now }); };
-
-    // ── SWARM: launch drones from command center stash based on fire size ──
-    const launchedDrones = drones.filter(d => d.launched);
-    const stashedDrones = drones.filter(d => !d.launched);
-    const desiredLaunched = Math.min(DRONE_STASH_TOTAL, Math.max(INITIAL_PATROL, INITIAL_PATROL + Math.ceil(acres / 15) + Math.ceil(fronts / 25) + spots * 2));
-
-    if (launchedDrones.length < desiredLaunched && stashedDrones.length > 0) {
-      const toLaunch = Math.min(desiredLaunched - launchedDrones.length, stashedDrones.length);
-      for (let i = 0; i < toLaunch; i++) {
-        const d = stashedDrones[i];
-        d.launched = true;
-        d.trow = Math.round(cR + (Math.random() - 0.5) * 20);
-        d.tcol = Math.round(cC + (Math.random() - 0.5) * 20);
+    // ── Cleanup ─────────────────────────────────────────────────────
+    return () => {
+      renderer.setAnimationLoop(null);
+      resizeObs.disconnect();
+      if (vrBtn.parentNode) vrBtn.parentNode.removeChild(vrBtn);
+      geo.dispose();
+      terrainMat.dispose();
+      glowTex.dispose();
+      overlays.forEach((o) => { o.geometry.dispose(); o.material.dispose(); });
+      halos.forEach((o) => { o.geometry.dispose(); o.material.dispose(); });
+      particleSystems.forEach((ps) => { ps.geometry.dispose(); ps.material.dispose(); });
+      fireVolumes.forEach((g) => g.traverse((c) => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }));
+      perimeterRings.forEach((r) => { r.geometry.dispose(); r.material.dispose(); });
+      windArrows.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
+      swarmGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
+      evacRoutes.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
+      deployGroup.traverse((child) => { if (child.geometry) child.geometry.dispose(); if (child.material) child.material.dispose(); });
+      renderer.dispose();
+      if (container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
       }
-      const newTotal = drones.filter(d => d.launched).length;
-      const remaining = drones.filter(d => !d.launched).length;
-      if (!ag.logged.has('launch_' + newTotal)) {
-        ag.logged.add('launch_' + newTotal);
-        addEvent('swarm', `DECISION: ${acres} acres / ${fronts} front cells → launching ${toLaunch} drone${toLaunch>1?'s':''}. Fleet: ${newTotal}/${DRONE_STASH_TOTAL} (${remaining} reserve).`);
-        ag.actions++;
-      }
-    }
+      sceneRef.current = {};
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Reassign all launched drones to fire clusters (k-means)
-    if (now - ag.lastDroneAssign > 4000) {
-      ag.lastDroneAssign = now;
-      const active = drones.filter(d => d.launched);
-      const clusters = clusterFronts(activeFronts, Math.min(active.length, Math.max(3, Math.ceil(active.length / 3))));
-      let di = 0;
-      for (let ci = 0; ci < clusters.length && di < active.length; ci++) {
-        const cl = clusters[ci];
-        const dronesFor = Math.min(4, Math.max(1, Math.round(cl.size / Math.max(1, fronts) * active.length)));
-        for (let d = 0; d < dronesFor && di < active.length; d++) {
-          active[di].trow = cl.row + (d - dronesFor / 2) * 3;
-          active[di].tcol = cl.col + (d - dronesFor / 2) * 2;
-          di++;
-        }
-      }
-      while (di < active.length) {
-        const angle = (di / active.length) * Math.PI * 2 + now * 0.0001;
-        active[di].trow = (cR || 128) + Math.sin(angle) * 40;
-        active[di].tcol = (cC || 128) + Math.cos(angle) * 40;
-        di++;
-      }
-      ag.dronesDeployed = active.length;
-    }
+  // ── Respond to timeSlot ───────────────────────────────────────────────
+  useEffect(() => {
+    const { overlays, halos, particleSystems, fireLights, fireVolumes } = sceneRef.current;
+    if (!overlays) return;
 
-    // ── PREDICT: fire behavior analysis (condition-driven) ──
-    if (acres >= 1 && !ag.logged.has('predict_init')) {
-      ag.logged.add('predict_init');
-      addEvent('predict', `ANALYSIS: ROS ${ros.toFixed(1)} ch/hr, Wind ${engine.windSpeed}mph @ ${engine.windDirection}°, ${fronts} active fronts. Threat Level ${level}/5. Spotting risk: ${engine.windSpeed>20?'EXTREME':engine.windSpeed>15?'HIGH':'MODERATE'}.`);
-      ag.actions++;
-    }
-    if (acres >= 5 && !ag.logged.has('predict_forecast')) {
-      ag.logged.add('predict_forecast');
-      const est1h = Math.round(acres * (1 + ros * 0.5 + engine.windSpeed * 0.05));
-      addEvent('predict', `FORECAST: 1h projection ${est1h} acres (50-scenario ensemble). Confidence ${ros>2?'58':'72'}%. ${ros>2?'Extreme ROS — recommend aerial suppression.':'Recommend direct attack.'}`);
-      ag.actions++;
-    }
-    // Periodic updates as fire grows
-    if (acres > 20 && !ag.logged.has('predict_update_'+Math.floor(acres/30)*30)) {
-      ag.logged.add('predict_update_'+Math.floor(acres/30)*30);
-      addEvent('predict', `UPDATE: Fire now ${acres} acres, ROS ${ros.toFixed(1)} ch/hr. Threat Level ${level}/5. ${spots>0?`${spots} spot fires active.`:''} Containment ${engine.windSpeed>20?'unlikely':'possible'} with current resources.`);
-      ag.actions++;
-    }
+    overlays.forEach((overlay, idx) => {
+      const zone = FIRE_ZONES[idx];
+      const visible = zone.slot <= timeSlot;
+      overlay.visible = visible;
+      halos[idx].visible = visible;
+      particleSystems[idx].visible = visible;
+      if (fireVolumes) fireVolumes[idx].visible = visible;
+      fireLights[idx].intensity = visible ? 2.0 : 0;
+    });
+  }, [timeSlot]);
+
+  // ── Respond to simulationMode ─────────────────────────────────────────
+  useEffect(() => {
+    const { perimeterRings } = sceneRef.current;
+    if (!perimeterRings) return;
+    perimeterRings.forEach((ring, idx) => {
+      ring.visible = simulationMode && FIRE_ZONES[idx].slot <= timeSlot;
+    });
+  }, [simulationMode, timeSlot]);
+
+  // ── Respond to activeLayers ───────────────────────────────────────────
+  useEffect(() => {
+    const { windArrows } = sceneRef.current;
+    if (!windArrows) return;
+    windArrows.visible = !!(activeLayers?.wind);
+  }, [activeLayers]);
+
+  // ── Respond to swarmActive ────────────────────────────────────────────
+  useEffect(() => {
+    const { swarmGroup } = sceneRef.current;
+    if (!swarmGroup) return;
+    swarmGroup.visible = !!swarmActive;
+  }, [swarmActive]);
+
+  // ── Respond to evacActive ─────────────────────────────────────────────
+  useEffect(() => {
+    const { evacRoutes } = sceneRef.current;
+    if (!evacRoutes) return;
+    evacRoutes.visible = !!evacActive;
+  }, [evacActive]);
+
+  // ── Respond to deployActive ───────────────────────────────────────────
+  useEffect(() => {
+    const { deployGroup } = sceneRef.current;
+    if (!deployGroup) return;
+    deployGroup.visible = !!deployActive;
+  }, [deployActive]);
+
+  // ── Respond to placedUnits ────────────────────────────────────────────
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s.scene) return;
+    s.placedGroup = buildPlacedUnits(placedUnits || [], s.scene, s.placedGroup);
+  }, [placedUnits]);
+
+  return (
+    <div
+      ref={mountRef}
+      onClick={handleClick}
+      style={{
+        width: '100%',
+        height: '100%',
+        borderRadius: 14,
+        overflow: 'hidden',
+        cursor: 'crosshair',
+        background: '#060a10',
+        position: 'relative',
+      }}
+    >
+      {activeDroneIndex === null && <SceneOverlay />}
+    </div>
+  );
+}
 
     // ── DEPLOY: CONDITION-DRIVEN dispatch (not fixed timers) ──
     // Level 2+: Engines deploy when fire confirmed and actively spreading
     const engines = units.filter(u => u.type === 'engine');
     if (level >= 2 && acres >= 2 && activeFronts.length > 0) {
-      const defPos = getDefensePos(activeFronts, engines.length, engine);
+      const defPos = getDefensePos(activeFronts, engines.length, engines);
       fireOps.hoseLines.length = 0;
       for (let ei = 0; ei < engines.length; ei++) {
         if (ei < defPos.length) {
@@ -1734,45 +2466,22 @@ export default function TerrainScene({ timeSlot, onTerrainClick, simulationMode,
 
       {/* Event log removed — map + graph only */}
 
-      {/* Map Status + Sim Clock */}
-      <div style={{ position:'absolute', top:8, right:8, zIndex:10, display:'flex', alignItems:'center', gap:8, padding:'3px 10px', background:'rgba(0,0,0,0.5)', borderRadius:10, backdropFilter:'blur(12px)' }}>
-        <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:11, fontWeight:700, color:'#E2E8F0', letterSpacing:'0.04em' }}>
-          T+{ui.simClock || '0m'}
-        </span>
-        <div style={{ width:1, height:12, background:'rgba(255,255,255,0.1)' }} />
-        <div style={{ width:5, height:5, borderRadius:'50%', background: mapStatus==='ready'?'#10B981':mapStatus==='error'?'#E84430':'#FFD700' }} />
-        <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:8, color:'rgba(200,210,225,0.5)', letterSpacing:'0.06em' }}>
-          FIRESIGHT {mapStatus!=='ready'?`(${mapStatus})`:''}
-        </span>
-      </div>
-
-      {/* Tooltip for drones/units/command center */}
-      <div ref={tooltipDivRef} style={{
-        position: 'absolute', display: 'none', zIndex: 100,
-        background: 'rgba(17,24,39,.95)', border: '1px solid #1E2636',
-        borderRadius: 6, padding: '10px 14px', fontSize: 10, maxWidth: 320,
-        pointerEvents: 'none', boxShadow: '0 8px 32px rgba(0,0,0,.5)',
-        color: '#E2E8F0',
-      }} />
-
-      {!hasApiKey && (
-        <div style={{ position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', textAlign:'center', color:'rgba(200,210,225,0.4)', fontFamily:"'Inter',sans-serif", zIndex:3 }}>
-          <div style={{ fontSize:14, fontWeight:600, marginBottom:8 }}>Google Maps</div>
-          <div style={{ fontSize:11 }}>Set VITE_GOOGLE_MAPS_API_KEY in .env to enable</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const btnS = { background:'rgba(20,26,36,0.85)', border:'1px solid rgba(30,38,54,0.6)', color:'#8896AB', padding:'5px 10px', borderRadius:6, cursor:'pointer', fontSize:10, fontWeight:700, fontFamily:'-apple-system,sans-serif', backdropFilter:'blur(8px)', transition:'all .15s' };
-const aBtnS = { background:'#EF4444', borderColor:'#EF4444', color:'#fff' };
-
-function M({ l, v, c }) {
+function Compass() {
   return (
-    <div style={{ display:'flex', alignItems:'center', gap:4, background:'rgba(12,16,24,0.85)', padding:'4px 10px' }}>
-      <span style={{ color:'#4A5568', fontSize:7, textTransform:'uppercase', letterSpacing:0.5, fontWeight:600 }}>{l}</span>
-      <span style={{ fontWeight:800, fontSize:11, fontFamily:"'SF Mono',monospace", color:c||'#E2E8F0' }}>{v}</span>
+    <div style={{
+      position: 'absolute', bottom: 12, left: 14,
+      pointerEvents: 'none',
+      width: 36, height: 36,
+      opacity: 0.5,
+    }}>
+      <svg viewBox="0 0 36 36" fill="none">
+        <circle cx="18" cy="18" r="16" stroke="rgba(140,160,190,0.15)" strokeWidth="0.8" />
+        <circle cx="18" cy="18" r="1.2" fill="rgba(140,160,190,0.35)" />
+        <polygon points="18,3.5 16.2,16 18,14 19.8,16" fill="rgba(212,80,50,0.7)" />
+        <polygon points="18,32.5 16.2,20 18,22 19.8,20" fill="rgba(140,160,190,0.3)" />
+        <text x="18" y="3" textAnchor="middle" fontSize="4.5" fill="rgba(212,80,50,0.6)"
+          fontFamily="Inter, sans-serif" fontWeight="600">N</text>
+      </svg>
     </div>
   );
 }

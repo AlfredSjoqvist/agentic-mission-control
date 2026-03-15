@@ -99,9 +99,9 @@ export default function ContextMenu({ x, y, worldPos, onClose, onPlaceUnit }) {
     <div
       ref={menuRef}
       style={{
-        position: 'fixed',
-        left: Math.min(x, window.innerWidth - 200),
-        top: Math.min(y, window.innerHeight - 180),
+        position: 'absolute',
+        left: Math.min(x, 1440 - 220),
+        top: Math.min(y, 900 - 200),
         zIndex: 1000,
         ...panelStyle,
         padding: 0,

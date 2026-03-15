@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Wind, Droplets, Thermometer } from 'lucide-react';
 import {
   colors, typography, radii, shadows, panelStyle, buttonBase, buttonAccent, buttonGhost, buttonDanger,
@@ -198,9 +198,45 @@ const PANELS = {
 };
 
 // ─── Large panel variant (for Pyro — primary panel) ────────────────────────
-export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats }) {
+export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats, onFullDispatch, allDeployed, onResetCycle, resetSignal }) {
   const panel = PANELS[panelId];
   const [actionState, setActionState] = useState('idle');
+  const [pyroPhase, setPyroPhase] = useState(0);
+  const [pyroVisibleRows, setPyroVisibleRows] = useState(0);
+  const [alertPhase, setAlertPhase] = useState(0);
+  const pyroTimers = useRef([]);
+  const prevResetRef = useRef(resetSignal);
+
+  const clearPyroTimers = useCallback(() => {
+    pyroTimers.current.forEach(clearTimeout);
+    pyroTimers.current = [];
+  }, []);
+
+  useEffect(() => clearPyroTimers, [clearPyroTimers]);
+
+  // Reset internal state when cycle resets
+  useEffect(() => {
+    if (prevResetRef.current !== resetSignal) {
+      prevResetRef.current = resetSignal;
+      clearPyroTimers();
+      setActionState('idle');
+      setPyroPhase(0);
+      setPyroVisibleRows(0);
+      // Re-trigger alert phase animation
+      setAlertPhase(0);
+      const t1 = setTimeout(() => setAlertPhase(1), 400);
+      const t2 = setTimeout(() => setAlertPhase(2), 1200);
+      pyroTimers.current = [t1, t2];
+    }
+  }, [resetSignal, clearPyroTimers]);
+
+  // Critical Alert phased reveal on mount
+  useEffect(() => {
+    if (panelId !== 'pyro') return;
+    const t1 = setTimeout(() => setAlertPhase(1), 800);
+    const t2 = setTimeout(() => setAlertPhase(2), 2000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [panelId]);
 
   const handleAction = () => {
     if (actionState !== 'idle') return;
@@ -217,6 +253,39 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats
   }[panel.actionVariant];
 
   const isPyro = panelId === 'pyro';
+
+  // Dynamic weather — slightly varies each cycle for realism
+  const weatherVariants = React.useMemo(() => {
+    if (!isPyro) return null;
+    const dirs = ['NW', 'N', 'NNW', 'W', 'NW'];
+    const wind = 22 + (resetSignal % 5) * 2;          // 22–30 mph
+    const hum = Math.max(6, 14 - resetSignal * 2);     // 14→12→10→8→6%
+    const temp = 92 + (resetSignal % 4) * 2;            // 92–98°F
+    const slope = 30 + (resetSignal % 3) * 2;           // 30–34°
+    const spread = (2.1 + resetSignal * 0.3).toFixed(1);// 2.1→2.4→2.7…
+    const dir = dirs[resetSignal % dirs.length];
+    return {
+      gridMetrics: [
+        { label: 'Wind',        value: `${wind} mph ${dir}`, icon: WindIcon,        annotation: wind >= 28 ? 'Extreme' : 'Strong',   annotationColor: wind >= 28 ? colors.critical : colors.textTertiary },
+        { label: 'Humidity',    value: `${hum}%`,            icon: HumidityIcon,    annotation: hum <= 8 ? 'Critical' : 'Very Dry',  annotationColor: colors.critical     },
+        { label: 'Temperature', value: `${temp} °F`,         icon: TemperatureIcon, annotation: temp >= 96 ? 'Extreme' : 'High',     annotationColor: colors.critical     },
+        { label: 'Slope',       value: `${slope}°`,          icon: SlopeIcon,       annotation: 'Steep',    annotationColor: colors.textTertiary },
+      ],
+      spreadMetric: {
+        label: 'Rate of Spread',
+        value: `${spread} ch/hr`,
+        annotation: parseFloat(spread) >= 2.7 ? 'Extreme' : 'Rapid',
+        annotationColor: colors.critical,
+        progress: Math.min(0.9, 0.55 + resetSignal * 0.08),
+        icon: SpreadIcon,
+      },
+    };
+  }, [isPyro, resetSignal]);
+
+  // Use dynamic metrics for Pyro, fallback to static
+  const displayPanel = isPyro && weatherVariants
+    ? { ...panel, gridMetrics: weatherVariants.gridMetrics, spreadMetric: weatherVariants.spreadMetric }
+    : panel;
 
   return (
     <div style={{
@@ -298,10 +367,10 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats
         </div>
       )}
 
-      {/* ② 2×2 Environmental Grid — gridAutoRows forces all 4 cells equal height */}
-      {isPyro && panel.gridMetrics && (
+      {/* ② 2×2 Environmental Grid */}
+      {isPyro && displayPanel.gridMetrics && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridAutoRows: '76px', gap: '6px' }}>
-          {panel.gridMetrics.map((m) => {
+          {displayPanel.gridMetrics.map((m) => {
             const Icon = m.icon;
             return (
               <div key={m.label} style={{
@@ -344,8 +413,8 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats
       )}
 
       {/* ③ Behavior Prediction Strip */}
-      {isPyro && panel.spreadMetric && (() => {
-        const sm = panel.spreadMetric;
+      {isPyro && displayPanel.spreadMetric && (() => {
+        const sm = displayPanel.spreadMetric;
         const Icon = sm.icon;
         return (
           <div style={{
@@ -515,6 +584,162 @@ export function LargeAgentPanel({ panelId, onSimulate, simulationMode, fireStats
       >
         {actionState === 'done' ? 'Complete' : actionState === 'loading' ? 'Processing...' : panel.action}
       </button>
+
+      {/* ④ Projected Fire Growth — phased reveal, appears below button */}
+      {isPyro && (pyroPhase >= 1 || simulationMode) && (() => {
+        const pyroRows = [
+          { label: '+1 Hour',    numVal: 180 + (resetSignal % 4) * 30, suffix: ' acres', color: colors.dataValue, idx: 0 },
+          { label: '+3 Hours',   numVal: 420 + (resetSignal % 4) * 50, suffix: ' acres', color: colors.dataValue, idx: 1 },
+          { label: 'Confidence', numVal: Math.max(72, 89 - resetSignal * 3), suffix: '%', color: colors.accent,   idx: 2 },
+        ];
+        const isScanning = pyroPhase >= 1 && pyroPhase <= 2;
+        return (
+          <div style={{
+            border: `1px solid ${colors.border}`,
+            background: 'rgba(0, 0, 0, 0.25)',
+            borderRadius: radii.base,
+            padding: '10px 12px 12px 12px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '8px' }}>
+              <SpreadIcon color={colors.textSecondary} />
+              <span style={{
+                fontFamily: typography.sansFamily, fontSize: '9px',
+                color: colors.textSecondary, letterSpacing: typography.letterSpacing.widest,
+                textTransform: 'uppercase', fontWeight: typography.weights.semibold,
+              }}>
+                Projected Fire Growth
+              </span>
+              <span style={{
+                fontFamily: typography.monoFamily,
+                fontSize: '8px',
+                color: colors.accent,
+                border: `1px solid ${colors.accentMid}`,
+                borderRadius: '3px',
+                padding: '1px 4px',
+                letterSpacing: '0.08em',
+                marginLeft: 'auto',
+              }}>SIM</span>
+            </div>
+            {isScanning && (
+              <div style={{ marginBottom: '6px' }}>
+                <BlinkingText
+                  text={pyroPhase === 1 ? 'ANALYZING TERRAIN...' : 'RUNNING SIMULATION...'}
+                  color={colors.accent}
+                />
+                <div style={{
+                  marginTop: '4px',
+                  height: '1px',
+                  background: 'rgba(140,160,190,0.08)',
+                  borderRadius: '1px',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    height: '100%',
+                    background: colors.accent,
+                    opacity: 0.5,
+                    width: '30%',
+                    animation: 'shimmer 1.2s ease-in-out infinite',
+                  }} />
+                </div>
+              </div>
+            )}
+            {pyroRows.map(row => {
+              const visible = simulationMode && pyroPhase === 0
+                ? true
+                : pyroVisibleRows > row.idx;
+              if (!visible && !isScanning) return null;
+              if (isScanning) return null;
+              return (
+                <div key={row.label} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                  marginBottom: '3px',
+                  opacity: visible ? 1 : 0,
+                  transform: visible ? 'translateY(0)' : 'translateY(6px)',
+                  transition: 'opacity 0.4s ease, transform 0.4s ease',
+                }}>
+                  <span style={{
+                    fontFamily: typography.sansFamily, fontSize: '9px',
+                    color: colors.textTertiary, letterSpacing: typography.letterSpacing.wider,
+                    textTransform: 'uppercase',
+                  }}>
+                    {row.label}
+                  </span>
+                  <span style={{
+                    fontFamily: typography.monoFamily, fontSize: '12px',
+                    color: row.color, fontWeight: typography.weights.medium,
+                  }}>
+                    {visible && (pyroPhase !== 0 || !simulationMode)
+                      ? <AnimatedValue target={row.numVal} duration={800} suffix={row.suffix} />
+                      : `${row.numVal}${row.suffix}`
+                    }
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* ⑤ Execute Recommended Plan — appears after simulation complete */}
+      {isPyro && simulationMode && (pyroPhase === 0 || pyroPhase >= 4) && !allDeployed && (
+        <button
+          style={{
+            ...buttonAccent,
+            width: '100%',
+            padding: '12px 0',
+            background: colors.accentDim,
+            border: `1px solid ${colors.accentMid}`,
+            color: colors.accent,
+            fontSize: '12px',
+            letterSpacing: '0.10em',
+            transition: 'all 0.3s ease',
+          }}
+          onClick={onFullDispatch}
+        >
+          ▶ Execute Recommended Plan
+        </button>
+      )}
+
+      {/* ⑥ After all deployed — show status + "Update Conditions" to restart cycle */}
+      {isPyro && allDeployed && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{
+            width: '100%',
+            padding: '10px 0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '6px',
+            background: 'rgba(61, 184, 122, 0.06)',
+            border: `1px solid rgba(61, 184, 122, 0.2)`,
+            borderRadius: radii.md,
+          }}>
+            <span style={{
+              fontFamily: typography.monoFamily,
+              fontSize: '11px',
+              color: colors.statusOk,
+              letterSpacing: '0.08em',
+            }}>
+              ✓ All Units Deployed
+            </span>
+          </div>
+          <button
+            style={{
+              ...buttonGhost,
+              width: '100%',
+              padding: '9px 0',
+              fontSize: '11px',
+              letterSpacing: '0.08em',
+              color: colors.textSecondary,
+              border: `1px solid ${colors.border}`,
+              transition: 'all 0.2s ease',
+            }}
+            onClick={onResetCycle}
+          >
+            ↻ Update Conditions
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -548,9 +773,57 @@ const ACTIVE_INFO = {
 };
 
 // ─── Compact panel variant (for Swarm, Evac, Deploy) ───────────────────────
-export default function AgentPanel({ panelId, onActivate, isActive, liveData }) {
+export default function AgentPanel({ panelId, onActivate, isActive, triggerDispatch, resetSignal, liveData }) {
   const panel = PANELS[panelId];
-  const [actionState, setActionState] = useState('idle');
+  const [phase, setPhase] = useState(0);
+  const [visibleRows, setVisibleRows] = useState(0);
+  const [showBadge, setShowBadge] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const timerRefs = useRef([]);
+  const prevResetRef = useRef(resetSignal);
+
+  const clearTimers = useCallback(() => {
+    timerRefs.current.forEach(clearTimeout);
+    timerRefs.current = [];
+  }, []);
+
+  // Reset internal state when cycle resets
+  useEffect(() => {
+    if (prevResetRef.current !== resetSignal) {
+      prevResetRef.current = resetSignal;
+      clearTimers();
+      setPhase(0);
+      setVisibleRows(0);
+      setShowBadge(false);
+    }
+  }, [resetSignal, clearTimers]);
+
+  const handleAction = useCallback(() => {
+    if (phase !== 0 || isActive) return;
+    clearTimers();
+    setPhase(1);
+    setVisibleRows(0);
+    setShowBadge(false);
+
+    const t1 = setTimeout(() => setPhase(2), 600);
+    const t2 = setTimeout(() => {
+      setPhase(3);
+      onActivate?.();
+    }, 1400);
+    const t3 = setTimeout(() => setVisibleRows(1), 1700);
+    const t4 = setTimeout(() => setVisibleRows(2), 2000);
+    const t5 = setTimeout(() => setShowBadge(true), 2200);
+    const t6 = setTimeout(() => setPhase(4), 2500);
+    const t7 = setTimeout(() => setPhase(0), 4500);
+    timerRefs.current = [t1, t2, t3, t4, t5, t6, t7];
+  }, [phase, isActive, clearTimers, onActivate]);
+
+  // External trigger from "Execute Plan" button
+  useEffect(() => {
+    if (triggerDispatch && !isActive && phase === 0) {
+      handleAction();
+    }
+  }, [triggerDispatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Override hardcoded metrics with live simulation data
   const liveMetrics = (() => {
@@ -591,21 +864,10 @@ export default function AgentPanel({ panelId, onActivate, isActive, liveData }) 
     return { label: panel.statusLabel, color: panel.statusColor };
   })();
 
-  const handleAction = () => {
-    if (actionState !== 'idle') return;
-    setActionState('loading');
-    setTimeout(() => {
-      setActionState('done');
-      onActivate?.();
-      setTimeout(() => setActionState('idle'), 2000);
-    }, 900);
-  };
-
-  const btnStyle = {
-    accent: buttonAccent, ghost: buttonGhost, danger: buttonDanger,
-  }[panel.actionVariant];
-
   const activeInfo = ACTIVE_INFO[panelId];
+  const feedPhases = FEED_PHASES[panelId];
+  const isLoading = phase >= 1 && phase <= 2;
+  const isRevealing = phase >= 3;
 
   return (
     <div style={{
@@ -717,7 +979,7 @@ export default function AgentPanel({ panelId, onActivate, isActive, liveData }) 
         </div>
       )}
 
-      {/* Agent reasoning feed */}
+      {/* Agent reasoning feed — from live simulation data */}
       {liveData?.reasoning && liveData.reasoning[panelId] && (
         <div style={{
           borderTop: `1px solid ${colors.borderSubtle}`,
@@ -736,21 +998,83 @@ export default function AgentPanel({ panelId, onActivate, isActive, liveData }) 
         </div>
       )}
 
-      {/* Action */}
-      <button
-        style={{
-          ...btnStyle,
+      {/* Status display — no interactive button; dispatched via Execute Plan */}
+      {(isLoading || phase === 4 || isActive) && (
+        <div style={{
           width: '100%',
-          padding: '7px 0',
+          padding: '6px 0',
           marginTop: 'auto',
-          opacity: actionState === 'loading' ? 0.6 : 1,
-        }}
-        onClick={handleAction}
-      >
-        {actionState === 'done' ? '✓ Dispatched' : actionState === 'loading' ? '...' : panel.action}
-      </button>
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+          fontFamily: typography.monoFamily,
+          fontSize: '10px',
+          letterSpacing: typography.letterSpacing.widest,
+          textTransform: 'uppercase',
+          color: isLoading ? colors.accent : colors.statusOk,
+          transition: 'all 0.3s ease',
+        }}>
+          {isLoading
+            ? <ProgressDots />
+            : <>
+                <span style={{ fontSize: '11px' }}>✓</span>
+                <span>Dispatched</span>
+              </>
+          }
+        </div>
+      )}
     </div>
   );
+}
+
+// ─── Feed phase data per compact panel ─────────────────────────────────────
+const FEED_PHASES = {
+  swarm:  ['Tasking drones…', 'Deploying swarm…'],
+  evac:   ['Routing analysis…', 'Opening routes…'],
+  deploy: ['Staging assets…', 'Deploying units…'],
+};
+
+// ─── Blinking status text ───────────────────────────────────────────────────
+function BlinkingText({ text, color }) {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const t = setInterval(() => setVisible(v => !v), 600);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <span style={{
+      fontFamily: typography.monoFamily, fontSize: '8px',
+      color, letterSpacing: '0.08em', opacity: visible ? 1 : 0.2,
+      transition: 'opacity 0.15s ease',
+    }}>{text}</span>
+  );
+}
+
+// ─── Animated number counter ────────────────────────────────────────────────
+function AnimatedValue({ target, duration = 800, suffix = '' }) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    let start = null;
+    const step = (ts) => {
+      if (!start) start = ts;
+      const progress = Math.min((ts - start) / duration, 1);
+      setValue(Math.round(target * progress));
+      if (progress < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [target, duration]);
+  return <>{value}{suffix}</>;
+}
+
+// ─── Animated loading dots ──────────────────────────────────────────────────
+function ProgressDots() {
+  const [dots, setDots] = useState(1);
+  useEffect(() => {
+    const t = setInterval(() => setDots(d => d % 3 + 1), 400);
+    return () => clearInterval(t);
+  }, []);
+  return <span style={{ fontFamily: typography.monoFamily, fontSize: '10px', color: colors.accent, letterSpacing: '0.2em' }}>{'•'.repeat(dots)}</span>;
 }
 
 // ─── Minimal status dot + label ────────────────────────────────────────────
