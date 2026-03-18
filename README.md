@@ -2,7 +2,7 @@
 
 **Best Agentic Mission Control** — Founders Inc. World Model Hack 2026
 
-<a href="https://alfredsjoqvist.com/firesight" target="_blank">Live Demo</a> · Built in 35 hours at Fort Mason, San Francisco
+[Live Demo](https://alfredsjoqvist.com/firesight) · Built in 35 hours at Fort Mason, San Francisco
 
 ---
 
