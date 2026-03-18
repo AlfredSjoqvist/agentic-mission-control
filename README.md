@@ -35,9 +35,9 @@ All agent communications flow through the ICS comms log in the bottom panel.
 
 ### Fire Simulation
 
-The fire engine uses a Rothermel-based cellular automata model covering the LA Palisades area:
+The fire engine uses a Rothermel-based cellular automata model covering the Palisades Fire zone:
 
-- Wind-driven directional spread (Santa Ana conditions modeled)
+- Wind-driven directional spread
 - Slope influence on rate of spread
 - Fuel type differentiation (chaparral, grassland, urban, forest)
 - Probabilistic ember spotting for long-range ignition
