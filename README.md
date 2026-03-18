@@ -10,7 +10,7 @@ FireSight is a real-time spatial command center where an incident commander orch
 
 ## What It Does
 
-An incident commander sees a photorealistic 3D view of the terrain (Google 3D Tiles) with a live fire simulation overlay. They coordinate response through voice commands and a structured ICS (Incident Command System) command chain. The system simulates 45 autonomous units including scout drones, engine crews, hotshot teams, helicopters, and air tankers.
+An incident commander sees a photorealistic 3D view of the terrain (Google 3D Tiles) with a live fire simulation overlay. They coordinate response through voice commands and a structured ICS (Incident Command System) command chain. The system autonomously deploys and manages scout drones, engine crews, hotshot teams, helicopters, and air tankers as the fire evolves.
 
 **Double-click the terrain to ignite a fire, then watch the response unfold.**
 
@@ -18,12 +18,12 @@ An incident commander sees a photorealistic 3D view of the terrain (Google 3D Ti
 
 Four LLM-powered ICS agents run autonomously through a structured command chain:
 
-- **Incident Commander (IC)** — The central agent commanding the entire fleet. Coordinates drones, helicopters, air tankers, and engine crews. Makes strategic decisions on containment lines, resource allocation, and evacuation timing. Responds to voice commands from the user (hold V to talk).
+- **Incident Commander (IC)** — The central agent commanding the entire operation. Coordinates drones, helicopters, air tankers, and ground crews. Makes strategic decisions on containment lines, resource allocation, and evacuation timing. Responds to voice commands from the user (hold V to talk).
 - **Safety Officer** — Monitors crew positions relative to fire progression and flags hazardous conditions. Issues safety advisories when units are at risk.
 - **Public Information Officer** — Tracks civilian impact, evacuation status, and generates situational updates for the comms log.
 - **Liaison Officer** — Coordinates with external agencies and manages mutual aid resource requests.
 
-The IC is the primary decision-maker, orchestrating 24 drones (scouts, mappers, relays, suppression), helicopter and air tanker operations, and ground crew deployment. All agent communications flow through the ICS comms log in the bottom panel.
+All agent communications flow through the ICS comms log in the bottom panel.
 
 ### Views
 
@@ -35,7 +35,7 @@ The IC is the primary decision-maker, orchestrating 24 drones (scouts, mappers, 
 
 ### Fire Simulation
 
-The fire engine uses a Rothermel-based cellular automata model on a 256x256 grid covering the LA Palisades area:
+The fire engine uses a Rothermel-based cellular automata model covering the LA Palisades area:
 
 - Wind-driven directional spread (Santa Ana conditions modeled)
 - Slope influence on rate of spread
@@ -73,7 +73,7 @@ The fire engine uses a Rothermel-based cellular automata model on a 256x256 grid
 
 **3D Engine:** Three.js with `3d-tiles-renderer`, custom multi-layer fire rendering, drone sprite system
 
-**AI/Agents:** Claude Opus 4.6 (command chain reasoning), Gemini (voice transcription), structured ICS message protocol
+**AI/Agents:** Claude Opus 4.6 (command chain reasoning), Gemini (voice transcription), OpenClaw for multi-agent orchestration
 
 **Backend:** Node.js/Express, Server-Sent Events for real-time strategy updates
 
