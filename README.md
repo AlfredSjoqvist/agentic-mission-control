@@ -14,16 +14,16 @@ An incident commander sees a photorealistic 3D view of the terrain (Google 3D Ti
 
 **Double-click the terrain to ignite a fire, then watch the response unfold.**
 
-### Agent Orchestration
+### AI Agents (powered by OpenClaw)
 
-Four specialized AI agents operate through a hierarchical ICS command structure, each with dedicated roles:
+Four LLM-powered ICS agents run autonomously through a structured command chain:
 
-- **Pyro** — Fire spread prediction. Projects fire perimeter evolution based on wind, slope, fuel type, and humidity
-- **Swarm** — Drone fleet coordination. Manages 24 drones (scouts, mappers, relays, suppression) with autonomous pathfinding and patrol assignment
-- **Evac** — Evacuation routing. Calculates civilian evacuation paths based on fire projections, road status, and population density
-- **Deploy** — Resource deployment. Positions firefighting resources (engines, crews, helicopters, dozers) and manages dispatch logistics
+- **Incident Commander (IC)** — The central agent commanding the entire fleet. Coordinates drones, helicopters, air tankers, and engine crews. Makes strategic decisions on containment lines, resource allocation, and evacuation timing. Responds to voice commands from the user (hold V to talk).
+- **Safety Officer** — Monitors crew positions relative to fire progression and flags hazardous conditions. Issues safety advisories when units are at risk.
+- **Public Information Officer** — Tracks civilian impact, evacuation status, and generates situational updates for the comms log.
+- **Liaison Officer** — Coordinates with external agencies and manages mutual aid resource requests.
 
-The IC can override agent decisions via voice command (hold V to talk). Agents communicate through the ICS comms log visible in the bottom panel.
+The IC is the primary decision-maker, orchestrating 24 drones (scouts, mappers, relays, suppression), helicopter and air tanker operations, and ground crew deployment. All agent communications flow through the ICS comms log in the bottom panel.
 
 ### Views
 
@@ -55,9 +55,9 @@ The fire engine uses a Rothermel-based cellular automata model on a 256x256 grid
 │       └──────────────┼────────────────┘          │
 │              postMessage Bridge                   │
 ├─────────────────────────────────────────────────┤
-│  Agent Layer (Pyro · Swarm · Evac · Deploy)      │
-│  Confidence Engine · Conflict Resolver           │
-│  Autonomy Manager · Cascade Tracker              │
+│  OpenClaw Agent Layer                             │
+│  IC · Safety · PIO · Liaison                     │
+│  Confidence Engine · Conflict Resolver            │
 ├─────────────────────────────────────────────────┤
 │  Fire Spread Engine (Cellular Automata)          │
 │  Drone Pathfinding · ICS State Machine           │
